@@ -79,6 +79,14 @@ namespace MCGalaxy.Modules.Games.LS
         
         void RewardPlayer(Player p, Random rnd) {
             if (IsPlayerDead(p)) return;
+            ushort x = (ushort)(p.Pos.X / 32);
+            ushort y = (ushort)((p.Pos.Y - Entities.CharacterHeight) / 32);
+            ushort z = (ushort)(p.Pos.Z / 32);
+            BlockID block = p.level.GetBlock((ushort)x, ((ushort)y), (ushort)z);
+            string player = Block.GetName(p, block);
+            if (player == "Op_Air") {
+                p.Message("You are too close to spawn, so you get no rewards!") return;
+            }
             
             if (p.Pos.FeetBlockCoords.Y >= Map.GetEdgeLevel()) {
                 AwardMoney(p, Config.ASL_RewardMin, Config.ASL_RewardMax, 
@@ -169,3 +177,4 @@ namespace MCGalaxy.Modules.Games.LS
         }
     }
 }
+
