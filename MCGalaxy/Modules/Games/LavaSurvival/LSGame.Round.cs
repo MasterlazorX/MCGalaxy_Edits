@@ -18,9 +18,10 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using MCGalaxy.Blocks;
 using MCGalaxy.Games;
 using MCGalaxy.Maths;
+
+using BlockID = System.UInt16;
 
 namespace MCGalaxy.Modules.Games.LS
 {
@@ -178,6 +179,7 @@ namespace MCGalaxy.Modules.Games.LS
         }
     }
 }
+
 
 
 
