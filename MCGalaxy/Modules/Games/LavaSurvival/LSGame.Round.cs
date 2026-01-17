@@ -85,7 +85,7 @@ namespace MCGalaxy.Modules.Games.LS
             BlockID block = p.level.GetBlock((ushort)x, ((ushort)y), (ushort)z);
             string player = Block.GetName(p, block);
             if (player == "Op_Air") {
-                p.Message("You are too close to spawn, so you get no rewards!") return;
+                p.Message("You are too close to spawn, so you get no rewards!"); return;
             }
             
             if (p.Pos.FeetBlockCoords.Y >= Map.GetEdgeLevel()) {
@@ -177,4 +177,5 @@ namespace MCGalaxy.Modules.Games.LS
         }
     }
 }
+
 
