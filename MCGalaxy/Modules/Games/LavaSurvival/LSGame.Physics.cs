@@ -236,8 +236,8 @@ namespace MCGalaxy.Modules.Games.LS
         byte GetDestroyDelay() {
             LSFloodMode mode = floodMode;
             
-            if (mode == LSFloodMode.Disturbed) return 200;
-            if (mode == LSFloodMode.Furious)   return 100;
+            if (mode == LSFloodMode.Disturbed) return 100;
+            if (mode == LSFloodMode.Furious)   return 75;
             if (mode == LSFloodMode.Wild)      return  50;
             return 10;
         }
@@ -245,19 +245,22 @@ namespace MCGalaxy.Modules.Games.LS
         byte GetDissipateChance() {
             LSFloodMode mode = floodMode;
             
-            if (mode == LSFloodMode.Disturbed) return 50;
-            if (mode == LSFloodMode.Furious)   return 65;
-            if (mode == LSFloodMode.Wild)      return 80;
+            if (mode == LSFloodMode.Disturbed) return 3;
+            if (mode == LSFloodMode.Furious)   return 10;
+            if (mode == LSFloodMode.Wild)      return 40;
+            if (mode == LSFloodMode.Extreme)   return 80;
             return 100;
         }
         
         byte GetBurnChance() {
             LSFloodMode mode = floodMode;
             
-            if (mode == LSFloodMode.Disturbed) return 50;
-            if (mode == LSFloodMode.Furious)   return 70;
-            if (mode == LSFloodMode.Wild)      return 85;
+            if (mode == LSFloodMode.Disturbed) return 3;
+            if (mode == LSFloodMode.Furious)   return 15;
+            if (mode == LSFloodMode.Wild)      return 45;
+            if (mode == LSFloodMode.Extreme)   return 85;
             return 100;
         }
     }
 }
+
