@@ -76,12 +76,15 @@ namespace MCGalaxy.Modules.Games.LS
             if (flooded) return;
             
             Map.Message("&4Look out, here comes the flood!");
+            AnnounceRoundTime();
             Logger.Log(LogType.GameActivity, "[Lava Survival] Starting map flood.");
             flooded = true;
         }
         
         void RewardPlayer(Player p, Random rnd) {
-            if (IsPlayerDead(p)) return;
+            if (IsPlayerDead(p)) {
+                p.Message("You ran out of lives during the round so you've earned no rewards!"); return;
+            }
             ushort x = (ushort)(p.Pos.X / 32);
             ushort y = (ushort)((p.Pos.Y - Entities.CharacterHeight) / 32);
             ushort z = (ushort)(p.Pos.Z / 32);
@@ -113,7 +116,11 @@ namespace MCGalaxy.Modules.Games.LS
         }
         void AnnounceRoundTime() {
             int roundleft = roundTotalSecs - roundSecs;
-            if ((roundSecs % 60) == 0) { 
+            if (roundleft == 0) {
+                MessageMap(CpeMessageType.Announcement, "");
+            } else if (roundleft <= 10) {
+                MessageCountdown("&3{0} &Sseconds until the round ends", roundleft, 10);
+            } else if ((roundSecs % 60) == 0) { 
                 Map.Message(RoundTimeLeftMessage()); 
             }
         }
@@ -186,6 +193,7 @@ namespace MCGalaxy.Modules.Games.LS
         }
     }
 }
+
 
 
 
