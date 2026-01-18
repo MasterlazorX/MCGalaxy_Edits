@@ -226,17 +226,20 @@ namespace MCGalaxy.Modules.Games.LS
             if (floodDelaySecs >= 0) {
                 return FloodTimeLeftMessage();
             }
-            if (floodDelaySecs < 0) {
-                TimeSpan left = TimeSpan.FromSeconds(roundTotalSecs - roundSecs);
-                return "&3" + left.Shorten(true) + " &Suntil the round ends";
-            }
+            //if (floodDelaySecs < 0) {
+                //TimeSpan left = TimeSpan.FromSeconds(roundTotalSecs - roundSecs);
+                //return "&3" + left.Shorten(true) + " &Suntil the round ends";
+            //}
         }
         protected override string FormatStatus3(Player p) {
-            LSFloodMode mode = floodMode;
-            return block.Capitalize() + " mode: &c" + mode;
+            if (!waterMode) {
+                LSFloodMode mode = floodMode;
+                return block.Capitalize() + " mode: &c" + mode;
+            }
         }
     }
 }
+
 
 
 
