@@ -17,6 +17,7 @@
  */
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using MCGalaxy.Games;
 using MCGalaxy.Maths;
 using BlockID = System.UInt16;
@@ -150,6 +151,7 @@ namespace MCGalaxy.Modules.Games.LS
             p.Message("You are out of the round, and cannot build.");
             p.RevertBlock(x, y, z); 
             return true;
+
         }
         
         void ResetPlayerDeaths() {
@@ -219,6 +221,15 @@ namespace MCGalaxy.Modules.Games.LS
         protected override string FormatStatus1(Player p) {
             string money = "&a" + p.money + " &S" + Server.Config.Currency;
             return money + ", you " + DescribeLives(p);
+        }
+        protected override string FormatStatus2(Player p) {
+            if (!flooded) {
+                return FloodTimeLeftMessage();
+            }
+            if (flooded) {
+                TimeSpan left = TimeSpan.FromSeconds(roundTotalSecs - roundSecs);
+                return "&3" + left.Shorten(true) + " &Suntil the round ends";
+            }
         }
     }
 }
