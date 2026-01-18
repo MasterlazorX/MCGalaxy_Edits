@@ -223,9 +223,8 @@ namespace MCGalaxy.Modules.Games.LS
             return money + ", you " + DescribeLives(p);
         }
         protected override string FormatStatus2(Player p) {
-            if (!flooded) {
-                return FloodTimeLeftMessage();
-            }
+            return FloodTimeLeftMessage();
+            //}
             //if (flooded) {
                 //TimeSpan left = TimeSpan.FromSeconds(roundTotalSecs - roundSecs);
                 //return "&3" + left.Shorten(true) + " &Suntil the round ends";
@@ -233,4 +232,5 @@ namespace MCGalaxy.Modules.Games.LS
         }
     }
 }
+
 
