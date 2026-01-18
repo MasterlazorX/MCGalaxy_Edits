@@ -226,10 +226,11 @@ namespace MCGalaxy.Modules.Games.LS
             if (!flooded) {
                 return FloodTimeLeftMessage();
             }
-            if (flooded) {
-                TimeSpan left = TimeSpan.FromSeconds(roundTotalSecs - roundSecs);
-                return "&3" + left.Shorten(true) + " &Suntil the round ends";
-            }
+            //if (flooded) {
+                //TimeSpan left = TimeSpan.FromSeconds(roundTotalSecs - roundSecs);
+                //return "&3" + left.Shorten(true) + " &Suntil the round ends";
+            //}
         }
     }
 }
+
