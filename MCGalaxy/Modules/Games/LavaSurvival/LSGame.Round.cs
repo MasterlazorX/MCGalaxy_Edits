@@ -53,6 +53,7 @@ namespace MCGalaxy.Modules.Games.LS
             while (RoundInProgress && roundSecs < roundTotalSecs) {
                 if (!Running) return;
                 if (!flooded) AnnounceFloodTime();
+                if (flooded) AnnounceRoundTime);
                 
                 if (roundSecs >= floodDelaySecs) {
                     if (!layerMode && roundSecs == floodDelaySecs) {
@@ -87,7 +88,7 @@ namespace MCGalaxy.Modules.Games.LS
             BlockID block = p.level.GetBlock((ushort)x, ((ushort)y), (ushort)z);
             string player = Block.GetName(p, block);
             if (player == "Op_Air") {
-                p.Message("You are too close to spawn, so you get no rewards!"); return;
+                p.Message("You were too close to spawn, so you get no rewards!"); return;
             }
             
             if (p.Pos.FeetBlockCoords.Y >= Map.GetEdgeLevel()) {
@@ -108,6 +109,12 @@ namespace MCGalaxy.Modules.Games.LS
                 MessageCountdown("&3{0} &Sseconds until the flood", left, 10);
             } else if ((roundSecs % 60) == 0) { 
                 Map.Message(FloodTimeLeftMessage()); 
+            }
+        }
+        void AnnounceRoundTime() {
+            int roundleft = roundTotalSecs - roundSecs;
+            if ((roundSecs % 60) == 0) { 
+                Map.Message(RoundTimeLeftMessage()); 
             }
         }
 
@@ -179,6 +186,7 @@ namespace MCGalaxy.Modules.Games.LS
         }
     }
 }
+
 
 
 
