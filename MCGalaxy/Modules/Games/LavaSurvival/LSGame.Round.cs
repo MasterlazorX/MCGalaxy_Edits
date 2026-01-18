@@ -53,7 +53,7 @@ namespace MCGalaxy.Modules.Games.LS
             while (RoundInProgress && roundSecs < roundTotalSecs) {
                 if (!Running) return;
                 if (!flooded) AnnounceFloodTime();
-                if (flooded) AnnounceRoundTime);
+                if (flooded) AnnounceRoundTime();
                 
                 if (roundSecs >= floodDelaySecs) {
                     if (!layerMode && roundSecs == floodDelaySecs) {
@@ -186,6 +186,7 @@ namespace MCGalaxy.Modules.Games.LS
         }
     }
 }
+
 
 
 
