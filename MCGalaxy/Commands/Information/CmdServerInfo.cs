@@ -46,7 +46,7 @@ namespace MCGalaxy.Commands.Info
 
             TimeSpan up = DateTime.UtcNow - Server.StartTime;
             p.Message("  Been up for &a{0}&S, running &b{1} &a{2} &f" + Updater.SourceURL,
-                      up.Shorten(true), Server.SoftwareName, Server.Version);
+                      up.Shorten(true), "&bMCGalaxy &aSurvival");
 
             int updateInterval = 1000 / Server.Config.PositionUpdateInterval;
             p.Message("  Player positions are updated &a{0} &Stimes/second", updateInterval);
@@ -113,3 +113,4 @@ namespace MCGalaxy.Commands.Info
         }
     }
 }
+
