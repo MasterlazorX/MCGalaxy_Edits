@@ -47,7 +47,7 @@ namespace MCGalaxy
         static string fullName;
         public static string SoftwareNameVersioned {
             // By default, if SoftwareName gets externally changed, that is reflected in SoftwareNameVersioned too
-            get { return fullName ?? SoftwareName + " " + Version; }
+            get { return fullName ?? SoftwareName; }
             set { fullName = value; }
         }
 
@@ -92,4 +92,5 @@ namespace MCGalaxy
         public static bool chatmod, flipHead;
         public static bool shuttingDown;
     }
+
 }
