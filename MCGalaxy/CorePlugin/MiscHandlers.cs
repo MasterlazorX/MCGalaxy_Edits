@@ -60,7 +60,8 @@ namespace MCGalaxy.Core {
         
         internal static void HandleChangedZone(Player p) {
             if (p.Supports(CpeExt.InstantMOTD)) p.SendMapMotd();
-            p.SendCurrentEnv();
+            if (!p.level.Config.MOTD.CaselessContains("+daynight") && !File.Exists("./plugins/DayNightCyclePlayers/" + p.name)) p.SendCurrentEnv(); //intended for my server to not constantly flash players going in and out of zones with those features enabled
+            if (!p.level.Config.MOTD.CaselessContains("+weather") && !File.Exists("./plugins/WeatherCyclePlayers/" + p.name)) p.SendCurrentEnv(); //same here
             
             if (p.isFlying && !Hacks.CanUseFly(p)) {
                 p.Message("You cannot use &T/Fly &Son this map.");
@@ -110,3 +111,4 @@ namespace MCGalaxy.Core {
         }       
     }
 }
+
