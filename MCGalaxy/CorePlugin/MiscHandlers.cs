@@ -60,7 +60,7 @@ namespace MCGalaxy.Core {
         
         internal static void HandleChangedZone(Player p) {
             if (p.Supports(CpeExt.InstantMOTD)) p.SendMapMotd();
-            p.SendCurrentEnv();
+            //p.SendCurrentEnv(); so this way, we avoid constantly flashing screens of players going in and out of zones.
             
             if (p.isFlying && !Hacks.CanUseFly(p)) {
                 p.Message("You cannot use &T/Fly &Son this map.");
@@ -106,3 +106,4 @@ namespace MCGalaxy.Core {
         }       
     }
 }
+
