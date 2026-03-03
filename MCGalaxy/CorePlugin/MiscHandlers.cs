@@ -66,6 +66,10 @@ namespace MCGalaxy.Core {
                 p.Message("You cannot use &T/Fly &Son this map.");
                 p.isFlying = false;
             }
+            if (p.level.name.CaselessEq("anarchy") || p.level.name.CaselessEq("main")) {
+                    p.SendCurrentEnv();
+                    return;
+            }
             if (p.level.Config.MOTD.CaselessContains("+daynight")) return; //these are intended for my server with daynightcycle and weathercycle, to avoid flickering players' screens going in and out of zones.
             if (File.Exists("./plugins/DayNightCyclePlayers/" + p.name)) return;
             if (p.level.Config.MOTD.CaselessContains("+weather")) return;
@@ -115,6 +119,7 @@ namespace MCGalaxy.Core {
         }       
     }
 }
+
 
 
 
