@@ -117,10 +117,14 @@ namespace MCGalaxy
             Server.Background.QueueOnce(ShowAltsTask, name, TimeSpan.Zero);
 
             string joinMsg = "&a+ λFULL &S" + PlayerInfo.GetLoginMessage(this);
+            string betacraftMsg = "λFULL &S is using BetaCraft/Mojang authentication";
             if (hidden) joinMsg = "&8(hidden)" + joinMsg;
             
             if (Server.Config.GuestJoinsNotify || Rank > LevelPermission.Guest) {
                 Chat.MessageFrom(ChatScope.All, this, joinMsg, null, Chat.FilterVisible(this), !hidden);
+                if (!name.Contains("+")) {
+                    Chat.MessageFrom(ChatScope.All, this, betacraftMsg, null, Chat.FilterVisible(this), !hidden);
+                }
             }
 
             if (Server.Config.AgreeToRulesOnEntry && Rank == LevelPermission.Guest && !Server.agreed.Contains(name)) {
@@ -209,7 +213,7 @@ namespace MCGalaxy
             
             if (data == null) {
                 PlayerData.Create(this);
-                Chat.MessageFrom(this, "λNICK &Shas connected for the first time!");
+                Chat.MessageFrom(this, "λNICK &Shas connected for the first time, welcome!");
                 Message("Welcome " + ColoredName + "&S! This is your first visit.");
             } else {
                 data.ApplyTo(this);
