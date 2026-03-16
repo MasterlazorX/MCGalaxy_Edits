@@ -114,10 +114,10 @@ namespace MCGalaxy.DB
             if (Server.Devs.CaselessContains(name))
                 p.Message("  Player is an &9{0} Developer", Server.SoftwareName);
             if (name.Contains("+"))
-                p.Message("  Player is a &qClassiCube &Sauthenticated user");
+                p.Message("  Player is using &qClassiCube &Sauth");
             if (!name.Contains("+"))
-                p.Message("  Player is a &nMinecraft &Sauthenticated user");
-                p.Message(" (Microsoft via BetaCraft or Java Edition ViaFabricPlus mod)");
+                p.Message("  Player is using &cMojang &Sauth");
+                p.Message(" (via BetaCraft or Java Edition ViaFabricPlus mod)");
             if (owner.CaselessEq(name))
                 p.Message("  Player is the &cServer owner");
         }
