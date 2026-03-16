@@ -117,7 +117,7 @@ namespace MCGalaxy
             Server.Background.QueueOnce(ShowAltsTask, name, TimeSpan.Zero);
 
             string joinMsg = "&a+ λFULL &S" + PlayerInfo.GetLoginMessage(this);
-            string betacraftMsg = "λFULL &S is using BetaCraft/Mojang authentication";
+            string betacraftMsg = "λFULL &Sis using BetaCraft/Mojang authentication";
             if (hidden) joinMsg = "&8(hidden)" + joinMsg;
             
             if (Server.Config.GuestJoinsNotify || Rank > LevelPermission.Guest) {
