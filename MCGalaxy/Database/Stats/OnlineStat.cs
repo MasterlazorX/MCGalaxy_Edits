@@ -52,6 +52,12 @@ namespace MCGalaxy.DB
         
         internal static void CommonCoreLine(Player p, string fullName, string name, Group grp, int messages) {
             p.Message("{0} &S({1}) has:", fullName, name);
+            if (name.Contains("+"))
+                p.Message("  Authentication using &qClassiCube");
+            if (!name.Contains("+")) {
+                p.Message("  Authentication using &cMojang");
+                p.Message(" (via BetaCraft or Java Edition ViaFabricPlus mod)");
+            }
             p.Message("  Rank of {0}&S, wrote &a{1} &Smessages", grp.ColoredName, messages);
 
             List<Pronouns> pros = Pronouns.GetFor(name);
@@ -113,11 +119,6 @@ namespace MCGalaxy.DB
             
             if (Server.Devs.CaselessContains(name))
                 p.Message("  Player is an &9{0} Developer", Server.SoftwareName);
-            if (name.Contains("+"))
-                p.Message("  Player is using &qClassiCube &Sauth");
-            if (!name.Contains("+"))
-                p.Message("  Player is using &cMojang &Sauth");
-                p.Message(" (via BetaCraft or Java Edition ViaFabricPlus mod)");
             if (owner.CaselessEq(name))
                 p.Message("  Player is the &cServer owner");
         }
