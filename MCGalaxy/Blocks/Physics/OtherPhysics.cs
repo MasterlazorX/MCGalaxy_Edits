@@ -149,7 +149,7 @@ namespace MCGalaxy.Blocks.Physics {
         
         public static void DoSponge(Level lvl, ref PhysInfo C, bool lava) {
             BlockID target = lava ? Block.Lava : Block.Water;
-            BlockID alt    = lava ? Block.StillLava : Block.StillWater;
+            BlockID alt    = lava ? Block.StillLava : Block.Lava; //note to self, this is not a good way to do it, but stillwater isn't even present in the maps so whatever.
             ushort x = C.X, y = C.Y, z = C.Z;
             
             for (int yy = y - 2; yy <= y + 2; ++yy)
@@ -167,7 +167,7 @@ namespace MCGalaxy.Blocks.Physics {
         
         public static void DoSpongeRemoved(Level lvl, int b, bool lava) {
             BlockID target = lava ? Block.Lava : Block.Water;
-            BlockID alt    = lava ? Block.StillLava : Block.StillWater;
+            BlockID alt    = lava ? Block.StillLava : Block.Lava;
             ushort x, y, z;
             lvl.IntToPos(b, out x, out y, out z);
             
