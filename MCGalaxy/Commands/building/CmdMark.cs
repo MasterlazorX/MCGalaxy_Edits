@@ -93,7 +93,7 @@ namespace MCGalaxy.Commands.Building
             }
         }
         
-        internal static bool DoMark(Player p, int x, int y, int z) {
+        public static bool DoMark(Player p, int x, int y, int z) {
             if (!p.HasBlockChange()) return false;
             if (!p.Ignores.DrawOutput) {
                 p.Message("Mark placed at &b({0}, {1}, {2})", x, y, z);
