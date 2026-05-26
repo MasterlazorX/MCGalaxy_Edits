@@ -38,7 +38,7 @@ namespace MCGalaxy.Blocks.Physics {
                 case Block.FastLava:
                 case Block.Deadly_ActiveLava:
                     if (!lvl.CheckSpongeWater(x, y, z)) {
-                        lvl.AddUpdate(index, Block.Stone, default(PhysicsArgs));
+                        lvl.AddUpdate(index, Block.Obsidian, default(PhysicsArgs));
                     }
                     break;
 
