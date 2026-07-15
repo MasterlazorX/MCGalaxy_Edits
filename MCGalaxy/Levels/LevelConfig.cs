@@ -318,7 +318,22 @@ namespace MCGalaxy
         public bool SurvivalDeath;
         [ConfigBool("Killer blocks", "Survival", true)]
         public bool KillerBlocks = true;
-        
+
+        // SurvivalTest sub-protocol settings (only sent to survival-test clients on this map).
+        // SurvivalMode also acts as the per-map activation gate: Off means the map plays as plain Classic.
+        [ConfigEnum("SurvivalMode", "Survival", SurvivalMode.Off, typeof(SurvivalMode))]
+        public SurvivalMode SurvivalMode = SurvivalMode.Off;
+        [ConfigEnum("SurvivalTheme", "Survival", SurvivalTheme.Normal, typeof(SurvivalTheme))]
+        public SurvivalTheme SurvivalTheme = SurvivalTheme.Normal;
+        [ConfigBool("SurvivalEnhanced", "Survival", false)]
+        public bool SurvivalEnhanced;
+        [ConfigBool("SurvivalCreative", "Survival", false)]
+        public bool SurvivalCreative;
+        [ConfigBool("SurvivalPvP", "Survival", false)]
+        public bool SurvivalPvP;
+        [ConfigBool("SurvivalDeathDrops", "Survival", true)]
+        public bool SurvivalDeathDrops = true;
+
         // Games settings
         [ConfigInt("Likes", "Game", 0)]
         public int Likes;

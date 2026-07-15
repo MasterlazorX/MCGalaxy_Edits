@@ -34,6 +34,8 @@ namespace MCGalaxy.Network
 
         // these are checked very frequently, so avoid overhead of .Supports(
         public bool hasCustomBlocks, hasExtBlocks, hasBlockDefs, hasBulkBlockUpdate;
+        /// <summary> Whether the client negotiated the SurvivalTest extension (can speak the survival sub-protocol) </summary>
+        public bool hasSurvival;
         protected INetSocket socket;
         protected Player player;
         /// <summary> Temporary unique ID for this network session </summary>

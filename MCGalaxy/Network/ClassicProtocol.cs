@@ -354,6 +354,8 @@ namespace MCGalaxy.Network
                 hasHeldBlock = true;
             } else if (ext.Name == CpeExt.LongerMessages) {
                 hasLongerMessages = true;
+            } else if (ext.Name == CpeExt.SurvivalTest) {
+                hasSurvival = true;
             }
             #if TEN_BIT_BLOCKS
             else if (ext.Name == CpeExt.ExtBlocks) {

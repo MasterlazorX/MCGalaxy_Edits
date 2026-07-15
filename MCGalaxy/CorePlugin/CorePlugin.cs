@@ -39,6 +39,7 @@ namespace MCGalaxy.Core {
             
             OnEcoTransactionEvent.Register(EcoHandlers.HandleEcoTransaction, Priority.Critical);
             OnModActionEvent.Register(ModActionHandler.HandleModAction, Priority.Critical);
+            OnPluginMessageReceivedEvent.Register(Network.SurvivalNet.HandlePluginMessage, Priority.Critical);
         }
         
         public override void Unload(bool shutdown) {
@@ -54,6 +55,7 @@ namespace MCGalaxy.Core {
             
             OnEcoTransactionEvent.Unregister(EcoHandlers.HandleEcoTransaction);
             OnModActionEvent.Unregister(ModActionHandler.HandleModAction);
+            OnPluginMessageReceivedEvent.Unregister(Network.SurvivalNet.HandlePluginMessage);
         }
     }
 }
