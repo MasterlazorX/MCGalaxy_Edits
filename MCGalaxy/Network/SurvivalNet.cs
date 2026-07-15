@@ -145,6 +145,20 @@ namespace MCGalaxy.Network
                        p.name, lvl.name, cfg.SurvivalMode);
         }
 
+        /// <summary> Re-sends the handshake to every capable player on a level. Used after a live config
+        /// change (e.g. the /Survival command) so it takes effect without a rejoin. If the map is no longer
+        /// survival, sends a mode-off HELLO so the client leaves survival mode. </summary>
+        public static void RefreshLevel(Level lvl) {
+            if (lvl == null) return;
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player p in players)
+            {
+                if (p.level != lvl || p.Session == null || !p.Session.hasSurvival) continue;
+                if (lvl.Config.SurvivalMode != SurvivalMode.Off) SendHandshake(p, lvl);
+                else SendHello(p, lvl.Config); // mode 0 -> client leaves survival mode
+            }
+        }
+
         static void SendHello(Player p, LevelConfig cfg) {
             byte[] msg = new byte[Packet.PluginMessageDataLength];
             msg[0] = HELLO;

@@ -167,7 +167,7 @@ namespace MCGalaxy
                          new CmdMain(),      new CmdMap(),        new CmdMuseum(),     new CmdNewLvl(), 
                          new CmdOverseer(),  new CmdPause(),      new CmdPhysics(),    new CmdRenameLvl(),
                          new CmdResizeLvl(), new CmdRestore(),    new CmdReload(),     new CmdSave(), 
-                         new CmdSetspawn(),  new CmdSpawn(),      new CmdUnflood(),    new CmdUnload(), 
+                         new CmdSetspawn(),  new CmdSpawn(),      new CmdSurvival(),   new CmdUnflood(),    new CmdUnload(), 
                          new CmdPermissionBuild(),new CmdPermissionVisit());
 
             RegisterCore(new CmdAward(),     new CmdAwardMod(),   new CmdAwards());

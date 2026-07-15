@@ -205,8 +205,22 @@ deferred).
 | `SurvivalPvP` | bool | `false` | HELLO flag bit2 |
 | `SurvivalDeathDrops` | bool | `true` | HELLO flag bit3 |
 
-To make a map survival: set `SurvivalMode = Indev` (or `Classic`) in that
-level's properties file.
+To make a map survival: set `SurvivalMode = Indev` (or `Classic`) in that level's
+properties file, **or** use the `/Survival` command live (below).
+
+### `/Survival` command
+
+`MCGalaxy/Commands/World/CmdSurvival.cs` (rank Operator) edits the current level's
+survival settings and applies them live — it saves the config and re-sends the
+handshake (or a mode-off `SURV_HELLO`) to survival-test clients on the level, so
+no rejoin is needed. Registered in `Command.RegisterAllCore()`.
+
+- `/Survival` — show this level's survival settings
+- `/Survival [off/classic/indev]` — set the mode (the per-map gate)
+- `/Survival theme [normal/hell/paradise/woods/floating]`
+- `/Survival [enhanced/creative/pvp/deathdrops] [on/off]` — set a flag
+
+From console (no current level) it operates on the main level.
 
 ---
 
