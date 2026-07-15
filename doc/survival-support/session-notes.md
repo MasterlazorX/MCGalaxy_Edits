@@ -159,8 +159,21 @@ changes on respawn.
 ### `SURV_RESPAWN` (0x87) — client → server *(handled)*
 The client's respawn intent. The server validates it (must be on a survival map),
 resets health to full, repositions the player to the map spawn
-(`PlayerActions.Respawn`), and echoes an authoritative `SURV_HEALTH`. A real
-death/cooldown gate arrives with the damage system.
+(`PlayerActions.Respawn`), and echoes an authoritative `SURV_HEALTH`.
+
+### Damage / death bridge
+`SurvivalNet.OnPlayerDied` is registered on `OnPlayerDiedEvent`, which fires inside
+`Player.HandleDeath` — the single choke point for **all** MCGalaxy deaths (fall,
+drown, lava, killer blocks, weapons, `/kill`, …), so every hazard MCGalaxy already
+detects (respecting the level's `FallHeight` / `DrownTime` / `KillerBlocks` config)
+flows through. For a survival player it drops health to 0 (`SURV_HEALTH(0)`) then
+restores to full, since `HandleDeath` repositions to spawn immediately after.
+
+MCGalaxy's Classic survival is binary (lethal-or-nothing) and auto-respawns, so
+health today goes 20 → 0 → 20. Graduated Indev damage (partial HP from fall
+distance, drowning/fire ticks) and a death-screen dwell (suppress the auto-respawn,
+wait for the client's `SURV_RESPAWN`) are future refinements gated on the client
+implementing the death UI.
 
 ### Reserved message ids (`SurvivalNet.cs`)
 

@@ -40,6 +40,7 @@ namespace MCGalaxy.Core {
             OnEcoTransactionEvent.Register(EcoHandlers.HandleEcoTransaction, Priority.Critical);
             OnModActionEvent.Register(ModActionHandler.HandleModAction, Priority.Critical);
             OnPluginMessageReceivedEvent.Register(Network.SurvivalNet.HandlePluginMessage, Priority.Critical);
+            OnPlayerDiedEvent.Register(Network.SurvivalNet.OnPlayerDied, Priority.Low);
             Network.SurvivalNet.Start();
         }
         
@@ -57,6 +58,7 @@ namespace MCGalaxy.Core {
             OnEcoTransactionEvent.Unregister(EcoHandlers.HandleEcoTransaction);
             OnModActionEvent.Unregister(ModActionHandler.HandleModAction);
             OnPluginMessageReceivedEvent.Unregister(Network.SurvivalNet.HandlePluginMessage);
+            OnPlayerDiedEvent.Unregister(Network.SurvivalNet.OnPlayerDied);
             Network.SurvivalNet.Stop();
         }
     }

@@ -290,6 +290,21 @@ namespace MCGalaxy.Network
             Logger.Log(LogType.Debug, "survival: {0} respawned (health reset)", p.name);
         }
 
+        /// <summary>
+        /// Bridges MCGalaxy's death detection (fall, drown, lava, killer blocks, weapons, /kill, ...) into
+        /// the survival health flow. Registered on OnPlayerDiedEvent, which fires inside HandleDeath right
+        /// before MCGalaxy repositions the player - so we signal death (health 0) then restore to full for
+        /// that respawn.
+        /// </summary>
+        /// <remarks> Graduated Indev-style damage (partial HP from fall distance, drowning/fire ticks, ...)
+        /// is a future refinement: MCGalaxy only detects lethal hazards, not partial damage. </remarks>
+        public static void OnPlayerDied(Player p, BlockID cause, ref TimeSpan cooldown) {
+            if (!Active(p, p.level)) return;
+            SetHealth(p, 0);          // SURV_HEALTH(0): died
+            SetHealth(p, MAX_HEALTH); // SURV_HEALTH(20): HandleDeath repositions to spawn immediately after
+            Logger.Log(LogType.Debug, "survival: {0} died (cause block {1})", p.name, cause);
+        }
+
 
         // ==================== test / debug ====================
 

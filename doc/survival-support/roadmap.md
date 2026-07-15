@@ -72,10 +72,10 @@ Server generates Indev/c0.30-s worlds and owns block metadata.
   remapping prevents world corruption. See networking-plan §18.
 - `.mclevel` (NBT) round-trip byte-compatibility for saves.
 
-## 🔜 Phase 2 — Health & damage
+## ✅ Phase 2 — Health & damage
 
-Server owns health; drives day/night. Plumbing done; **damage sources are the
-remaining piece** (fall/drown/fire/lava/mob/PvP → decrement health via `SetHealth`).
+Server owns health and the day/night clock. Core loop (health → damage → death →
+respawn) is complete; graduated Indev damage is the one refinement left.
 
 - ✅ `SURV_TIME (0x04)` — day/night driven by the server (scheduler clock, pushed
   to survival players + seeded at handshake). v1 clock is shared across maps.
@@ -83,7 +83,10 @@ remaining piece** (fall/drown/fire/lava/mob/PvP → decrement health via `SetHea
   sent at handshake and on change via `SetHealth`).
 - ✅ `SURV_RESPAWN (0x87)` — client respawn intent → server resets health, repositions
   to spawn, echoes `SURV_HEALTH`.
-- ⬜ Damage sources + death/respawn-cooldown gate (needs the tick/physics hooks).
+- ✅ Damage/death bridge — `OnPlayerDied` maps every MCGalaxy hazard (fall/drown/
+  lava/killer/weapons/`/kill`) into `SURV_HEALTH(0)` + respawn.
+- ⬜ *Refinement:* graduated Indev damage (partial HP; drowning/fire ticks) and a
+  death-screen dwell (suppress auto-respawn, wait for `SURV_RESPAWN`).
 - Damage sources: fall, drown, fire, lava, mob attacks, PvP (gated on
   `SurvivalPvP`). Death drops gated on `SurvivalDeathDrops`.
 
