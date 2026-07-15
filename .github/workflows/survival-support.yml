@@ -1,9 +1,14 @@
 name: survival-support build
 
 # The stock build.yml only runs on master / ConsoleDriver, so pushes to the
-# survival-support branch never triggered CI. This fills that gap with a fast,
-# self-contained dotnet build that runs on every push and PR here - no mono, no
-# repo secrets, no custom actions, so it just goes green on a fork.
+# survival-support branch never triggered CI. This fills that gap.
+#
+# It produces the lean classic .NET Framework output - the same layout as
+# Visual Studio and the official MCGalaxy releases: MCGalaxy_.dll, MCGalaxy.exe,
+# MCGalaxyCLI.exe plus the small bundled MySql.Data.dll / System.Data.SQLite.dll
+# and no NuGet dependency tree. Built with msbuild + Mono, mirroring the stock
+# build.yml's mono job (ubuntu-22.04 ships msbuild), just without the private
+# upload/notify actions so it runs self-contained on a fork.
 
 on:
   push:
@@ -19,28 +24,22 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          # 8.0 is the SDK; 6.0 provides the targeting pack for the core library
-          dotnet-version: |
-            6.0.x
-            8.0.x
+      - name: Build (.NET Framework via Mono/msbuild)
+        run: |
+          msbuild -version
+          msbuild MCGalaxy.sln /p:Configuration=Release
 
-      - name: Build core library (MCGalaxy_)
-        run: dotnet build MCGalaxy/MCGalaxy_dotnet.csproj -c Release -v minimal
-
-      - name: Build CLI server (MCGalaxyCLI)
-        run: dotnet build CLI/MCGalaxyCLI_dotnet8.csproj -c Release -v minimal
+      - name: Stage native SQLite alongside the build
+        run: cp -f sqlite3_x32.dll sqlite3_x64.dll bin/Release/ 2>/dev/null || true
 
       - name: Upload build output
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MCGalaxy-survival-support-net8.0
-          path: CLI/bin/Release/net8.0
+          name: MCGalaxy-survival-support-net4.0
+          path: bin/Release
           if-no-files-found: error

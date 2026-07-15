@@ -207,3 +207,16 @@ level's properties file.
   aborts the commit on failure (skips gracefully when no SDK is present; bypass
   with `git commit --no-verify`). Install with `make hooks`
   (sets `core.hooksPath = .githooks`).
+- **`.github/workflows/survival-support.yml`** — CI that runs on every push/PR to
+  this branch (the stock `build.yml` only runs on master/ConsoleDriver). It
+  produces the lean classic .NET Framework build via msbuild + Mono — the same
+  layout as Visual Studio and the official releases (`MCGalaxy_.dll`,
+  `MCGalaxy.exe`, `MCGalaxyCLI.exe` + bundled `MySql.Data.dll` /
+  `System.Data.SQLite.dll`, no NuGet dependency tree) — and uploads `bin/Release`
+  as an artifact.
+
+Note on build flavors: the local `Makefile` and the pre-commit hook use the fast
+`dotnet` build (net6/net8); CI uses the Framework build. Same source, two
+packagings — the dotnet output additionally bundles MySql.Data 8.1.0's NuGet
+dependency tree (BouncyCastle, Protobuf, LZ4, Zstd, …), which the Framework build
+avoids by referencing the small bundled `MySql.Data.dll`.
