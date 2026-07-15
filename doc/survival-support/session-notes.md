@@ -130,6 +130,20 @@ fuller int16 heights and the remaining `.mclevel` env set are deferred; env
 colours already reach survival clients via the stock CPE `EnvColors` path
 (`SendCurrentEnv`), so they are not duplicated in `SURV_WORLDINFO`.
 
+### `SURV_TIME` (0x04) — server → client
+| Off | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | id = 0x04 | |
+| 1 | 2 | worldTime | big-endian u16; 0 sunrise, 6000 noon, 12000 sunset, 18000 midnight |
+| 3 | 1 | skyLight | 0..15, eased across dawn/dusk |
+
+The server owns the day/night cycle (the client must not run it locally in MP —
+networking-plan §15.2/§17.4). A single clock is advanced on `Server.MainScheduler`
+(20 world ticks/second → a 20-minute day) and pushed to every survival player once
+per second, plus once at handshake to seed the client. The clock is shared across
+survival maps in v1; a per-map clock (each Indev world keeps its own `TimeOfDay`)
+is a future refinement. Lifecycle: `SurvivalNet.Start()`/`Stop()` from `CorePlugin`.
+
 ### Reserved message ids (`SurvivalNet.cs`)
 
 Server → client: `HELLO 0x01`, `WORLDINFO 0x02`, `HEALTH 0x03`, `TIME 0x04`,
@@ -142,8 +156,9 @@ Client → server: `ATTACK 0x80`, `USE_ITEM 0x81`, `SLOT_CLICK 0x82`,
 `RESULT_CLICK 0x83`, `CONT_CLOSE 0x84`, `HELD_SLOT 0x85`, `DROP_ITEM 0x86`,
 `RESPAWN 0x87`.
 
-Only `0x01`/`0x02` are implemented; the rest are reserved and, when received,
-are bounds-checked, capability-gated, and logged (handlers deferred).
+Implemented so far: `0x01` HELLO, `0x02` WORLDINFO, `0x04` TIME. The rest are
+reserved and, for inbound intents, bounds-checked, capability-gated, and logged
+(handlers deferred).
 
 ---
 

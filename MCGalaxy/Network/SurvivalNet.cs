@@ -16,6 +16,7 @@
     permissions and limitations under the Licenses.
  */
 using System;
+using MCGalaxy.Tasks;
 using BlockID = System.UInt16;
 
 namespace MCGalaxy.Network
@@ -138,6 +139,7 @@ namespace MCGalaxy.Network
 
             SendHello(p, cfg);
             SendWorldInfo(p, lvl, cfg);
+            SendTime(p); // seed the client with the current world time right away
             Logger.Log(LogType.Debug, "survival: sent handshake to {0} for {1} (mode {2})",
                        p.name, lvl.name, cfg.SurvivalMode);
         }
@@ -178,6 +180,66 @@ namespace MCGalaxy.Network
 
         static void SendMessage(Player p, byte[] payload) {
             p.Send(Packet.PluginMessage(Channel, payload));
+        }
+
+
+        // ==================== day / night clock (SURV_TIME) ====================
+        //
+        // The server owns the day/night cycle (the client must not run it locally in MP - see
+        // networking-plan.md 15.2 / 17.4). A single clock is advanced on the scheduler and pushed
+        // to every survival player. For v1 the clock is shared across survival maps; a per-map clock
+        // is a future refinement (Indev worlds each keep their own TimeOfDay).
+        //
+        // SURV_TIME wire layout (v1): [id=0x04][worldTime: u16 BE][skyLight: u8]
+        //   worldTime - 0 .. DAY_TICKS-1 (0 sunrise, 6000 noon, 12000 sunset, 18000 midnight)
+        //   skyLight  - 0..15 standard sky light, eased across dawn/dusk
+
+        const int DAY_TICKS       = 24000;                    // Minecraft/Indev convention: a full day
+        const int TICKS_PER_TICK  = 20;                       // world ticks advanced per scheduler pass
+        static readonly TimeSpan TIME_INTERVAL = TimeSpan.FromSeconds(1); // -> a 20 minute day
+
+        static int worldTime; // read/written across threads; int access is atomic, slight staleness is fine
+        static SchedulerTask timeTask;
+
+        /// <summary> Starts the survival day/night clock. Called once from CorePlugin. </summary>
+        public static void Start() {
+            if (timeTask != null) return;
+            timeTask = Server.MainScheduler.QueueRepeat(TimeTick, null, TIME_INTERVAL);
+        }
+
+        /// <summary> Stops the survival day/night clock. </summary>
+        public static void Stop() {
+            if (timeTask == null) return;
+            Server.MainScheduler.Cancel(timeTask);
+            timeTask = null;
+        }
+
+        static void TimeTick(SchedulerTask task) {
+            worldTime = (worldTime + TICKS_PER_TICK) % DAY_TICKS;
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player p in players)
+            {
+                if (Active(p, p.level)) SendTime(p);
+            }
+        }
+
+        static void SendTime(Player p) {
+            int time = worldTime;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = TIME;
+            msg[1] = (byte)(time >> 8); // worldTime, big-endian u16
+            msg[2] = (byte)time;
+            msg[3] = SkyLight(time);
+            SendMessage(p, msg);
+        }
+
+        /// <summary> Standard 0..15 sky light for the given world time, with short dawn/dusk ramps. </summary>
+        static byte SkyLight(int time) {
+            const int day = 15, night = 4;
+            if (time < 11000) return day;                                        // daytime
+            if (time < 12000) return (byte)(day   - (day - night) * (time - 11000) / 1000); // dusk
+            if (time < 23000) return night;                                      // night
+            return (byte)(night + (day - night) * (time - 23000) / 1000);        // dawn
         }
 
 

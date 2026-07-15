@@ -72,13 +72,14 @@ Server generates Indev/c0.30-s worlds and owns block metadata.
   remapping prevents world corruption. See networking-plan §18.
 - `.mclevel` (NBT) round-trip byte-compatibility for saves.
 
-## ⬜ Phase 2 — Health & damage
+## 🔜 Phase 2 — Health & damage
 
 Server owns health; drives day/night.
 
-- `SURV_HEALTH (0x03)` — authoritative health/armour updates.
-- `SURV_TIME (0x04)` — day/night driven by the server (client stops predicting).
-- `SURV_RESPAWN (0x87)` — client respawn intent → server validates and repositions.
+- ✅ `SURV_TIME (0x04)` — day/night driven by the server (scheduler clock, pushed
+  to survival players + seeded at handshake). v1 clock is shared across maps.
+- ⬜ `SURV_HEALTH (0x03)` — authoritative health/armour updates.
+- ⬜ `SURV_RESPAWN (0x87)` — client respawn intent → server validates and repositions.
 - Damage sources: fall, drown, fire, lava, mob attacks, PvP (gated on
   `SurvivalPvP`). Death drops gated on `SurvivalDeathDrops`.
 
@@ -122,7 +123,7 @@ Server owns inventory, containers, crafting, smelting.
 | 0x01 | HELLO | S→C | ✅ 0 |
 | 0x02 | WORLDINFO | S→C | ✅ 0 (extend in 1) |
 | 0x03 | HEALTH | S→C | 2 |
-| 0x04 | TIME | S→C | 2 |
+| 0x04 | TIME | S→C | ✅ 2 |
 | 0x10–0x13 | MOB_* | S→C | 3 |
 | 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | 4 |
 | 0x30–0x32 | DROP_* | S→C | 5 |
