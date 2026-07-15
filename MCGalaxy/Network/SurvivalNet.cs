@@ -181,6 +181,23 @@ namespace MCGalaxy.Network
         }
 
 
+        // ==================== test / debug ====================
+
+        /// <summary> Test aid: on connect, tell the player (and the server console) whether their
+        /// client was detected as a survival-test client via the CPE handshake, or as a normal client. </summary>
+        /// <remarks> Called from ConnectHandler.HandleConnect. Purely diagnostic - safe to gate behind a
+        /// config flag or remove once wire testing is done; it is the only place that announces detection. </remarks>
+        public static void AnnounceClient(Player p) {
+            if (p.Session != null && p.Session.hasSurvival) {
+                p.Message("&aConnected via the survival client &S(handshake verified)");
+                Logger.Log(LogType.UserActivity, "{0} connected via the survival client (SurvivalTest handshake verified)", p.name);
+            } else {
+                p.Message("&eConnected via a normal client &S(no survival handshake)");
+                Logger.Log(LogType.UserActivity, "{0} connected via a normal client (no SurvivalTest handshake)", p.name);
+            }
+        }
+
+
         // ==================== client -> server ====================
 
         /// <summary> Handles an inbound CPE PluginMessage, dispatching survival channel traffic. </summary>

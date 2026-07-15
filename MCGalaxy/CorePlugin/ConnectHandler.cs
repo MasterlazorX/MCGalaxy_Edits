@@ -26,6 +26,8 @@ namespace MCGalaxy.Core {
             
             p.Ignores.Load(p);
             p.pronounsList = Pronouns.GetFor(p.name);
+            // Test aid: announce whether the survival-test handshake was detected
+            Network.SurvivalNet.AnnounceClient(p);
         }
         
         static void LoadReach(Player p) {

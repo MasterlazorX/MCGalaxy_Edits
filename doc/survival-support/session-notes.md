@@ -76,7 +76,21 @@ casually pick. **Do not reuse `0xB0` for anything else.**
 | `MCGalaxy/Network/SurvivalNet.cs` | **New.** The whole survival protocol surface: channel + message-id contract, `SURV_HELLO` / `SURV_WORLDINFO` builders, and the inbound dispatch (bounds-checked, validated, logged; appliers deferred). |
 | `MCGalaxy/CorePlugin/MiscHandlers.cs` | `HandleSentMap` calls `SurvivalNet.SendHandshake(p, level)` alongside the other per-map CPE sends (textures, block permissions). |
 | `MCGalaxy/CorePlugin/CorePlugin.cs` | Register/unregister `SurvivalNet.HandlePluginMessage` on `OnPluginMessageReceivedEvent`. |
+| `MCGalaxy/CorePlugin/ConnectHandler.cs` | On connect, call `SurvivalNet.AnnounceClient(p)` — a **test aid** (see below). |
 | `MCGalaxy/MCGalaxy_.csproj` | Add `Network\SurvivalNet.cs` to the explicit compile list (the classic msbuild project lists every file; the SDK/standalone projects glob). |
+
+### Test aid: connect announcement
+
+`SurvivalNet.AnnounceClient(p)` runs from `ConnectHandler.HandleConnect` (which
+fires after CPE negotiation completes, so `hasSurvival` is already known). It
+tells the joining player, and logs to the server console, whether the client was
+detected as survival or normal:
+
+- survival: `Connected via the survival client (handshake verified)`
+- normal: `Connected via a normal client (no survival handshake)`
+
+This is purely diagnostic — it is the only place that announces detection, so it
+is trivial to gate behind a config flag or remove once wire testing is done.
 
 ### Where the handshake is sent
 
@@ -171,8 +185,17 @@ level's properties file.
 - Generated `properties/cpe.properties` shows `SurvivalTest = True` (advertised).
 - Level config round-trips: setting `SurvivalMode = Indev`, `SurvivalTheme = Hell`
   parses and re-serialises with no warnings.
-- **Not** yet exercised: bytes-on-the-wire against a live survival-test client
-  (no such client available in this environment). That is the natural next check.
+- **Socket-level end-to-end test** (a minimal Classic-protocol client driving the
+  real running server, name verification off, main level `SurvivalMode = Indev`):
+  - A **normal** client (no CPE) receives the "normal client" message and **no**
+    `SURV_*` bytes.
+  - A **survival** client (advertising `SurvivalTest` v1 in its CPE `ExtEntry`)
+    receives the "survival client" message **and** the `SURV_HELLO` (`35 B0 01`)
+    + `SURV_WORLDINFO` (`35 B0 02`) plugin messages on the wire.
+  - The server console logs both connections with the correct classification.
+- **Not** yet exercised: a real survival-test ClassiCube build (only a synthetic
+  protocol client was used here). Pointing the actual client at the server is the
+  natural next check.
 
 ---
 
