@@ -1,0 +1,46 @@
+name: survival-support build
+
+# The stock build.yml only runs on master / ConsoleDriver, so pushes to the
+# survival-support branch never triggered CI. This fills that gap with a fast,
+# self-contained dotnet build that runs on every push and PR here - no mono, no
+# repo secrets, no custom actions, so it just goes green on a fork.
+
+on:
+  push:
+    branches:
+      - survival-support
+      - 'survival-**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: survival-support-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          # 8.0 is the SDK; 6.0 provides the targeting pack for the core library
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: Build core library (MCGalaxy_)
+        run: dotnet build MCGalaxy/MCGalaxy_dotnet.csproj -c Release -v minimal
+
+      - name: Build CLI server (MCGalaxyCLI)
+        run: dotnet build CLI/MCGalaxyCLI_dotnet8.csproj -c Release -v minimal
+
+      - name: Upload build output
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MCGalaxy-survival-support-net8.0
+          path: CLI/bin/Release/net8.0
+          if-no-files-found: error
