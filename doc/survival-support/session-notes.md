@@ -144,6 +144,24 @@ per second, plus once at handshake to seed the client. The clock is shared acros
 survival maps in v1; a per-map clock (each Indev world keeps its own `TimeOfDay`)
 is a future refinement. Lifecycle: `SurvivalNet.Start()`/`Stop()` from `CorePlugin`.
 
+### `SURV_HEALTH` (0x03) — server → client
+| Off | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | id = 0x03 | |
+| 1 | 1 | health | 0..`MAX_HEALTH` (20 = 10 hearts) |
+| 2 | 4 | score | big-endian i32 |
+
+The server owns health and score (stored in `Player.Extras`, so they follow the
+player across a `/goto` within one session). `SURV_HEALTH` is sent at handshake and
+whenever `SetHealth` changes it. Damage sources are deferred, so today health only
+changes on respawn.
+
+### `SURV_RESPAWN` (0x87) — client → server *(handled)*
+The client's respawn intent. The server validates it (must be on a survival map),
+resets health to full, repositions the player to the map spawn
+(`PlayerActions.Respawn`), and echoes an authoritative `SURV_HEALTH`. A real
+death/cooldown gate arrives with the damage system.
+
 ### Reserved message ids (`SurvivalNet.cs`)
 
 Server → client: `HELLO 0x01`, `WORLDINFO 0x02`, `HEALTH 0x03`, `TIME 0x04`,
@@ -156,9 +174,10 @@ Client → server: `ATTACK 0x80`, `USE_ITEM 0x81`, `SLOT_CLICK 0x82`,
 `RESULT_CLICK 0x83`, `CONT_CLOSE 0x84`, `HELD_SLOT 0x85`, `DROP_ITEM 0x86`,
 `RESPAWN 0x87`.
 
-Implemented so far: `0x01` HELLO, `0x02` WORLDINFO, `0x04` TIME. The rest are
-reserved and, for inbound intents, bounds-checked, capability-gated, and logged
-(handlers deferred).
+Implemented so far: server→client `0x01` HELLO, `0x02` WORLDINFO, `0x03` HEALTH,
+`0x04` TIME; client→server `0x87` RESPAWN (handled). The rest are reserved and,
+for inbound intents, bounds-checked, capability-gated, and logged (handlers
+deferred).
 
 ---
 

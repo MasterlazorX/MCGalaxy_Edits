@@ -139,7 +139,8 @@ namespace MCGalaxy.Network
 
             SendHello(p, cfg);
             SendWorldInfo(p, lvl, cfg);
-            SendTime(p); // seed the client with the current world time right away
+            SendTime(p);   // seed the client with the current world time right away
+            SendHealth(p); // and the current health/score
             Logger.Log(LogType.Debug, "survival: sent handshake to {0} for {1} (mode {2})",
                        p.name, lvl.name, cfg.SurvivalMode);
         }
@@ -243,6 +244,53 @@ namespace MCGalaxy.Network
         }
 
 
+        // ==================== health / respawn (SURV_HEALTH / SURV_RESPAWN) ====================
+        //
+        // The server owns health and score; the client renders them and sends a respawn *intent*, which the
+        // server validates and answers authoritatively. Health/score live in Player.Extras so no core Player
+        // field is needed and they follow the player across a /goto within one session.
+        //
+        // SURV_HEALTH wire layout (v1): [id=0x03][health: u8][score: i32 BE]
+        //   health 0..MAX_HEALTH (Indev/Classic convention: 20 == 10 hearts)
+
+        public const int MAX_HEALTH = 20;
+        const string HEALTH_KEY = "survival.health";
+        const string SCORE_KEY  = "survival.score";
+
+        /// <summary> Current survival health for a player (defaults to full). </summary>
+        public static int GetHealth(Player p) { return p.Extras.GetInt(HEALTH_KEY, MAX_HEALTH); }
+
+        /// <summary> Sets a player's survival health (clamped) and pushes SURV_HEALTH if they're on a survival map. </summary>
+        public static void SetHealth(Player p, int health) {
+            if (health < 0)          health = 0;
+            if (health > MAX_HEALTH) health = MAX_HEALTH;
+            p.Extras[HEALTH_KEY] = health;
+            if (Active(p, p.level)) SendHealth(p);
+        }
+
+        static void SendHealth(Player p) {
+            int health = GetHealth(p);
+            int score  = p.Extras.GetInt(SCORE_KEY, 0);
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = HEALTH;
+            msg[1] = (byte)health;
+            msg[2] = (byte)(score >> 24); // score, big-endian i32
+            msg[3] = (byte)(score >> 16);
+            msg[4] = (byte)(score >>  8);
+            msg[5] = (byte)score;
+            SendMessage(p, msg);
+        }
+
+        // Client asked to respawn (SURV_RESPAWN). Reset to full health and reposition to the map spawn.
+        // Only meaningful on a survival map; a real death/cooldown check is deferred with the damage system.
+        static void HandleRespawn(Player p) {
+            if (!Active(p, p.level)) return;
+            SetHealth(p, MAX_HEALTH);
+            PlayerActions.Respawn(p);
+            Logger.Log(LogType.Debug, "survival: {0} respawned (health reset)", p.name);
+        }
+
+
         // ==================== test / debug ====================
 
         /// <summary> Test aid: on connect, tell the player (and the server console) whether their
@@ -279,6 +327,9 @@ namespace MCGalaxy.Network
             }
 
             switch (id) {
+                case RESPAWN:
+                    HandleRespawn(p);
+                    break;
                 case ATTACK:
                 case USE_ITEM:
                 case SLOT_CLICK:
@@ -286,7 +337,6 @@ namespace MCGalaxy.Network
                 case CONT_CLOSE:
                 case HELD_SLOT:
                 case DROP_ITEM:
-                case RESPAWN:
                     // TODO(survival): validate + apply the intent authoritatively. Deferred to the
                     // integrated-server session; for now the framing is logged so the wire can be verified.
                     Logger.Log(LogType.Debug, "survival: intent 0x{0:X2} from {1} (handler deferred)", id, p.name);

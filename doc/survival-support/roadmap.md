@@ -74,12 +74,16 @@ Server generates Indev/c0.30-s worlds and owns block metadata.
 
 ## 🔜 Phase 2 — Health & damage
 
-Server owns health; drives day/night.
+Server owns health; drives day/night. Plumbing done; **damage sources are the
+remaining piece** (fall/drown/fire/lava/mob/PvP → decrement health via `SetHealth`).
 
 - ✅ `SURV_TIME (0x04)` — day/night driven by the server (scheduler clock, pushed
   to survival players + seeded at handshake). v1 clock is shared across maps.
-- ⬜ `SURV_HEALTH (0x03)` — authoritative health/armour updates.
-- ⬜ `SURV_RESPAWN (0x87)` — client respawn intent → server validates and repositions.
+- ✅ `SURV_HEALTH (0x03)` — authoritative health + score (stored in `Player.Extras`,
+  sent at handshake and on change via `SetHealth`).
+- ✅ `SURV_RESPAWN (0x87)` — client respawn intent → server resets health, repositions
+  to spawn, echoes `SURV_HEALTH`.
+- ⬜ Damage sources + death/respawn-cooldown gate (needs the tick/physics hooks).
 - Damage sources: fall, drown, fire, lava, mob attacks, PvP (gated on
   `SurvivalPvP`). Death drops gated on `SurvivalDeathDrops`.
 
@@ -122,7 +126,7 @@ Server owns inventory, containers, crafting, smelting.
 |---|---|---|---|
 | 0x01 | HELLO | S→C | ✅ 0 |
 | 0x02 | WORLDINFO | S→C | ✅ 0 (extend in 1) |
-| 0x03 | HEALTH | S→C | 2 |
+| 0x03 | HEALTH | S→C | ✅ 2 |
 | 0x04 | TIME | S→C | ✅ 2 |
 | 0x10–0x13 | MOB_* | S→C | 3 |
 | 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | 4 |
@@ -133,7 +137,7 @@ Server owns inventory, containers, crafting, smelting.
 | 0x81 | USE_ITEM | C→S | 4 |
 | 0x82–0x85 | SLOT/RESULT/CONT/HELD | C→S | 4 |
 | 0x86 | DROP_ITEM | C→S | 5 |
-| 0x87 | RESPAWN | C→S | 2 |
+| 0x87 | RESPAWN | C→S | ✅ 2 |
 
 ---
 
