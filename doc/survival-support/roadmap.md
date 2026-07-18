@@ -85,8 +85,13 @@ respawn) is complete; graduated Indev damage is the one refinement left.
   to spawn, echoes `SURV_HEALTH`.
 - ✅ Damage/death bridge — `OnPlayerDied` maps every MCGalaxy hazard (fall/drown/
   lava/killer/weapons/`/kill`) into `SURV_HEALTH(0)` + respawn.
-- ⬜ *Refinement:* graduated Indev damage (partial HP; drowning/fire ticks) and a
-  death-screen dwell (suppress auto-respawn, wait for `SURV_RESPAWN`).
+- ✅ Death-screen dwell — health held at 0 (auto-respawn suppressed, repeat
+  hazard deaths cancelled) until the client's `SURV_RESPAWN` or a 30 s safety
+  timeout; verified live against the real survival-test client (death camera +
+  Game Over screen held, revive round-trip, stray-intent rejection).
+- ✅ Hack permissions resolved from the survival config (`SurvivalCreative` ↔
+  HELLO creative bit) instead of the MOTD on active survival maps.
+- ⬜ *Refinement:* graduated Indev damage (partial HP; drowning/fire ticks).
 - Damage sources: fall, drown, fire, lava, mob attacks, PvP (gated on
   `SurvivalPvP`). Death drops gated on `SurvivalDeathDrops`.
 

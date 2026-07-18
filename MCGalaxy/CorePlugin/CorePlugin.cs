@@ -41,6 +41,8 @@ namespace MCGalaxy.Core {
             OnModActionEvent.Register(ModActionHandler.HandleModAction, Priority.Critical);
             OnPluginMessageReceivedEvent.Register(Network.SurvivalNet.HandlePluginMessage, Priority.Critical);
             OnPlayerDiedEvent.Register(Network.SurvivalNet.OnPlayerDied, Priority.Low);
+            OnPlayerDyingEvent.Register(Network.SurvivalNet.OnPlayerDying, Priority.Low);
+            OnJoinedLevelEvent.Register(Network.SurvivalNet.OnJoinedLevel, Priority.Low);
             Network.SurvivalNet.Start();
         }
         
@@ -59,6 +61,8 @@ namespace MCGalaxy.Core {
             OnModActionEvent.Unregister(ModActionHandler.HandleModAction);
             OnPluginMessageReceivedEvent.Unregister(Network.SurvivalNet.HandlePluginMessage);
             OnPlayerDiedEvent.Unregister(Network.SurvivalNet.OnPlayerDied);
+            OnPlayerDyingEvent.Unregister(Network.SurvivalNet.OnPlayerDying);
+            OnJoinedLevelEvent.Unregister(Network.SurvivalNet.OnJoinedLevel);
             Network.SurvivalNet.Stop();
         }
     }

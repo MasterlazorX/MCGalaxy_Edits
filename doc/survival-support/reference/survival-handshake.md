@@ -5,9 +5,16 @@ record of the **client-side handshake foundation** that actually landed in the
 repo, why it's shaped the way it is, and exactly what the MCGalaxy server session
 must build to match it.*
 
-Status: **foundation only.** Capability negotiation + receive/log + send path are
-in. The simulation mode-flip and all the state appliers (mobs, inventory, drops,
-…) are deferred to the integrated server session. See "Deferred" at the end.
+Status: **fully in tree (restored from parked commit `ed604b6`).** The
+capability negotiation + HELLO/WORLDINFO foundation, the full per-map
+activation, sim handover (`SurvivalNet_ServerDriven()`), HEALTH/TIME appliers
+and `0x80-0x87` intent senders are all live. The implementation was verified
+byte-for-byte against the MCGalaxy fork's `Network/SurvivalNet.cs`, parked
+while the repos lived in separate sessions, then re-landed from the combined
+two-repo session and **integration-tested live** against the fork's CLI server
+(handshake, health/hearts HUD, server-driven day/night, death-screen dwell +
+`SURV_RESPAWN` round-trip, live `/Survival` mode flips). See
+`doc/server-session-handoff.md`.
 
 ---
 
@@ -40,11 +47,14 @@ Consequence for the client state model:
 | State | Scope | Set by | Cleared by |
 |---|---|---|---|
 | `Server.SupportsSurvival` | whole connection | `ExtEntry("SurvivalTest")` | reconnect |
-| *(future)* `survivalActive` | current map | `SURV_HELLO` | `OnNewMap` |
+| `net_mode` (per-map activation) | current map | `SURV_HELLO` | `OnNewMap`, mode-0 HELLO |
 
-The foundation only implements the first row. The mode-flip work will add the
-second — a per-map `survivalActive` flag set on `SURV_HELLO` and reset in the
-component's `OnNewMap` hook (currently `NULL`, reserved for exactly this).
+Both rows are in the tree (the second was restored from parked commit
+`ed604b6`). `net_mode` lives in `SurvivalNet.c`; the component's
+`OnNewMap` hook clears it so activation never leaks across a `/goto`, and a
+mode-0 `SURV_HELLO` (the server's live `/Survival` config refresh) deactivates
+mid-map. `SurvivalNet_ServerDriven()` = capability + activation is the single
+predicate the whole sim handover hangs off.
 
 ---
 
@@ -148,6 +158,11 @@ fixed-point (`coord × 32`). Byte 0 is always the message id. Payload is the fix
 64-byte PluginMessage frame — unused tail bytes are zero and ignored.
 
 ### `SURV_HELLO` (0x01) — server → client
+
+On receive the client re-derives both mode flags via
+`SurvivalTest_NetworkModeChanged()` (Indev layer first), overriding the local
+options for the map: `IndevTest_Enabled`/`SurvivalTest_Enabled` from `mode`,
+`SurvivalTest_Enhanced`/`_Creative` from `flags` bits 0/1.
 | Offset | Size | Field | Notes |
 |---|---|---|---|
 | 0 | 1 | id = 0x01 | |
@@ -170,8 +185,32 @@ The full canonical field list is `doc/networking-plan.md` §25 / §18 (the
 `.mclevel` metadata is the source of truth — keep `SURV_WORLDINFO` a subset of
 it so a saved level and a freshly-sent one describe the same world).
 
-The client stubs currently read only the first couple of fields and log them, so
-the server session can watch the wire and confirm framing. No state is applied.
+Also implemented (layouts matched against the fork's `SurvivalNet.cs`):
+
+### `SURV_HEALTH` (0x03) — server → client
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | id = 0x03 | |
+| 1 | 1 | health | 0..20 |
+| 2 | 4 | score | **i32 BE** (the i16 in early §25 drafts is wrong — the server shipped i32) |
+
+Applied by `SurvivalTest_ApplyNetHealth`: a decrease plays the hurt tilt/sound,
+0 enters the death state (death camera + Game Over screen, no local inventory
+drop — drops are server state), a rise while dead revives (the server
+repositions via the normal teleport packet).
+
+### `SURV_TIME` (0x04) — server → client
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | id = 0x04 | |
+| 1 | 2 | worldTime | u16 BE, 0..23999 |
+| 3 | 1 | skyLight | 0..15 (server's eased ramp — **unused by this client**) |
+
+The client applies only `worldTime` (`IndevTest_SetWorldTime`) and computes the
+genuine Indev celestial-angle sky light + colour scaling from it locally — more
+faithful than the server's coarse ramp byte. The server owns the clock; the
+client owns the genuine presentation of it. The local clock advance is gated
+off in MP (`Indev_TickDayNight`).
 
 ---
 
@@ -209,13 +248,11 @@ None of them block the foundation.
    the server code so nobody reuses `0xB0`. (Making the channel negotiable would
    be over-engineering for a first version.)
 
-4. **Activation state isn't wired yet — by design.** The gate today is
-   capability-only (`SupportsSurvival`). On a non-survival map the server simply
-   never sends `SURV_*`, so logging-only behaves correctly. But the mode-flip
-   step **must** add a per-map `survivalActive` flag (set on `SURV_HELLO`, cleared
-   in `SurvivalNet_Component.OnNewMap`) before it starts *changing* local sim
-   state — otherwise stale survival state could leak across a `/goto` into a plain
-   Classic level. The component's `OnNewMap` slot is left `NULL` reserved for this.
+4. **Activation state — solved (in tree).** The restored `ed604b6` implements it
+   exactly as prescribed: `net_mode` set on `SURV_HELLO`, cleared in the component's
+   `OnNewMap` hook (and by a mode-0 HELLO), consumed through
+   `SurvivalNet_ServerDriven()` before any local sim state changes. Survival
+   state cannot leak across a `/goto` into a plain Classic level.
 
 ---
 
@@ -238,16 +275,22 @@ wire format changes, bump the `SurvivalTest` CPE ext version on both sides.
 
 ---
 
-## 8. Deferred (next / integrated-server session)
+## 8. Deferred (as the server's phases 3–5 land)
 
-- `SURV_HELLO` **mode-flip**: flip the client into a server-authoritative Indev
-  sim in MP (turn off local mob AI/spawner, health, furnace tick, day/night,
-  random block ticks, `IndevGen`; force physics off on survival maps) — plus the
-  per-map `survivalActive` flag (§6.4). `doc/networking-plan.md` §15.2, §17.4.
-- **Server→client appliers** for the reserved ids: mobs `0x10–0x13`, inventory
-  `0x20–0x25`, drops `0x30–0x32`, blockmeta `0x40`, equip `0x50`.
-- **Client→server intent senders** for `0x80–0x87`, called from the existing
-  input handlers instead of mutating local state.
+~~`SURV_HELLO` mode-flip~~ ✅ **implemented (in tree)** — the client flips into the
+server-authoritative sim in MP: mode/flags applied from HELLO, and
+`SurvivalNet_ServerDriven()` gates off local damage, mob AI/spawner, drops,
+arrows, paintings, TNT, furnace tick, the day/night *advance*, eating, tool
+wear, containers and the local survival inventory UI. (Random block ticks and
+fire already only run under SP block physics.)
 
-All ids are already reserved in `enum SurvNetMsg`, so this is fill-in work against
-a fixed contract, not new protocol design.
+~~Intent senders~~ ✅ **implemented for all of `0x80–0x87` (in tree)** — `SURV_RESPAWN`,
+`SURV_HELD_SLOT` (auto on hotbar change) and `SURV_DROP_ITEM` (Q) are live;
+`ATTACK`/`USE_ITEM`/`SLOT_CLICK`/`RESULT_CLICK`/`CONT_CLOSE` are called as the
+server streams the state they act on (phases 3–4).
+
+Still deferred — **server→client appliers** for the reserved ids: mobs
+`0x10–0x13`, inventory `0x20–0x25`, drops `0x30–0x32`, blockmeta `0x40`, equip
+`0x50`. All ids are reserved in `enum SurvNetMsg`, so this is fill-in work
+against a fixed contract, not new protocol design. The concrete handoff for the
+server session lives in `doc/server-session-handoff.md`.

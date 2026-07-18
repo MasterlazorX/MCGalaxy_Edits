@@ -157,23 +157,46 @@ whenever `SetHealth` changes it. Damage sources are deferred, so today health on
 changes on respawn.
 
 ### `SURV_RESPAWN` (0x87) — client → server *(handled)*
-The client's respawn intent. The server validates it (must be on a survival map),
-resets health to full, repositions the player to the map spawn
-(`PlayerActions.Respawn`), and echoes an authoritative `SURV_HEALTH`.
+The client's respawn intent, only honoured while **dead** (health 0): the server
+clears the dwell, repositions to the map spawn (`PlayerActions.Respawn`), then
+restores full health — the health rise is what removes the client's Game Over
+screen. A respawn intent while alive is rejected (it would otherwise be a free
+teleport to spawn) and answered with an authoritative `SURV_HEALTH` echo.
 
-### Damage / death bridge
+### Damage / death bridge — death-screen dwell
 `SurvivalNet.OnPlayerDied` is registered on `OnPlayerDiedEvent`, which fires inside
 `Player.HandleDeath` — the single choke point for **all** MCGalaxy deaths (fall,
 drown, lava, killer blocks, weapons, `/kill`, …), so every hazard MCGalaxy already
 detects (respecting the level's `FallHeight` / `DrownTime` / `KillerBlocks` config)
-flows through. For a survival player it drops health to 0 (`SURV_HEALTH(0)`) then
-restores to full, since `HandleDeath` repositions to spawn immediately after.
+flows through. For a survival player it **holds health at 0**: the genuine flow is
 
-MCGalaxy's Classic survival is binary (lethal-or-nothing) and auto-respawns, so
-health today goes 20 → 0 → 20. Graduated Indev damage (partial HP from fall
-distance, drowning/fire ticks) and a death-screen dwell (suppress the auto-respawn,
-wait for the client's `SURV_RESPAWN`) are future refinements gated on the client
-implementing the death UI.
+1. death → `SURV_HEALTH(0)` — client shows the death camera + Game Over screen;
+2. `HandleDeath` **skips its auto-respawn** while `SurvivalNet.HoldsDeathScreen`
+   (survival-active and dead), and `OnPlayerDying` cancels repeat deaths so the
+   killing hazard ticking at the death spot (lava, drowning) can't spam;
+3. revive on the client's `SURV_RESPAWN` intent — or a **30 s safety timeout**
+   (counted down by the `SURV_TIME` scheduler tick) so nobody is stranded;
+4. revive = reposition to spawn, then `SURV_HEALTH(20)` (the rise revives the
+   client). A map change while dead restores full health (`OnJoinedLevel`) since
+   the client tears down its per-map death state.
+
+Graduated Indev damage (partial HP from fall distance, drowning/fire ticks)
+remains the future refinement; MCGalaxy still only detects lethal hazards.
+
+**Map-spawn caveat (found in live testing):** MCGalaxy's default generated spawn
+sits ~16 blocks above the ground; with `/map death on` and the default
+`FallHeight` 9 every (re)spawn is a lethal fall → an infinite death loop (stock
+MCGalaxy loops identically, just faster). Until the phase-1 generator places
+spawns, survival maps need a grounded spawn or a raised `/map fall` threshold.
+
+### Hack permissions follow the survival config
+`Hacks.MakeHackControl` overrides the MOTD-derived flags on an active survival
+map: fly/speed come from the level's `SurvivalCreative` (the *same* decision as
+HELLO's creative bit, so they can never disagree — the survival-test client
+defers entirely to `HackControl` in MP), noclip is off, and the respawn hack is
+off (death/respawn is server-owned via `SURV_RESPAWN`). Referee mode keeps its
+usual all-hacks escape hatch, and the server-side `Hacks.CanUse*` checks read
+the same override. `/Survival` re-sends motd+hacks so live config changes apply.
 
 ### Reserved message ids (`SurvivalNet.cs`)
 

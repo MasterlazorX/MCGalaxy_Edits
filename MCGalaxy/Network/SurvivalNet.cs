@@ -156,6 +156,9 @@ namespace MCGalaxy.Network
                 if (p.level != lvl || p.Session == null || !p.Session.hasSurvival) continue;
                 if (lvl.Config.SurvivalMode != SurvivalMode.Off) SendHandshake(p, lvl);
                 else SendHello(p, lvl.Config); // mode 0 -> client leaves survival mode
+                // Hack permissions are resolved from the survival config while a survival map is
+                // active (Hacks.MakeHackControl), so re-send them alongside the new HELLO flags.
+                p.SendMapMotd();
             }
         }
 
@@ -234,7 +237,9 @@ namespace MCGalaxy.Network
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player p in players)
             {
-                if (Active(p, p.level)) SendTime(p);
+                if (!Active(p, p.level)) continue;
+                SendTime(p);
+                TickDeathDwell(p);
             }
         }
 
@@ -270,9 +275,24 @@ namespace MCGalaxy.Network
         public const int MAX_HEALTH = 20;
         const string HEALTH_KEY = "survival.health";
         const string SCORE_KEY  = "survival.score";
+        const string DWELL_KEY  = "survival.deathDwell"; // seconds left before the safety auto-respawn
+
+        /// <summary> How long a dead player may sit on the death screen before the server revives
+        /// them anyway (client gone unresponsive, intent lost, ...). Counted down by TimeTick. </summary>
+        const int RESPAWN_TIMEOUT_SECS = 30;
 
         /// <summary> Current survival health for a player (defaults to full). </summary>
         public static int GetHealth(Player p) { return p.Extras.GetInt(HEALTH_KEY, MAX_HEALTH); }
+
+        /// <summary> Whether this player is dead (health 0), held on the death screen awaiting
+        /// their SURV_RESPAWN intent or the safety timeout. </summary>
+        public static bool IsDead(Player p) { return GetHealth(p) == 0; }
+
+        /// <summary> Whether HandleDeath must NOT auto-respawn this player: survival-test clients
+        /// show a Game Over screen at 0 HP and ask to come back via SURV_RESPAWN when ready. </summary>
+        public static bool HoldsDeathScreen(Player p) {
+            return Active(p, p.level) && IsDead(p);
+        }
 
         /// <summary> Sets a player's survival health (clamped) and pushes SURV_HEALTH if they're on a survival map. </summary>
         public static void SetHealth(Player p, int health) {
@@ -295,28 +315,70 @@ namespace MCGalaxy.Network
             SendMessage(p, msg);
         }
 
-        // Client asked to respawn (SURV_RESPAWN). Reset to full health and reposition to the map spawn.
-        // Only meaningful on a survival map; a real death/cooldown check is deferred with the damage system.
+        // Client asked to respawn (SURV_RESPAWN). Only meaningful while dead on a survival map:
+        // the genuine flow holds health at 0 (client shows the death camera + Game Over screen)
+        // until this intent - or the safety timeout - revives them.
         static void HandleRespawn(Player p) {
             if (!Active(p, p.level)) return;
-            SetHealth(p, MAX_HEALTH);
+            if (!IsDead(p)) {
+                // Stray/duplicate intent - correct the client authoritatively instead of applying it
+                // (a respawn-while-alive would otherwise be a free teleport to spawn).
+                SendHealth(p);
+                Logger.Log(LogType.Debug, "survival: ignored respawn intent from {0} (not dead)", p.name);
+                return;
+            }
+            Revive(p, "respawn intent");
+        }
+
+        /// <summary> Ends the death-screen dwell: repositions the player to spawn, then restores full
+        /// health - the client removes its Game Over screen when the health rise arrives. </summary>
+        static void Revive(Player p, string why) {
+            p.Extras.Remove(DWELL_KEY);
             PlayerActions.Respawn(p);
-            Logger.Log(LogType.Debug, "survival: {0} respawned (health reset)", p.name);
+            SetHealth(p, MAX_HEALTH);
+            Logger.Log(LogType.Debug, "survival: {0} revived ({1})", p.name, why);
+        }
+
+        // Safety net: a dead player whose SURV_RESPAWN never arrives is revived after the timeout,
+        // so nobody is stranded on the death screen forever. Runs from TimeTick (1s cadence).
+        static void TickDeathDwell(Player p) {
+            if (!IsDead(p)) return;
+            int left = p.Extras.GetInt(DWELL_KEY, RESPAWN_TIMEOUT_SECS) - 1;
+            p.Extras[DWELL_KEY] = left;
+            if (left <= 0) Revive(p, "safety timeout");
         }
 
         /// <summary>
         /// Bridges MCGalaxy's death detection (fall, drown, lava, killer blocks, weapons, /kill, ...) into
-        /// the survival health flow. Registered on OnPlayerDiedEvent, which fires inside HandleDeath right
-        /// before MCGalaxy repositions the player - so we signal death (health 0) then restore to full for
-        /// that respawn.
+        /// the survival health flow. Registered on OnPlayerDiedEvent, which fires inside HandleDeath just
+        /// before MCGalaxy would reposition the player - health is held at 0 and HandleDeath skips that
+        /// auto-respawn (HoldsDeathScreen), so the client dwells on its Game Over screen until its
+        /// SURV_RESPAWN intent (or the safety timeout) revives it.
         /// </summary>
         /// <remarks> Graduated Indev-style damage (partial HP from fall distance, drowning/fire ticks, ...)
         /// is a future refinement: MCGalaxy only detects lethal hazards, not partial damage. </remarks>
         public static void OnPlayerDied(Player p, BlockID cause, ref TimeSpan cooldown) {
             if (!Active(p, p.level)) return;
-            SetHealth(p, 0);          // SURV_HEALTH(0): died
-            SetHealth(p, MAX_HEALTH); // SURV_HEALTH(20): HandleDeath repositions to spawn immediately after
-            Logger.Log(LogType.Debug, "survival: {0} died (cause block {1})", p.name, cause);
+            SetHealth(p, 0); // SURV_HEALTH(0): death camera + Game Over screen, held until revive
+            p.Extras[DWELL_KEY] = RESPAWN_TIMEOUT_SECS;
+            Logger.Log(LogType.Debug, "survival: {0} died (cause block {1}), holding death screen", p.name, cause);
+        }
+
+        /// <summary> Suppresses further deaths while a player is already dead on the death screen -
+        /// the hazard that killed them keeps ticking at the death spot (lava, drowning, ...).
+        /// Registered on OnPlayerDyingEvent. </summary>
+        public static void OnPlayerDying(Player p, BlockID cause, ref bool cancel) {
+            if (HoldsDeathScreen(p)) cancel = true;
+        }
+
+        /// <summary> A map change tears down the client's per-map survival state (death screen included),
+        /// so a player who leaves a level while dead is restored to full health rather than arriving
+        /// on the new map at 0 HP. Registered on OnJoinedLevelEvent. </summary>
+        public static void OnJoinedLevel(Player p, Level prevLevel, Level level, ref bool announce) {
+            if (p.Session == null || !p.Session.hasSurvival) return;
+            if (!IsDead(p)) return;
+            p.Extras.Remove(DWELL_KEY);
+            SetHealth(p, MAX_HEALTH);
         }
 
 

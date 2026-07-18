@@ -58,4 +58,27 @@ enum SurvNetMsg {
    on SURVNET_CHANNEL). No-op unless connected to a survival server. `payload` is
    up to 63 bytes (byte 0 is the message id, set by the caller). */
 void SurvivalNet_Send(cc_uint8* payload);
+
+/* --- per-map activation state (the second layer of the two-layer design) --- */
+/* Gamemode the server dictated for THIS map via SURV_HELLO: SURVIVAL_GAMEMODE_OFF /
+   _C030 / _INDEV. Always OFF in singleplayer, before SURV_HELLO arrives, and on
+   servers that never negotiated the SurvivalTest extension. */
+int SurvivalNet_ActiveMode(void);
+/* SURV_HELLO flags byte for this map (bit0 enhanced, bit1 creative, bit2 pvp,
+   bit3 deathDrops). 0 unless a survival map is active. */
+int SurvivalNet_ActiveFlags(void);
+/* Whether the SERVER owns the survival simulation right now (multiplayer + an
+   activated survival map). When true the client renders state and sends intents;
+   every local mutation source (damage, mobs, drops, ticks, inventory) is off. */
+cc_bool SurvivalNet_ServerDriven(void);
+
+/* --- client -> server intent senders (each is a no-op unless ServerDriven) --- */
+void SurvivalNet_SendRespawn(void);                      /* SURV_RESPAWN   [id] */
+void SurvivalNet_SendHeldSlot(int slot);                 /* SURV_HELD_SLOT [id][slot] */
+void SurvivalNet_SendDropItem(int slot, cc_bool whole);  /* SURV_DROP_ITEM [id][slot][whole] */
+void SurvivalNet_SendAttack(int targetKind, int targetId);          /* SURV_ATTACK [id][kind][id:u16] */
+void SurvivalNet_SendUseItem(int heldSlot, int x, int y, int z, int face); /* SURV_USE_ITEM */
+void SurvivalNet_SendSlotClick(int slot, int button);    /* SURV_SLOT_CLICK [id][slot:u16][button] */
+void SurvivalNet_SendResultClick(void);                  /* SURV_RESULT_CLICK [id] */
+void SurvivalNet_SendContClose(void);                    /* SURV_CONT_CLOSE [id] */
 #endif

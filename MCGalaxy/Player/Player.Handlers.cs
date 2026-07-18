@@ -396,7 +396,10 @@ namespace MCGalaxy
             
             TimeSpan cooldown = Server.Config.DeathCooldown;
             OnPlayerDiedEvent.Call(this, block, ref cooldown);
-            PlayerActions.Respawn(this);
+            // Survival-test clients dwell on a Game Over screen instead of instantly respawning -
+            // SurvivalNet revives them later (their SURV_RESPAWN intent, or its safety timeout).
+            if (!Network.SurvivalNet.HoldsDeathScreen(this))
+                PlayerActions.Respawn(this);
             
             TimesDied++;
             // NOTE: If deaths column is ever increased past 16 bits, remove this clamp

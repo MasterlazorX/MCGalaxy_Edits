@@ -77,11 +77,13 @@ pointer. `.mclevel` handling is fully covered — format §18, save lifecycle §
 - [x] **`src/SurvivalNet.c` foundation** — extension negotiated
       (`Server.SupportsSurvival`), receive dispatch gated + `SURV_HELLO`/
       `SURV_WORLDINFO` parse/log, `SurvivalNet_Send` wrapper. *(landed)*
-- [ ] **`src/SurvivalNet.c`** mode‑flip — flip Indev mode from `SURV_HELLO` in MP
-      (keep the options path in SP). — §17.2–17.3, §25
-- [ ] **Gate the client's Indev sim OFF in MP** — `IndevTest_TickRandomBlocks`,
-      `Furnace_Tick`, `Indev_TickDayNight`, spawner, `IndevGen`, and force
-      `Physics.Enabled` off on survival maps. — §15.2, §17.4, §23.2
+- [x] **`src/SurvivalNet.c`** mode‑flip — flip Indev mode from `SURV_HELLO` in MP
+      (options path kept in SP; `SurvivalTest_EffectiveGamemode`).
+      *(landed — restored from `ed604b6` in the combined two‑repo session and
+      integration‑tested against the live MCGalaxy fork server)*
+- [x] **Gate the client's Indev sim OFF in MP** — `SurvivalNet_ServerDriven()`
+      gates damage/mobs/drops/arrows/TNT/furnace/day‑night‑advance/spawner (+
+      random ticks/fire already run only under SP block physics). *(landed)*
 - [ ] **Server runs the world sim** — day/night, random ticks, mob spawner — and
       relays block changes; day/night to stock clients via **`EnvColors`**. — §21
 - [ ] **Mob puppet** — `SURV_MOB_*` → `st_mobs[]`, render‑only, bespoke 16‑bit ids
@@ -287,18 +289,34 @@ The survival net layer hangs off the **MP** path only.
 
 ### 4.2 Recommended new client module: `src/SurvivalNet.c` (+ `.h`)
 
-> **STATUS (foundation landed).** The client scaffold now exists in the repo:
-> `src/SurvivalNet.h` (wire contract — `SURVNET_CHANNEL 0xB0`, `enum SurvNetMsg`,
-> `SurvivalNet_Component`, `SurvivalNet_Send`) and `src/SurvivalNet.c` (receive
-> dispatch gated on `!Server.IsSinglePlayer && Server.SupportsSurvival`,
-> `SURV_HELLO`/`SURV_WORLDINFO` parse+log stubs, the `SurvivalNet_Send` wrapper).
-> The **"SurvivalTest" CPE extension** is negotiated in `src/Protocol.c`
-> (`survival_Ext`, `cpe_clientExtensions[]`, ExtEntry sets
-> `Server.SupportsSurvival`); the flag lives in `src/Server.h`; the component is
-> registered in `src/Game.c`. Server session: **build your handshake to match
-> `SurvivalNet.h` / §25.** What is **NOT** yet done (this list): the sim
-> mode‑flip and every server→client applier below (mobs/inventory/drops/…) plus
-> the intent senders — all message ids are already reserved in `enum SurvNetMsg`.
+> **STATUS (fully in tree — mode‑flip restored and integration‑tested).** The tree
+> carries the foundation (CPE ext in `src/Protocol.c`, `Server.SupportsSurvival`,
+> `SurvivalNet_Component`, `SurvivalNet_Send`, HELLO/WORLDINFO parse+log). The
+> full **per‑map activation + sim handover** was implemented and verified
+> byte‑for‑byte against the MCGalaxy fork's `Network/SurvivalNet.cs`, then
+> **reverted to be re‑landed from the combined two‑repo session** where it can
+> be integration‑tested against the live server — restore it with
+> `git cherry-pick ed604b6` (or `git checkout ed604b6 -- src/`). What ed604b6
+> contains:
+> - `SURV_HELLO` **applier**: stores mode/flags, flips
+>   `IndevTest_Enabled`/`SurvivalTest_Enabled`/`_Creative`/`_Enhanced` via
+>   `SurvivalTest_NetworkModeChanged()` (mode 0 deactivates — the server's live
+>   `/Survival` refresh). Activation is per‑map: cleared in `OnNewMap`.
+> - `SURV_WORLDINFO` (v1 byte layout) applier → Indev OOB horizon planes.
+> - `SURV_HEALTH` applier (`SurvivalTest_ApplyNetHealth`): score is **i32 BE**;
+>   decrease → hurt presentation, 0 → death camera + Game Over, rise while dead
+>   → revive (server repositions). `SURV_TIME` applier → `IndevTest_SetWorldTime`
+>   (client renders the genuine celestial light from the time itself).
+> - **`SurvivalNet_ServerDriven()`** gates the whole local sim in MP: damage
+>   (one central gate in `SurvivalTest_Damage`), mob/drop/arrow/painting/TNT
+>   ticks + spawner, day/night *advance*, furnace tick, drops/consume on block
+>   change, eating/bow/tool‑wear/containers/local inventory UI, void death,
+>   trampling. Hack permissions defer to the server's `HackControl` in MP.
+> - **Intent senders** for all of `0x80–0x87`; `SURV_RESPAWN`, `SURV_HELD_SLOT`
+>   (auto on hotbar change) and `SURV_DROP_ITEM` (Q key) are live; the rest are
+>   wired up as the server's phases 3–5 land. See `doc/server-session-handoff.md`.
+> Still open (server phases 3–5 + matching client appliers): mobs `0x10–0x13`,
+> inventory `0x20–0x25`, drops `0x30–0x32`, blockmeta `0x40`, equip `0x50`.
 
 Keep all networked‑survival glue in one new file so the simulation files stay
 readable and the SP path is untouched. Responsibilities:
@@ -384,7 +402,7 @@ layouts as you implement each phase.
 |---|---|---|
 | 0x01 | `SURV_HELLO` | mode(1: 0 off/1 c0.30‑s/2 indev), **flags(1)**, protocol ver |
 | 0x02 | `SURV_WORLDINFO` | groundLevel, waterLevel, fluid id, theme, floating flag, edge/sides ids (the `.mclevel` metadata set) |
-| 0x03 | `SURV_HEALTH` | health(1), + later air/score |
+| 0x03 | `SURV_HEALTH` | health(1), score(4, i32 BE) — **implemented both sides** |
 | 0x04 | `SURV_TIME` | worldTime(2) or eased sky‑light level |
 | 0x10 | `SURV_MOB_SPAWN` | mobId(2), type(1), x/y/z(fixed), yaw/pitch(1), health(1) |
 | 0x11 | `SURV_MOB_MOVE` | mobId(2), x/y/z, yaw/pitch (or rel deltas) |
@@ -1841,12 +1859,18 @@ refine*, not frozen; bump the `SurvivalTest` ext version when it changes (§20/�
 ```
 SURV_HELLO      0x01  [1]mode(0 off/1 c030s/2 indev)
                       [2]flags(b0 enhanced, b1 creative, b2 pvp, b3 deathDrops)  [3]protoVer
-SURV_WORLDINFO  0x02  [1..2]groundLevel(i16)  [3..4]waterLevel(i16)  [5]fluidId
+SURV_WORLDINFO  0x02  ** v1 AS IMPLEMENTED (client + MCGalaxy SurvivalNet.cs): **
+                      [1]groundLevel(u8) [2]waterLevel(u8) [3]fluidId [4]theme
+                      [5]flags(b0 floating) [6]sidesBlk [7]edgeBlk
+                      (env colours ride the stock EnvColors CPE path meanwhile)
+                      -- planned fuller revision (bump the ext version for it):
+                      [1..2]groundLevel(i16)  [3..4]waterLevel(i16)  [5]fluidId
                       [6]theme  [7]flags(b0 floating)  [8]edgeBlk  [9]sidesBlk
                       [10..11]sidesOffset(i16)  [12..14]skyRGB  [15..17]fogRGB
                       [18..20]cloudRGB  [21..22]cloudHeight(i16)
                       [23..24]worldTime(u16)  [25]skyBrightness
-SURV_HEALTH     0x03  [1]health(0..20)  [2..3]score(i16)
+SURV_HEALTH     0x03  [1]health(0..20)  [2..5]score(i32 BE - as shipped by the
+                      MCGalaxy fork's SurvivalNet.cs; an early draft said i16)
 SURV_TIME       0x04  [1..2]worldTime(u16)  [3]easedSkyLight(0..15)
 SURV_MOB_SPAWN  0x10  [1..2]mobId(u16)  [3]type  [4..9]pos  [10]yaw [11]pitch
                       [12]health  [13]flags(b0 helmet,b1 armor,b2 fur)
