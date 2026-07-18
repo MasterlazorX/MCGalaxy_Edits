@@ -631,6 +631,7 @@
     <Compile Include="Network\Packets\Opcode.cs" />
     <Compile Include="Network\Packets\Packet.cs" />
     <Compile Include="Network\Sockets.cs" />
+    <Compile Include="Network\SurvivalInventory.cs" />
     <Compile Include="Network\SurvivalMobs.cs" />
     <Compile Include="Network\SurvivalNet.cs" />
     <Compile Include="Network\Utils\BufferedBlockSender.cs" />

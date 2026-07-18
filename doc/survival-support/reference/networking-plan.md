@@ -101,10 +101,16 @@ pointer. `.mclevel` handling is fully covered — format §18, save lifecycle §
 - [ ] **Health/damage** server‑side — reconstruct fall from the position stream,
       armor absorption, 20‑tick invuln, knockback via `VelocityControl`; no Indev
       regen. — §13, §23.4
-- [ ] **Inventory / crafting / containers** — server owns inventory+grid+container+
+- [~] **Inventory / crafting / containers** — server owns inventory+grid+container+
       cursor; `SURV_SLOT_CLICK`/`RESULT_CLICK`/`CONT_CLOSE` in, echo
       `SURV_INV_SLOT`/`CONT_SLOT`/`CURSOR`. TCP ordering ⇒ no Beta confirm dance;
       echo‑only first, prediction later. — §27
+      *(first slice landed + live‑tested: main/craft/armor slots + cursor stream
+      (`INV_FULL`/`INV_SLOT`/`CURSOR`), the GuiContainer click model runs
+      server‑side with echoes, CONT_CLOSE refunds, and mining/placing feeds the
+      server inventory (mine→pickup, place→consume with authoritative revert).
+      Still open: recipes, containers/furnace (`0x22–0x24`), `USE_ITEM`, per‑id
+      max‑stack/item tables, `PLAYER_EQUIP`.)*
 - [ ] **Item drops** — server spawns (RNG) + runs the **deterministic** physics;
       clients simulate from the spawn state (no per‑tick stream); server‑authoritative
       pickup + 6000t despawn. — §26

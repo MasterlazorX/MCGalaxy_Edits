@@ -142,6 +142,7 @@ namespace MCGalaxy.Network
             SendTime(p);   // seed the client with the current world time right away
             SendHealth(p); // and the current health/score
             SurvivalMobs.SendLevelMobs(p, lvl); // phase 3: the level's live mob population
+            SurvivalInventory.SendAll(p);       // phase 4: the server-owned inventory + cursor
             Logger.Log(LogType.Debug, "survival: sent handshake to {0} for {1} (mode {2})",
                        p.name, lvl.name, cfg.SurvivalMode);
         }
@@ -484,14 +485,27 @@ namespace MCGalaxy.Network
                         SurvivalMobs.HandleAttack(p, data[1], (data[2] << 8) | data[3]);
                     }
                     break;
-                case USE_ITEM:
-                case SLOT_CLICK:
-                case RESULT_CLICK:
-                case CONT_CLOSE:
                 case HELD_SLOT:
+                    // [id][hotbarIndex] - tracked for place-consume preference (phase 4)
+                    if (data.Length >= 2) SurvivalInventory.HandleHeldSlot(p, data[1]);
+                    break;
+                case SLOT_CLICK:
+                    // [id][slotIdx:u16 BE][button(0 L/1 R)] - the GuiContainer click model
+                    // runs on the server's slots + cursor and echoes the result
+                    if (data.Length >= 4) {
+                        SurvivalInventory.HandleSlotClick(p, (data[1] << 8) | data[2], data[3]);
+                    }
+                    break;
+                case RESULT_CLICK:
+                    SurvivalInventory.HandleResultClick(p);
+                    break;
+                case CONT_CLOSE:
+                    SurvivalInventory.HandleContClose(p);
+                    break;
+                case USE_ITEM:
                 case DROP_ITEM:
-                    // TODO(survival): validate + apply the intent authoritatively. Deferred to the
-                    // integrated-server session; for now the framing is logged so the wire can be verified.
+                    // TODO(survival): USE_ITEM lands with containers/eating (rest of phase 4);
+                    // DROP_ITEM needs drop entities (phase 5). Framing is logged meanwhile.
                     Logger.Log(LogType.Debug, "survival: intent 0x{0:X2} from {1} (handler deferred)", id, p.name);
                     break;
                 default:

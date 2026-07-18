@@ -43,6 +43,7 @@ namespace MCGalaxy.Core {
             OnPlayerDiedEvent.Register(Network.SurvivalNet.OnPlayerDied, Priority.Low);
             OnPlayerDyingEvent.Register(Network.SurvivalNet.OnPlayerDying, Priority.Low);
             OnJoinedLevelEvent.Register(Network.SurvivalNet.OnJoinedLevel, Priority.Low);
+            OnBlockChangingEvent.Register(Network.SurvivalInventory.OnBlockChanging, Priority.Low);
             Network.SurvivalNet.Start();
         }
         
@@ -63,6 +64,7 @@ namespace MCGalaxy.Core {
             OnPlayerDiedEvent.Unregister(Network.SurvivalNet.OnPlayerDied);
             OnPlayerDyingEvent.Unregister(Network.SurvivalNet.OnPlayerDying);
             OnJoinedLevelEvent.Unregister(Network.SurvivalNet.OnJoinedLevel);
+            OnBlockChangingEvent.Unregister(Network.SurvivalInventory.OnBlockChanging);
             Network.SurvivalNet.Stop();
         }
     }

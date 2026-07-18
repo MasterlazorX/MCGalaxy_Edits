@@ -241,6 +241,38 @@ your feet, ground-snapped) and `/Survival mobs` (live count).
 - Mobs freeze on playerless maps and do not persist across server restarts.
 - Spawn clusters trimmed to 1–3 (genuine rolls up to 9) to tame populations.
 
+### Phase 4 (first slice) — the server-owned inventory (`SurvivalInventory.cs`)
+
+The server owns every inventory slot and the cursor; the client renders the
+streamed view and sends click intents (echo-only, per the client plan's §27:
+TCP ordering makes the server a simple deterministic sequencer — no Beta-style
+transaction dance). Slot layout mirrors the client's `SurvivalTest.h` exactly:
+0..35 main (0..8 hotbar), 36..44 craft, 45..98 container (reserved), 99..102
+armor. State lives in `Player.Extras`, so it follows a `/goto` within a session.
+
+| msg | dir | layout |
+|---|---|---|
+| `SURV_INV_FULL` 0x20 | S→C | `[baseSlot][runLen]` then runLen × `{id:u16, count:u8, dmg:i16}` (≤12/frame; main+craft then armor at handshake) |
+| `SURV_INV_SLOT` 0x21 | S→C | `[slot][id:u16][count][dmg:i16]` — the echo for every mutation |
+| `SURV_CURSOR` 0x25 | S→C | `[id:u16][count][dmg:i16]` — the server-owned held stack |
+| `SURV_HELD_SLOT` 0x85 | C→S | `[hotbarIndex]` — tracked for place-consume preference |
+| `SURV_SLOT_CLICK` 0x82 | C→S | `[slotIdx:u16][button]` — the GuiContainer click model (pickup all/half, merge to max stack, right-place-one, swap) runs on server state; container range rejected until streamed; armor accepts nothing yet |
+| `SURV_RESULT_CLICK` 0x83 | C→S | validated no-op (no server-side recipes yet) |
+| `SURV_CONT_CLOSE` 0x84 | C→S | refunds cursor + craft grid into the inventory (hotbar-first `storePartialItemStack` order), full resync |
+
+**The block bridge** (`OnBlockChangingEvent`): survival players' manual edits
+feed the inventory. Mining adds the broken classic block (raw ≤ 49; liquids
+yield nothing) straight to the inventory — the drop-entity hop is phase 5;
+placing consumes one (held slot preferred) or is cancelled + `RevertBlock` +
+resync when the player doesn't have the block. Dead players' edits are
+cancelled. Creative-flag maps build free (no pickup/consume).
+
+**V1 deviations:** no crafting recipes, no containers/furnace streaming
+(0x22–0x24), no `USE_ITEM`, flat max stacks (99 c0.30 / 64 Indev — per-id
+tables land with item definitions), armor slots accept nothing, death keeps
+the inventory until phase-5 drops honour `SurvivalDeathDrops`, no persistence
+across restarts (session-scoped like health).
+
 ### Reserved message ids (`SurvivalNet.cs`)
 
 Server → client: `HELLO 0x01`, `WORLDINFO 0x02`, `HEALTH 0x03`, `TIME 0x04`,
@@ -254,8 +286,9 @@ Client → server: `ATTACK 0x80`, `USE_ITEM 0x81`, `SLOT_CLICK 0x82`,
 `RESPAWN 0x87`.
 
 Implemented so far: server→client `0x01` HELLO, `0x02` WORLDINFO, `0x03` HEALTH,
-`0x04` TIME, `0x10–0x13` MOB_* (phase 3); client→server `0x87` RESPAWN and
-`0x80` ATTACK (handled). The rest are reserved and, for inbound intents,
+`0x04` TIME, `0x10–0x13` MOB_* (phase 3), `0x20`/`0x21`/`0x25` inventory
+(phase 4 slice); client→server `0x87` RESPAWN, `0x80` ATTACK, `0x82–0x85`
+inventory clicks (handled). The rest are reserved and, for inbound intents,
 bounds-checked, capability-gated, and logged (handlers deferred).
 
 ---

@@ -108,17 +108,19 @@ Indev-specific animations (creeper swell, sheep grazing). Landed as
 - ⬜ *Refinements:* Indev A* pathfinding, skeleton arrows (needs phase-5 wire),
   block-destroying explosions (opt-in), a real light model, mob persistence.
 
-## ⬜ Phase 4 — Inventory & containers
+## 🔶 Phase 4 — Inventory & containers (first slice landed)
 
 Server owns inventory, containers, crafting, smelting.
 
-- Inventory: `SURV_INV_FULL 0x20`, `SURV_INV_SLOT 0x21`,
-  `SURV_PLAYER_EQUIP 0x50`, `SURV_HELD_SLOT (0x85)`.
-- Containers/crafting: `SURV_CONT_OPEN 0x22`, `SURV_CONT_SLOT 0x23`,
-  `SURV_FURN_PROG 0x24`, `SURV_CURSOR 0x25`, plus intents
-  `SURV_SLOT_CLICK 0x82`, `SURV_RESULT_CLICK 0x83`, `SURV_CONT_CLOSE 0x84`,
-  `SURV_USE_ITEM 0x81`.
-- Requires the chunking decision above (full inventory > 63 bytes).
+- ✅ Inventory streaming: `SURV_INV_FULL 0x20` (chunked, ≤12 slots/frame — the
+  chunking decision), `SURV_INV_SLOT 0x21`, `SURV_CURSOR 0x25`,
+  `SURV_HELD_SLOT (0x85)`; clicks `SURV_SLOT_CLICK 0x82` /
+  `SURV_RESULT_CLICK 0x83` / `SURV_CONT_CLOSE 0x84` handled server-side
+  (GuiContainer model, echo-only). Mining→pickup / placing→consume block
+  bridge. Live-tested. See session-notes for layouts + v1 deviations.
+- ⬜ Containers/crafting: `SURV_CONT_OPEN 0x22`, `SURV_CONT_SLOT 0x23`,
+  `SURV_FURN_PROG 0x24`, recipes server-side, `SURV_USE_ITEM 0x81` (eat/open),
+  `SURV_PLAYER_EQUIP 0x50`, per-id item/max-stack tables.
 
 ## ⬜ Phase 5 — Drops & advanced simulation
 
@@ -140,13 +142,13 @@ Server owns inventory, containers, crafting, smelting.
 | 0x03 | HEALTH | S→C | ✅ 2 |
 | 0x04 | TIME | S→C | ✅ 2 |
 | 0x10–0x13 | MOB_* | S→C | ✅ 3 |
-| 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | 4 |
+| 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | 🔶 4 (0x20/21/25 ✅) |
 | 0x30–0x32 | DROP_* | S→C | 5 |
 | 0x40 | BLOCKMETA | S→C | 1 |
 | 0x50 | PLAYER_EQUIP | S→C | 4 |
 | 0x80 | ATTACK | C→S | ✅ 3 |
 | 0x81 | USE_ITEM | C→S | 4 |
-| 0x82–0x85 | SLOT/RESULT/CONT/HELD | C→S | 4 |
+| 0x82–0x85 | SLOT/RESULT/CONT/HELD | C→S | ✅ 4 |
 | 0x86 | DROP_ITEM | C→S | 5 |
 | 0x87 | RESPAWN | C→S | ✅ 2 |
 

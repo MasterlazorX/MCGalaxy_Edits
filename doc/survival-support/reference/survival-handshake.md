@@ -296,8 +296,15 @@ flash, creeper swell, fire overlay, graze dip, death keel-over) from state
 edges. `SURV_ATTACK` is live from the melee raycast. Integration-tested against
 the MCGalaxy fork's SurvivalMobs simulation.
 
+~~Inventory view~~ 🔶 **first slice implemented (phase 4)** — `INV_FULL`/
+`INV_SLOT`/`CURSOR` stream the server-owned inventory into `st_inv`/`st_craft`/
+`st_armor` + `st_cursor`; the survival inventory screen renders it in MP with
+clicks leaving as `SLOT_CLICK`/`RESULT_CLICK`/`CONT_CLOSE` intents (echo-only,
+no local mutation). Mining/placing feeds the server inventory. Containers
+(`0x22–0x24`), recipes and `USE_ITEM` are the remaining phase-4 work.
+
 Still deferred — **server→client appliers** for the remaining reserved ids:
-inventory `0x20–0x25`, drops `0x30–0x32`, blockmeta `0x40`, equip `0x50`. All
+containers `0x22–0x24`, drops `0x30–0x32`, blockmeta `0x40`, equip `0x50`. All
 ids are reserved in `enum SurvNetMsg`, so this is fill-in work against a fixed
 contract, not new protocol design. The concrete handoff for the server session
 lives in `doc/server-session-handoff.md`.
