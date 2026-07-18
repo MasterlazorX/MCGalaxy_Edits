@@ -52,6 +52,15 @@ namespace MCGalaxy.Commands.World
                         p.Message("Use: &T/Survival {0} [on/off]", opt); return;
                     }
                     break;
+                case "spawn":
+                    // test aid: spawn one mob at/near the level spawn point
+                    if (args.Length < 2 || !SpawnMob(p, lvl, args[1])) {
+                        p.Message("Use: &T/Survival spawn [zombie/skeleton/pig/creeper/spider/sheep]");
+                    }
+                    return; // no config change - skip save/refresh
+                case "mobs":
+                    p.Message("Live mobs on {0}&S: &b{1}", lvl.ColoredName, SurvivalMobs.CountMobs(lvl));
+                    return;
                 default:
                     Help(p); return;
             }
@@ -86,6 +95,28 @@ namespace MCGalaxy.Commands.World
             return true;
         }
 
+        static bool SpawnMob(Player p, Level lvl, string typeName) {
+            string[] names = { "zombie", "skeleton", "pig", "creeper", "spider", "sheep" };
+            int type = Array.IndexOf(names, typeName.ToLower());
+            if (type < 0) return false;
+            if (lvl.Config.SurvivalMode == SurvivalMode.Off) {
+                p.Message("This level is not a survival map."); return true;
+            }
+
+            // drop at the requester's feet when in-game, else at the level spawn
+            int x = lvl.spawnx, y = lvl.spawny, z = lvl.spawnz;
+            if (p != Player.Console && p.level == lvl) {
+                Maths.Vec3S32 feet = p.Pos.FeetBlockCoords;
+                x = feet.X; y = feet.Y; z = feet.Z;
+            }
+            if (SurvivalMobs.DebugSpawn(lvl, (byte)type, x, y, z)) {
+                p.Message("Spawned a &b{0}&S at ({1}, {2}, {3}).", typeName, x, y, z);
+            } else {
+                p.Message("Could not spawn (mob cap reached?).");
+            }
+            return true;
+        }
+
         static void PrintInfo(Player p, Level lvl) {
             LevelConfig cfg = lvl.Config;
             p.Message("Survival on {0}&S: mode &b{1}&S, theme &b{2}", lvl.ColoredName, cfg.SurvivalMode, cfg.SurvivalTheme);
@@ -98,6 +129,8 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Survival [off/classic/indev] &H- sets the survival mode (the per-map gate)");
             p.Message("&T/Survival theme [normal/hell/paradise/woods/floating]");
             p.Message("&T/Survival [enhanced/creative/pvp/deathdrops] [on/off] &H- sets a flag");
+            p.Message("&T/Survival spawn [type] &H- spawns a test mob at your feet");
+            p.Message("&T/Survival mobs &H- shows the level's live mob count");
             p.Message("&HChanges apply live to survival-test clients on this level.");
         }
     }

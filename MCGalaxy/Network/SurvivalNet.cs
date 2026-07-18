@@ -141,6 +141,7 @@ namespace MCGalaxy.Network
             SendWorldInfo(p, lvl, cfg);
             SendTime(p);   // seed the client with the current world time right away
             SendHealth(p); // and the current health/score
+            SurvivalMobs.SendLevelMobs(p, lvl); // phase 3: the level's live mob population
             Logger.Log(LogType.Debug, "survival: sent handshake to {0} for {1} (mode {2})",
                        p.name, lvl.name, cfg.SurvivalMode);
         }
@@ -196,7 +197,7 @@ namespace MCGalaxy.Network
             SendMessage(p, msg);
         }
 
-        static void SendMessage(Player p, byte[] payload) {
+        internal static void SendMessage(Player p, byte[] payload) {
             p.Send(Packet.PluginMessage(Channel, payload));
         }
 
@@ -221,12 +222,14 @@ namespace MCGalaxy.Network
 
         /// <summary> Starts the survival day/night clock. Called once from CorePlugin. </summary>
         public static void Start() {
+            SurvivalMobs.Start();
             if (timeTask != null) return;
             timeTask = Server.MainScheduler.QueueRepeat(TimeTick, null, TIME_INTERVAL);
         }
 
         /// <summary> Stops the survival day/night clock. </summary>
         public static void Stop() {
+            SurvivalMobs.Stop();
             if (timeTask == null) return;
             Server.MainScheduler.Cancel(timeTask);
             timeTask = null;
@@ -252,6 +255,10 @@ namespace MCGalaxy.Network
             msg[3] = SkyLight(time);
             SendMessage(p, msg);
         }
+
+        /// <summary> Sky light right now - the mob simulation's day/night input
+        /// (sunburn, darkness spawn rule, spider light-flee). </summary>
+        internal static byte CurrentSkyLight() { return SkyLight(worldTime); }
 
         /// <summary> Standard 0..15 sky light for the given world time, with short dawn/dusk ramps. </summary>
         static byte SkyLight(int time) {
@@ -348,6 +355,55 @@ namespace MCGalaxy.Network
             if (left <= 0) Revive(p, "safety timeout");
         }
 
+        // ---- graduated combat damage (phase 3: mobs hit for partial HP) ----
+        //
+        // Mob.hurt()'s dual-threshold invulnerability, applied to the PLAYER: while
+        // the 20-tick window is fresher than its half-point only damage exceeding
+        // the hit that opened it lands (and only the excess); past halfway a fresh
+        // hit lands fully and re-arms the window. Counted down by TickPlayerCombat
+        // (called at 20 TPS from the mob scheduler for survival players).
+
+        const string INVINC_KEY  = "survival.invincTicks";
+        const string LASTHP_KEY  = "survival.lastHitHealth";
+
+        internal static void TickPlayerCombat(Player p) {
+            int invinc = p.Extras.GetInt(INVINC_KEY, 0);
+            if (invinc > 0) p.Extras[INVINC_KEY] = invinc - 1;
+        }
+
+        /// <summary> Deals graduated damage to a survival player (mob melee, explosions).
+        /// Lethal damage flows into HandleDeath, so the death-screen dwell applies. </summary>
+        public static void DamagePlayer(Player p, int damage, string deathMsg) {
+            if (!Active(p, p.level) || IsDead(p) || damage <= 0) return;
+
+            int invinc = p.Extras.GetInt(INVINC_KEY, 0);
+            int health = GetHealth(p);
+            int last   = p.Extras.GetInt(LASTHP_KEY, health);
+            if (invinc > 10) {
+                if (last - damage >= health) return; // absorbed by the fresh window
+                health = last - damage;
+            } else {
+                p.Extras[LASTHP_KEY] = health;
+                p.Extras[INVINC_KEY] = 20;
+                health -= damage;
+            }
+
+            if (health <= 0) {
+                // route through HandleDeath so the message, death count and the
+                // death-screen dwell all behave exactly like any other death
+                SetHealth(p, 1);
+                p.HandleDeath(Block.Stone, deathMsg, false, true);
+            } else {
+                SetHealth(p, health); // the drop plays the client's hurt tilt/sound
+            }
+        }
+
+        /// <summary> Score credit for a player-credited mob kill (c0.30 mode only). </summary>
+        internal static void AddScore(Player p, int points) {
+            p.Extras[SCORE_KEY] = p.Extras.GetInt(SCORE_KEY, 0) + points;
+            if (Active(p, p.level)) SendHealth(p);
+        }
+
         /// <summary>
         /// Bridges MCGalaxy's death detection (fall, drown, lava, killer blocks, weapons, /kill, ...) into
         /// the survival health flow. Registered on OnPlayerDiedEvent, which fires inside HandleDeath just
@@ -422,6 +478,12 @@ namespace MCGalaxy.Network
                     HandleRespawn(p);
                     break;
                 case ATTACK:
+                    // [id][targetKind(0 mob/1 player)][targetId:u16 BE] - reach and
+                    // state are validated inside (a capability is not a permission)
+                    if (data.Length >= 4) {
+                        SurvivalMobs.HandleAttack(p, data[1], (data[2] << 8) | data[3]);
+                    }
+                    break;
                 case USE_ITEM:
                 case SLOT_CLICK:
                 case RESULT_CLICK:

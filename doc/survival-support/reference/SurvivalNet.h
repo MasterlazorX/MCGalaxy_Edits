@@ -54,6 +54,19 @@ enum SurvNetMsg {
 	SURV_RESPAWN      = 0x87  /* menu action */
 };
 
+/* SURV_MOB_SPAWN flags byte (spawn-time cosmetics). */
+#define SURV_MOBFLAG_HELMET 0x01
+#define SURV_MOBFLAG_ARMOR  0x02
+#define SURV_MOBFLAG_FUR    0x04
+/* SURV_MOB_STATE flags byte (animation drivers - the client derives cosmetic
+   timers from these EDGES, networking-plan §15.1). NOFUR shows a shear. */
+#define SURV_MOBSTATE_HURT   0x01
+#define SURV_MOBSTATE_FUSE   0x02
+#define SURV_MOBSTATE_ONFIRE 0x04
+#define SURV_MOBSTATE_GRAZE  0x08
+#define SURV_MOBSTATE_DEAD   0x10
+#define SURV_MOBSTATE_NOFUR  0x20
+
 /* Sends a survival intent to the server (a thin wrapper over CPE_SendPluginMessage
    on SURVNET_CHANNEL). No-op unless connected to a survival server. `payload` is
    up to 63 bytes (byte 0 is the message id, set by the caller). */

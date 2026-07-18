@@ -86,8 +86,10 @@ pointer. `.mclevel` handling is fully covered — format §18, save lifecycle §
       random ticks/fire already run only under SP block physics). *(landed)*
 - [ ] **Server runs the world sim** — day/night, random ticks, mob spawner — and
       relays block changes; day/night to stock clients via **`EnvColors`**. — §21
-- [ ] **Mob puppet** — `SURV_MOB_*` → `st_mobs[]`, render‑only, bespoke 16‑bit ids
+- [x] **Mob puppet** — `SURV_MOB_*` → `st_mobs[]`, render‑only, bespoke 16‑bit ids
       (not the Classic entity list). — §15.1, §17.5, §23.1
+      *(landed + integration‑tested: SurvivalTest_NetMob* appliers, puppet tick
+      keeps only presentation - interpolation, cosmetic timers, sounds)*
 - [ ] **Classic‑client policy** — creative maps allow build; survival maps
       visitor/deny; never let a non‑survival client edit a survival world. — §16, §20.2
 - [ ] **Custom blocks on stock clients** — `DefineBlock`/`DefineBlockExt` (shape +
@@ -315,7 +317,7 @@ The survival net layer hangs off the **MP** path only.
 > - **Intent senders** for all of `0x80–0x87`; `SURV_RESPAWN`, `SURV_HELD_SLOT`
 >   (auto on hotbar change) and `SURV_DROP_ITEM` (Q key) are live; the rest are
 >   wired up as the server's phases 3–5 land. See `doc/server-session-handoff.md`.
-> Still open (server phases 3–5 + matching client appliers): mobs `0x10–0x13`,
+> Still open (server phases 4–5 + matching client appliers): mobs `0x10–0x13` ✅ (phase 3 landed),
 > inventory `0x20–0x25`, drops `0x30–0x32`, blockmeta `0x40`, equip `0x50`.
 
 Keep all networked‑survival glue in one new file so the simulation files stay
@@ -1876,7 +1878,9 @@ SURV_MOB_SPAWN  0x10  [1..2]mobId(u16)  [3]type  [4..9]pos  [10]yaw [11]pitch
                       [12]health  [13]flags(b0 helmet,b1 armor,b2 fur)
 SURV_MOB_MOVE   0x11  [1..2]mobId  [3..8]pos  [9]yaw  [10]pitch
 SURV_MOB_STATE  0x12  [1..2]mobId  [3]health  [4]flags(b0 hurt,b1 fuse,b2 onFire,
-                                                       b3 graze,b4 dead)
+                                                       b3 graze,b4 dead,b5 noFur)
+                      (b5 added in the phase-3 implementation - a shear must be
+                      visible mid-life; same bytes, no ext-version bump needed)
 SURV_MOB_DESP   0x13  [1..2]mobId  [3]reason
 SURV_INV_FULL   0x20  [1]baseSlot  [2]runLen  then runLen×{id(u16),count(u8),dmg(i16)}
                       (5 bytes each → ≤12/frame; chunk across frames)

@@ -95,15 +95,18 @@ respawn) is complete; graduated Indev damage is the one refinement left.
 - Damage sources: fall, drown, fire, lava, mob attacks, PvP (gated on
   `SurvivalPvP`). Death drops gated on `SurvivalDeathDrops`.
 
-## ⬜ Phase 3 — Mob streaming
+## ✅ Phase 3 — Mob streaming
 
 Mobs stream into a dedicated puppet system (not standard CPE entities), to keep
-Indev-specific animations (creeper swell, sheep grazing).
+Indev-specific animations (creeper swell, sheep grazing). Landed as
+`SurvivalMobs.cs` + the client's `SurvivalTest_NetMob*` appliers, live-tested.
 
-- `SURV_MOB_SPAWN 0x10`, `SURV_MOB_MOVE 0x11`, `SURV_MOB_STATE 0x12`,
-  `SURV_MOB_DESPAWN 0x13`.
-- Server runs mob AI, spawners, and pathing; client renders + interpolates.
-- `SURV_ATTACK (0x80)` — client attack intent → server resolves damage/aggro.
+- ✅ `SURV_MOB_SPAWN 0x10`, `SURV_MOB_MOVE 0x11`, `SURV_MOB_STATE 0x12`,
+  `SURV_MOB_DESPAWN 0x13` — see session-notes for the layouts + the sim scope.
+- ✅ Server runs mob AI, spawner, physics, damage; client renders + interpolates.
+- ✅ `SURV_ATTACK (0x80)` — reach-validated melee → damage/knockback/aggro/shear.
+- ⬜ *Refinements:* Indev A* pathfinding, skeleton arrows (needs phase-5 wire),
+  block-destroying explosions (opt-in), a real light model, mob persistence.
 
 ## ⬜ Phase 4 — Inventory & containers
 
@@ -136,12 +139,12 @@ Server owns inventory, containers, crafting, smelting.
 | 0x02 | WORLDINFO | S→C | ✅ 0 (extend in 1) |
 | 0x03 | HEALTH | S→C | ✅ 2 |
 | 0x04 | TIME | S→C | ✅ 2 |
-| 0x10–0x13 | MOB_* | S→C | 3 |
+| 0x10–0x13 | MOB_* | S→C | ✅ 3 |
 | 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | 4 |
 | 0x30–0x32 | DROP_* | S→C | 5 |
 | 0x40 | BLOCKMETA | S→C | 1 |
 | 0x50 | PLAYER_EQUIP | S→C | 4 |
-| 0x80 | ATTACK | C→S | 3 |
+| 0x80 | ATTACK | C→S | ✅ 3 |
 | 0x81 | USE_ITEM | C→S | 4 |
 | 0x82–0x85 | SLOT/RESULT/CONT/HELD | C→S | 4 |
 | 0x86 | DROP_ITEM | C→S | 5 |

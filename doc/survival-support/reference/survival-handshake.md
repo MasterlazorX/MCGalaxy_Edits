@@ -289,8 +289,15 @@ fire already only run under SP block physics.)
 `ATTACK`/`USE_ITEM`/`SLOT_CLICK`/`RESULT_CLICK`/`CONT_CLOSE` are called as the
 server streams the state they act on (phases 3–4).
 
-Still deferred — **server→client appliers** for the reserved ids: mobs
-`0x10–0x13`, inventory `0x20–0x25`, drops `0x30–0x32`, blockmeta `0x40`, equip
-`0x50`. All ids are reserved in `enum SurvNetMsg`, so this is fill-in work
-against a fixed contract, not new protocol design. The concrete handoff for the
-server session lives in `doc/server-session-handoff.md`.
+~~Mob appliers~~ ✅ **implemented (phase 3)** — `SURV_MOB_SPAWN/MOVE/STATE/
+DESPAWN` puppet the existing `st_mobs[]` pool: the server streams AI/physics/
+damage, the client renders + interpolates and derives cosmetic timers (hurt
+flash, creeper swell, fire overlay, graze dip, death keel-over) from state
+edges. `SURV_ATTACK` is live from the melee raycast. Integration-tested against
+the MCGalaxy fork's SurvivalMobs simulation.
+
+Still deferred — **server→client appliers** for the remaining reserved ids:
+inventory `0x20–0x25`, drops `0x30–0x32`, blockmeta `0x40`, equip `0x50`. All
+ids are reserved in `enum SurvNetMsg`, so this is fill-in work against a fixed
+contract, not new protocol design. The concrete handoff for the server session
+lives in `doc/server-session-handoff.md`.

@@ -198,6 +198,49 @@ off (death/respawn is server-owned via `SURV_RESPAWN`). Referee mode keeps its
 usual all-hacks escape hatch, and the server-side `Hacks.CanUse*` checks read
 the same override. `/Survival` re-sends motd+hacks so live config changes apply.
 
+### Phase 3 — mob streaming (`SurvivalMobs.cs`)
+
+The server runs the whole mob simulation and streams it; the client renders a
+puppet pool (its `st_mobs[]`) fed by these messages. The AI/physics is a C#
+port of the ClassiCube fork's verified c0.30/Indev mob sim (BasicAI /
+BasicAttackAI / EntityMob lineage), ticked at 20 TPS on a dedicated scheduler.
+Only levels with players are simulated.
+
+| msg | dir | layout |
+|---|---|---|
+| `SURV_MOB_SPAWN` 0x10 | S→C | `[id:u16][type][pos:3×i16 fixed(×32)][yaw:u8][pitch:u8][health][flags(b0 helmet, b1 armor, b2 fur)]` |
+| `SURV_MOB_MOVE` 0x11 | S→C | `[id:u16][pos:3×i16][yaw][pitch]` — sent only when the quantised pose changed |
+| `SURV_MOB_STATE` 0x12 | S→C | `[id:u16][health][flags(b0 hurt, b1 fuse, b2 onFire, b3 graze, b4 dead, b5 noFur)]` — sent on change; the hurt bit is a one-tick edge |
+| `SURV_MOB_DESPAWN` 0x13 | S→C | `[id:u16][reason(0 despawn / 1 death)]` |
+| `SURV_ATTACK` 0x80 | C→S | `[targetKind(0 mob)][targetId:u16]` — reach-validated (6 blocks incl. latency pad), applies melee + knockback + aggro; sheep shear rules per mode |
+
+Simulated per mob: wander/chase/attack AI (per-type: creeper 3/7-block fuse →
+30-tick blast, spider light-flee + pounce, zombie 5 / default 2 Indev melee,
+c0.30 damage rolls + creeper headbutt self-damage), `Mob.travel` physics with
+axis-clipped AABB collision against level blocks, fall damage, drowning,
+lava/fire, sheep grazing (grass→dirt through the normal block path, so every
+client sees it), undead sunburn, the c0.30 spawner (initial population + capped
+top-up, min-of-two-uniforms Y bias, 16-block spawn-point exclusion) and the
+600-tick/1-in-800 despawn roll. Players take graduated damage (`DamagePlayer`:
+the same dual-threshold invulnerability window as mobs, ticked at 20 TPS);
+lethal hits route through `HandleDeath`, so the death-screen dwell applies.
+Kill credit awards the c0.30 death scores in Classic mode only.
+
+Test aids: `/Survival spawn [zombie/skeleton/pig/creeper/spider/sheep]` (at
+your feet, ground-snapped) and `/Survival mobs` (live count).
+
+**V1 deviations (deliberate, revisit later):**
+- Indev's A* creature pathfinding is not ported — both modes use the c0.30
+  direct-steer chase (mobs bump into obstacles rather than pathing around).
+- Skeletons melee like zombies: arrows need their own wire messages (phase 5).
+- No server-side light engine: "brightness" (darkness spawn rule, spider
+  light-flee, monster fast-aging, sunburn) = sky-exposure × day/night level.
+- Explosions damage players (approximate linear falloff) but never blocks —
+  most MCGalaxy maps are protected builds; block damage needs opt-in config.
+- No drops (phase 5): mob deaths and shears yield nothing yet.
+- Mobs freeze on playerless maps and do not persist across server restarts.
+- Spawn clusters trimmed to 1–3 (genuine rolls up to 9) to tame populations.
+
 ### Reserved message ids (`SurvivalNet.cs`)
 
 Server → client: `HELLO 0x01`, `WORLDINFO 0x02`, `HEALTH 0x03`, `TIME 0x04`,
@@ -211,9 +254,9 @@ Client → server: `ATTACK 0x80`, `USE_ITEM 0x81`, `SLOT_CLICK 0x82`,
 `RESPAWN 0x87`.
 
 Implemented so far: server→client `0x01` HELLO, `0x02` WORLDINFO, `0x03` HEALTH,
-`0x04` TIME; client→server `0x87` RESPAWN (handled). The rest are reserved and,
-for inbound intents, bounds-checked, capability-gated, and logged (handlers
-deferred).
+`0x04` TIME, `0x10–0x13` MOB_* (phase 3); client→server `0x87` RESPAWN and
+`0x80` ATTACK (handled). The rest are reserved and, for inbound intents,
+bounds-checked, capability-gated, and logged (handlers deferred).
 
 ---
 

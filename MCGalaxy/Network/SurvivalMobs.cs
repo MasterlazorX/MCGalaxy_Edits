@@ -1,0 +1,978 @@
+/*
+    Copyright 2015-2024 MCGalaxy
+
+    Dual-licensed under the Educational Community License, Version 2.0 and
+    the GNU General Public License, Version 3 (the "Licenses"); you may
+    not use this file except in compliance with the Licenses. You may
+    obtain a copy of the Licenses at
+
+    https://opensource.org/license/ecl-2-0/
+    https://www.gnu.org/licenses/gpl-3.0.html
+
+    Unless required by applicable law or agreed to in writing,
+    software distributed under the Licenses are distributed on an "AS IS"
+    BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the Licenses for the specific language governing
+    permissions and limitations under the Licenses.
+ */
+using System;
+using System.Collections.Generic;
+using MCGalaxy.Blocks;
+using MCGalaxy.Maths;
+using MCGalaxy.Tasks;
+using BlockID = System.UInt16;
+
+namespace MCGalaxy.Network
+{
+    /// <summary> Phase 3: server-authoritative mob simulation, streamed to survival-test
+    /// clients as SURV_MOB_SPAWN/MOVE/STATE/DESPAWN (the client renders a puppet pool -
+    /// ClassiCube fork's networking-plan.md §15.1/§17.5, wire layouts §25). </summary>
+    /// <remarks>
+    /// The AI/physics below is a port of the ClassiCube fork's SurvivalTest.c mob
+    /// simulation, itself a verified port of the original c0.30 Survival Test /
+    /// Indev decompiles (Mob.java, BasicAI/BasicAttackAI, EntityMob/EntityCreeper...).
+    /// Ticks at 20 TPS on a dedicated scheduler; only levels that currently have
+    /// players are simulated (mobs freeze on empty maps - a server-cost deviation).
+    ///
+    /// V1 scope cuts, all deliberate and documented in doc/survival-support/session-notes.md:
+    ///  * Indev's A* creature pathfinding is NOT ported yet - both modes chase with the
+    ///    c0.30 BasicAttackAI direct-steer model (mobs bump into obstacles rather than
+    ///    pathing around them).
+    ///  * Skeletons melee like zombies - arrows need their own wire messages (phase 5's
+    ///    projectile/drops work) before ranged AI can stream.
+    ///  * Lighting rules (spawn darkness, spider light-flee, monster fast-despawn in
+    ///    light, undead sunburn) approximate "brightness" as sky-exposure x day/night,
+    ///    since the server has no block-light engine: a column open to the sky uses the
+    ///    day/night level, anything under cover counts as dark.
+    ///  * Creeper explosions damage players (genuine radius/falloff) but do NOT destroy
+    ///    blocks - most MCGalaxy maps are protected builds; block damage needs its own
+    ///    opt-in config + undo integration before it can land.
+    ///  * Death drops / wool shear drops are phase 5 (no drop streaming yet).
+    /// </remarks>
+    public static class SurvivalMobs
+    {
+        // Mirrors the client's enum MobType / mobTypeInfo ordering exactly
+        // (MobSpawner.spawn's random.nextInt(6) indexes this table).
+        public const byte TYPE_ZOMBIE = 0, TYPE_SKELETON = 1, TYPE_PIG = 2,
+                          TYPE_CREEPER = 3, TYPE_SPIDER = 4, TYPE_SHEEP = 5;
+        const int SPAWN_TYPES = 6;
+
+        class MobType
+        {
+            public string Name;
+            public bool Passive, IsCreeper;
+            public float RunSpeed, LookAngle;
+            public int Damage;                  // c0.30 BasicAttackAI damage roll base
+            public int IndevMelee;              // Indev EntityMob.attackStrength (0 = never melees)
+            public float W030, H030, WIndev, HIndev;
+            public float HeightOff;             // Entity.heightOffset - the eye-ish anchor
+        }
+
+        static readonly MobType[] Types = {
+            new MobType { Name="zombie",   RunSpeed=1.00f, LookAngle=30, Damage=6, IndevMelee=5, HeightOff=1.62f, W030=0.6f, H030=1.8f,  WIndev=0.6f, HIndev=1.8f },
+            new MobType { Name="skeleton", RunSpeed=0.30f, LookAngle=0,  Damage=8, IndevMelee=2, HeightOff=1.62f, W030=0.6f, H030=1.8f,  WIndev=0.6f, HIndev=1.8f },
+            new MobType { Name="pig",      RunSpeed=0.70f, LookAngle=0,  Damage=0, IndevMelee=0, HeightOff=1.72f, W030=1.4f, H030=1.2f,  WIndev=0.9f, HIndev=0.9f, Passive=true },
+            new MobType { Name="creeper",  RunSpeed=0.70f, LookAngle=45, Damage=6, IndevMelee=0, HeightOff=1.62f, W030=0.6f, H030=1.8f,  WIndev=0.6f, HIndev=1.8f, IsCreeper=true },
+            new MobType { Name="spider",   RunSpeed=0.56f, LookAngle=0,  Damage=6, IndevMelee=2, HeightOff=0.72f, W030=1.4f, H030=0.9f,  WIndev=1.4f, HIndev=0.9f },
+            new MobType { Name="sheep",    RunSpeed=0.70f, LookAngle=0,  Damage=0, IndevMelee=0, HeightOff=1.72f, W030=1.4f, H030=1.72f, WIndev=0.9f, HIndev=1.3f, Passive=true },
+        };
+
+        // Indev EntityLiving moveSpeed overrides (client's Mob_IndevMoveSpeed)
+        static float IndevMoveSpeed(byte type) {
+            if (type == TYPE_ZOMBIE) return 0.5f;
+            if (type == TYPE_SPIDER) return 0.8f;
+            return 0.7f;
+        }
+
+        class SurvMob
+        {
+            public ushort Id;
+            public byte Type;
+            public double X, Y, Z;      // feet position (client Entity.Position convention)
+            public double VX, VY, VZ;   // per-tick displacement (Java velocity convention)
+            public float Yaw, Pitch;    // degrees
+            public bool OnGround;
+
+            public int Health = 20, LastHealth, InvincTicks, AttackDelay, DeathTicks;
+            public int NoActionTime, AirTicks = 300;
+            public float MoveStrafe, MoveForward, TurnRate;
+            public bool Jumping, Dead;
+            public Player Target;
+
+            public bool HasFur = true, Grazing;
+            public bool HasHelmet, HasArmor; // c0.30 HumanoidMob 20% cosmetic rolls
+            public int GrazeTime;
+            public int Fire;            // Entity.fire burn ticks
+            public sbyte FuseState = -1;
+            public int FuseTicks;
+            public bool Falling; public double FallPeakY;
+
+            // last-streamed snapshot, so MOVE/STATE only go out on change
+            public short SentX = short.MinValue, SentY, SentZ;
+            public byte SentYaw, SentPitch;
+            public int SentHealth = -1; public byte SentFlags;
+            public bool HurtThisTick;
+        }
+
+        class LevelMobs
+        {
+            public Level Level;
+            public List<SurvMob> Mobs = new List<SurvMob>();
+            public bool InitialSpawned;
+            public Random Rng = new Random();
+        }
+
+        static readonly Dictionary<Level, LevelMobs> registry = new Dictionary<Level, LevelMobs>();
+        static readonly object registryLock = new object();
+        static ushort nextMobId = 1;
+        static Scheduler scheduler;
+        static SchedulerTask tickTask;
+
+        public const int MAX_MOBS_PER_LEVEL = 256; // matches the client's MOB_MAX pool
+
+        public static void Start() {
+            if (scheduler == null) scheduler = new Scheduler("MCG_SurvivalMobs");
+            if (tickTask != null) return;
+            tickTask = scheduler.QueueRepeat(Tick, null, TimeSpan.FromMilliseconds(50));
+        }
+
+        public static void Stop() {
+            if (tickTask != null && scheduler != null) scheduler.Cancel(tickTask);
+            tickTask = null;
+            lock (registryLock) registry.Clear();
+        }
+
+
+        // ==================== per-level registry ====================
+
+        static LevelMobs GetLevel(Level lvl, bool create) {
+            lock (registryLock) {
+                LevelMobs lm;
+                if (registry.TryGetValue(lvl, out lm)) return lm;
+                if (!create) return null;
+                lm = new LevelMobs { Level = lvl };
+                registry[lvl] = lm;
+                return lm;
+            }
+        }
+
+        /// <summary> Streams every live mob on the level to a player (their per-map
+        /// handshake). Called from SurvivalNet.SendHandshake. </summary>
+        public static void SendLevelMobs(Player p, Level lvl) {
+            LevelMobs lm = GetLevel(lvl, false);
+            if (lm == null) return;
+            lock (lm.Mobs) {
+                foreach (SurvMob m in lm.Mobs) SendSpawn(p, m);
+            }
+        }
+
+
+        // ==================== streaming ====================
+
+        static Player[] Watchers(Level lvl) {
+            Player[] players = PlayerInfo.Online.Items;
+            List<Player> result = new List<Player>();
+            foreach (Player p in players)
+            {
+                if (p.level == lvl && SurvivalNet.Active(p, lvl)) result.Add(p);
+            }
+            return result.ToArray();
+        }
+
+        static short Fixed(double v)  { return (short)Math.Round(v * 32.0); }
+        static byte  Angle(float deg) {
+            int a = (int)Math.Round(deg * 256.0 / 360.0);
+            return (byte)(((a % 256) + 256) % 256);
+        }
+
+        static byte SpawnFlags(SurvMob m) {
+            byte flags = 0;
+            if (m.HasHelmet) flags |= 0x01;
+            if (m.HasArmor)  flags |= 0x02;
+            if (m.HasFur)    flags |= 0x04;
+            return flags;
+        }
+
+        static byte StateFlags(SurvMob m) {
+            byte flags = 0;
+            if (m.HurtThisTick)       flags |= 0x01; // hurt
+            if (m.FuseState > 0)      flags |= 0x02; // fuse
+            if (m.Fire > 0)           flags |= 0x04; // onFire
+            if (m.Grazing)            flags |= 0x08; // graze
+            if (m.Dead)               flags |= 0x10; // dead
+            if (!m.HasFur)            flags |= 0x20; // noFur (visible shear)
+            return flags;
+        }
+
+        static void SendSpawn(Player p, SurvMob m) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short x = Fixed(m.X), y = Fixed(m.Y), z = Fixed(m.Z);
+            msg[0]  = SurvivalNet.MOB_SPAWN;
+            msg[1]  = (byte)(m.Id >> 8); msg[2] = (byte)m.Id;
+            msg[3]  = m.Type;
+            msg[4]  = (byte)(x >> 8); msg[5]  = (byte)x;
+            msg[6]  = (byte)(y >> 8); msg[7]  = (byte)y;
+            msg[8]  = (byte)(z >> 8); msg[9]  = (byte)z;
+            msg[10] = Angle(m.Yaw);
+            msg[11] = Angle(m.Pitch);
+            msg[12] = (byte)m.Health;
+            msg[13] = SpawnFlags(m);
+            SurvivalNet.SendMessage(p, msg);
+        }
+
+        static void BroadcastSpawn(Level lvl, SurvMob m) {
+            foreach (Player p in Watchers(lvl)) SendSpawn(p, m);
+            m.SentX = Fixed(m.X); m.SentY = Fixed(m.Y); m.SentZ = Fixed(m.Z);
+            m.SentYaw = Angle(m.Yaw); m.SentPitch = Angle(m.Pitch);
+            m.SentHealth = m.Health; m.SentFlags = StateFlags(m);
+        }
+
+        static void StreamMob(Level lvl, Player[] watchers, SurvMob m) {
+            short x = Fixed(m.X), y = Fixed(m.Y), z = Fixed(m.Z);
+            byte yaw = Angle(m.Yaw), pitch = Angle(m.Pitch);
+            byte flags = StateFlags(m);
+
+            if (x != m.SentX || y != m.SentY || z != m.SentZ || yaw != m.SentYaw || pitch != m.SentPitch) {
+                byte[] msg = new byte[Packet.PluginMessageDataLength];
+                msg[0] = SurvivalNet.MOB_MOVE;
+                msg[1] = (byte)(m.Id >> 8); msg[2] = (byte)m.Id;
+                msg[3] = (byte)(x >> 8); msg[4] = (byte)x;
+                msg[5] = (byte)(y >> 8); msg[6] = (byte)y;
+                msg[7] = (byte)(z >> 8); msg[8] = (byte)z;
+                msg[9] = yaw; msg[10] = pitch;
+                foreach (Player p in watchers) SurvivalNet.SendMessage(p, msg);
+                m.SentX = x; m.SentY = y; m.SentZ = z;
+                m.SentYaw = yaw; m.SentPitch = pitch;
+            }
+
+            if (m.Health != m.SentHealth || flags != m.SentFlags) {
+                byte[] msg = new byte[Packet.PluginMessageDataLength];
+                msg[0] = SurvivalNet.MOB_STATE;
+                msg[1] = (byte)(m.Id >> 8); msg[2] = (byte)m.Id;
+                msg[3] = (byte)Math.Max(0, m.Health);
+                msg[4] = flags;
+                foreach (Player p in watchers) SurvivalNet.SendMessage(p, msg);
+                m.SentHealth = m.Health; m.SentFlags = flags;
+            }
+            m.HurtThisTick = false;
+        }
+
+        static void BroadcastDespawn(Level lvl, SurvMob m, byte reason) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = SurvivalNet.MOB_DESPAWN;
+            msg[1] = (byte)(m.Id >> 8); msg[2] = (byte)m.Id;
+            msg[3] = reason;
+            foreach (Player p in Watchers(lvl)) SurvivalNet.SendMessage(p, msg);
+        }
+
+
+        // ==================== world helpers ====================
+
+        // Genuine World.getBlockId CLAMPS out-of-bounds coords to the edge block
+        // (client's Mob_BlockIsSolid note: this is what stops floating-map voids
+        // from reading as solid ground).
+        static BlockID BlockAt(Level lvl, int x, int y, int z) {
+            if (x < 0) x = 0; else if (x >= lvl.Width)  x = lvl.Width  - 1;
+            if (y < 0) y = 0; else if (y >= lvl.Height) y = lvl.Height - 1;
+            if (z < 0) z = 0; else if (z >= lvl.Length) z = lvl.Length - 1;
+            return lvl.GetBlock((ushort)x, (ushort)y, (ushort)z);
+        }
+
+        static bool IsSolidAt(Level lvl, int x, int y, int z) {
+            return CollideType.IsSolid(lvl.CollideType(BlockAt(lvl, x, y, z)));
+        }
+
+        static bool BoxFree(Level lvl, SurvMob m, double x, double y, double z) {
+            float w = Width(lvl, m) / 2, h = Height(lvl, m);
+            int minX = (int)Math.Floor(x - w), maxX = (int)Math.Floor(x + w - 0.001);
+            int minY = (int)Math.Floor(y),     maxY = (int)Math.Floor(y + h - 0.001);
+            int minZ = (int)Math.Floor(z - w), maxZ = (int)Math.Floor(z + w - 0.001);
+
+            for (int by = minY; by <= maxY; by++)
+                for (int bz = minZ; bz <= maxZ; bz++)
+                    for (int bx = minX; bx <= maxX; bx++)
+            {
+                if (IsSolidAt(lvl, bx, by, bz)) return false;
+            }
+            return true;
+        }
+
+        static float Width(Level lvl, SurvMob m) {
+            return lvl.Config.SurvivalMode == SurvivalMode.Indev ? Types[m.Type].WIndev : Types[m.Type].W030;
+        }
+        static float Height(Level lvl, SurvMob m) {
+            return lvl.Config.SurvivalMode == SurvivalMode.Indev ? Types[m.Type].HIndev : Types[m.Type].H030;
+        }
+
+        // Liquid test: any block the bounding box overlaps with a liquid collide type
+        static bool InLiquid(Level lvl, SurvMob m, bool lava) {
+            float w = Width(lvl, m) / 2, h = Height(lvl, m);
+            int minX = (int)Math.Floor(m.X - w), maxX = (int)Math.Floor(m.X + w - 0.001);
+            int minY = (int)Math.Floor(m.Y),     maxY = (int)Math.Floor(m.Y + h - 0.001);
+            int minZ = (int)Math.Floor(m.Z - w), maxZ = (int)Math.Floor(m.Z + w - 0.001);
+
+            for (int by = minY; by <= maxY; by++)
+                for (int bz = minZ; bz <= maxZ; bz++)
+                    for (int bx = minX; bx <= maxX; bx++)
+            {
+                byte collide = lvl.CollideType(BlockAt(lvl, bx, by, bz));
+                if (lava  && collide == CollideType.LiquidLava)  return true;
+                if (!lava && (collide == CollideType.LiquidWater || collide == CollideType.SwimThrough)) return true;
+            }
+            return false;
+        }
+
+        // "Brightness" approximation (no server-side light engine): a column open
+        // to the sky uses the day/night sky light, anything under cover is dark.
+        static bool SkyExposed(Level lvl, SurvMob m) {
+            int x = (int)Math.Floor(m.X), z = (int)Math.Floor(m.Z);
+            int top = lvl.Height - 1;
+            for (int y = (int)Math.Floor(m.Y + Height(lvl, m)); y <= top; y++)
+            {
+                if (x < 0 || z < 0 || x >= lvl.Width || z >= lvl.Length) return true;
+                if (IsSolidAt(lvl, x, y, z)) return false;
+            }
+            return true;
+        }
+
+        static bool IsBright(Level lvl, SurvMob m) {
+            return SurvivalNet.CurrentSkyLight() > 7 && SkyExposed(lvl, m);
+        }
+
+
+        // ==================== physics (Mob.travel port) ====================
+
+        // Mob_MoveRelative: convert strafe/forward intent into a velocity kick
+        // along the mob's yaw. Uses the same basis the client derived for CC's
+        // yaw convention (dir.x = sin(yaw), dir.z = -cos(yaw)).
+        static void MoveRelative(SurvMob m, float strafe, float forward, float friction) {
+            float dist = strafe * strafe + forward * forward;
+            if (dist < 0.0001f) return;
+            dist = (float)Math.Sqrt(dist);
+            if (dist < 1) dist = 1;
+            dist = friction / dist;
+            strafe *= dist; forward *= dist;
+
+            double sinYaw = Math.Sin(m.Yaw * Math.PI / 180.0);
+            double cosYaw = Math.Cos(m.Yaw * Math.PI / 180.0);
+            m.VX += forward * sinYaw + strafe * cosYaw;
+            m.VZ += strafe  * sinYaw - forward * cosYaw;
+        }
+
+        // Axis-clipped move in sub-steps (Entity.move lineage: clip Y, then X,
+        // then Z, zeroing a clipped axis). c0.30 mobs have no step-up assist
+        // (Entity.footSize is only set on Player) - they jump instead.
+        static void MoveClipped(Level lvl, SurvMob m) {
+            double dx = m.VX, dy = m.VY, dz = m.VZ;
+            double biggest = Math.Max(Math.Abs(dx), Math.Max(Math.Abs(dy), Math.Abs(dz)));
+            int steps = (int)Math.Ceiling(biggest / 0.25);
+            if (steps < 1) steps = 1;
+            double sx = dx / steps, sy = dy / steps, sz = dz / steps;
+            bool hitX = false, hitY = false, hitZ = false;
+            m.OnGround = false;
+
+            for (int i = 0; i < steps; i++)
+            {
+                if (!hitY && sy != 0) {
+                    if (BoxFree(lvl, m, m.X, m.Y + sy, m.Z)) m.Y += sy;
+                    else { hitY = true; if (sy < 0) m.OnGround = true; m.VY = 0; }
+                }
+                if (!hitX && sx != 0) {
+                    if (BoxFree(lvl, m, m.X + sx, m.Y, m.Z)) m.X += sx;
+                    else { hitX = true; m.VX = 0; }
+                }
+                if (!hitZ && sz != 0) {
+                    if (BoxFree(lvl, m, m.X, m.Y, m.Z + sz)) m.Z += sz;
+                    else { hitZ = true; m.VZ = 0; }
+                }
+            }
+        }
+
+        static void Travel(Level lvl, SurvMob m, bool inWater, bool inLava) {
+            if (inWater || inLava) {
+                // Mob.travel's water/lava branches: identical bar the drag factor
+                double drag = inWater ? 0.8 : 0.5;
+                MoveRelative(m, m.MoveStrafe, m.MoveForward, 0.02f);
+                bool blockedBefore = !BoxFree(lvl, m, m.X + m.VX, m.Y, m.Z) ||
+                                     !BoxFree(lvl, m, m.X, m.Y, m.Z + m.VZ);
+                MoveClipped(lvl, m);
+                m.VX *= drag; m.VY *= drag; m.VZ *= drag;
+                m.VY -= 0.02;
+                // paddle-up assist when pushing against terrain (client's approximation)
+                if (blockedBefore) m.VY = 0.3;
+            } else {
+                float friction = m.OnGround ? 0.1f : 0.02f;
+                MoveRelative(m, m.MoveStrafe, m.MoveForward, friction);
+                MoveClipped(lvl, m);
+                m.VX *= 0.91; m.VY *= 0.98; m.VZ *= 0.91;
+                m.VY -= 0.08;
+                if (m.OnGround) { m.VX *= 0.6; m.VZ *= 0.6; }
+            }
+        }
+
+        static void DoJump(SurvMob m, bool inWater, bool inLava, bool spiderLunge) {
+            if (!m.Jumping) return;
+            if (inWater || inLava) {
+                m.VY += 0.04;
+            } else if (m.OnGround) {
+                if (spiderLunge) {
+                    // JumpAttackAI.jumpFromGround's attackTarget branch: forward lunge
+                    m.VX = 0; m.VZ = 0;
+                    MoveRelative(m, 0, 1, 0.6f);
+                    m.VY = 0.5;
+                } else {
+                    m.VY = 0.42;
+                }
+            }
+        }
+
+
+        // ==================== combat ====================
+
+        /// <summary> Mob.hurt()'s dual-threshold invulnerability + knockback + aggro.
+        /// attacker may be null (environment). Returns whether the hit landed. </summary>
+        static bool HurtMob(Level lvl, LevelMobs lm, SurvMob m, Player attacker, int damage) {
+            if (m.Dead || m.Health <= 0 || damage <= 0) return false;
+
+            // BasicAttackAI.hurt: aggro onto the attacker on every hit
+            if (attacker != null && !Types[m.Type].Passive) m.Target = attacker;
+            m.NoActionTime = 0;
+
+            if (m.InvincTicks > 10) {
+                if (m.LastHealth - damage >= m.Health) return false; // absorbed
+                m.Health = m.LastHealth - damage;
+            } else {
+                m.LastHealth  = m.Health;
+                m.InvincTicks = 20;
+                m.Health     -= damage;
+            }
+            m.HurtThisTick = true;
+
+            if (attacker != null) {
+                double ax = attacker.Pos.X / 32.0, az = attacker.Pos.Z / 32.0;
+                double dx = ax - m.X, dz = az - m.Z;
+                double dist = Math.Sqrt(dx * dx + dz * dz);
+                if (dist >= 0.0001) {
+                    m.VX = m.VX / 2 - dx / dist * 0.4;
+                    m.VZ = m.VZ / 2 - dz / dist * 0.4;
+                }
+                m.VY = Math.Min(m.VY / 2 + 0.4, 0.4);
+            }
+
+            if (m.Health <= 0) KillMob(lvl, lm, m, attacker);
+            return true;
+        }
+
+        static void KillMob(Level lvl, LevelMobs lm, SurvMob m, Player killer) {
+            m.Health = 0;
+            m.Dead   = true;
+            m.DeathTicks = 0;
+            // Mob.deathScore, credited only on a player kill and only in c0.30 mode
+            // (Indev has no score) - client mobTypeInfo's deathScore column.
+            if (killer != null && lvl.Config.SurvivalMode == SurvivalMode.Classic) {
+                int[] scores = { 80, 120, 10, 200, 105, 10 };
+                SurvivalNet.AddScore(killer, scores[m.Type]);
+            }
+        }
+
+        // Genuine c0.30 death-explosion (client Mob_CreeperExplode): radius ~4,
+        // entity damage only in v1 (block destruction deliberately not ported yet).
+        static void CreeperExplode(Level lvl, SurvMob m, float radius) {
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player p in players)
+            {
+                if (p.level != lvl || !SurvivalNet.Active(p, lvl)) continue;
+                double px = p.Pos.X / 32.0, py = (p.Pos.Y - Entities.CharacterHeight) / 32.0, pz = p.Pos.Z / 32.0;
+                double dx = px - m.X, dy = py - m.Y, dz = pz - m.Z;
+                double dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist >= radius) continue;
+                // Approximate falloff: full-strength up close, linear to 0 at the edge
+                // (the genuine density-raycast falloff needs the block-destruction port)
+                int damage = (int)((1.0 - dist / radius) * 15.0 + 1.0);
+                SurvivalNet.DamagePlayer(p, damage, "@p was blown up by a creeper");
+            }
+        }
+
+        /// <summary> Handles a SURV_ATTACK intent: validates reach + state, then applies
+        /// the player's melee to the target mob. Called from SurvivalNet. </summary>
+        public static void HandleAttack(Player p, int targetKind, int targetId) {
+            if (targetKind != 0) return; // player targets = PvP, phase-later
+            Level lvl = p.level;
+            if (lvl == null || !SurvivalNet.Active(p, lvl) || SurvivalNet.IsDead(p)) return;
+            LevelMobs lm = GetLevel(lvl, false);
+            if (lm == null) return;
+
+            lock (lm.Mobs) {
+                SurvMob m = null;
+                foreach (SurvMob mob in lm.Mobs) { if (mob.Id == targetId) { m = mob; break; } }
+                if (m == null || m.Dead) return;
+
+                // Reach validation: eye-to-mob within the survival reach (4 blocks,
+                // padded to 6 for latency - the mob has moved since the client swung)
+                double px = p.Pos.X / 32.0, py = p.Pos.Y / 32.0, pz = p.Pos.Z / 32.0;
+                double dx = px - m.X, dy = py - (m.Y + Height(lvl, m) / 2), dz = pz - m.Z;
+                if (dx * dx + dy * dy + dz * dz > 6 * 6) {
+                    Logger.Log(LogType.Debug, "survival: rejected attack from {0} (out of reach)", p.name);
+                    return;
+                }
+
+                // Sheep shear before damage: c0.30 replaces the hit entirely; Indev
+                // shears AND falls through to damage. Wool drops are phase 5.
+                bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+                if (m.Type == TYPE_SHEEP && m.HasFur) {
+                    m.HasFur = false;
+                    if (!indev) return; // c0.30: shear instead of damage
+                }
+
+                // Bare-fist damage: c0.30 flat 4, Indev fist 1 (held-item damage
+                // tables arrive with phase 4's server-side inventory).
+                HurtMob(lvl, lm, m, p, indev ? 1 : 4);
+            }
+        }
+
+
+        // ==================== AI (BasicAI / BasicAttackAI port) ====================
+
+        static void WanderAI(LevelMobs lm, SurvMob m, bool indev, bool inWater, bool inLava) {
+            MobType info = Types[m.Type];
+            float speed = indev ? IndevMoveSpeed(m.Type) : info.RunSpeed;
+            Random rng = lm.Rng;
+
+            if (rng.Next(100) < 7) {
+                m.MoveStrafe  = (float)(rng.NextDouble() - 0.5) * speed;
+                m.MoveForward = (float)rng.NextDouble() * speed;
+            }
+            m.Jumping = rng.Next(100) < 1;
+
+            if (rng.Next(100) < 4) {
+                m.TurnRate = (float)(rng.NextDouble() - 0.5) * 60.0f;
+            }
+            m.Yaw  += m.TurnRate;
+            m.Pitch = indev ? 0 : info.LookAngle;
+
+            if (m.Target != null && !indev) {
+                m.MoveForward = speed;
+                m.Jumping = rng.Next(100) < 4;
+            }
+            // BasicAI.update: the water/lava bob roll applies to EVERY mob
+            if (inWater || inLava) m.Jumping = rng.Next(100) < 80;
+        }
+
+        static void AttackAI(Level lvl, LevelMobs lm, SurvMob m, bool indev, Player[] watchers) {
+            MobType info = Types[m.Type];
+            Random rng = lm.Rng;
+            Player target = m.Target;
+
+            // drop a target that left / died / went to another level
+            if (target != null && (target.level != lvl || target.Session == null ||
+                                   !target.Session.hasSurvival || SurvivalNet.IsDead(target))) {
+                m.Target = null; target = null;
+            }
+
+            // Only players are acquired by proximity (aggroRange = 16); mob-vs-mob
+            // aggro comes from being hurt, which v1 doesn't have a source for yet.
+            if (target == null) {
+                double bestSq = 256.0;
+                foreach (Player p in watchers)
+                {
+                    if (SurvivalNet.IsDead(p)) continue;
+                    double dx = p.Pos.X / 32.0 - m.X, dy = (p.Pos.Y - Entities.CharacterHeight) / 32.0 - m.Y,
+                           dz = p.Pos.Z / 32.0 - m.Z;
+                    double distSq = dx * dx + dy * dy + dz * dz;
+                    if (distSq <= bestSq) { bestSq = distSq; m.Target = p; }
+                }
+                target = m.Target;
+                if (target == null) return;
+            }
+
+            double tx = target.Pos.X / 32.0, ty = (target.Pos.Y - Entities.CharacterHeight) / 32.0,
+                   tz = target.Pos.Z / 32.0;
+            double ddx = tx - m.X, ddy = ty - m.Y, ddz = tz - m.Z;
+            double dSq = ddx * ddx + ddy * ddy + ddz * ddz;
+            double dist = Math.Sqrt(dSq);
+
+            if (dSq > 1024.0 && rng.Next(100) == 0) { m.Target = null; return; } // 2x range give-up
+
+            // face the victim (BasicAttackAI.doAttack); pitch's adjacent is the
+            // full 3D distance - the genuine mild under-pitch quirk
+            m.Yaw   = (float)(Math.Atan2(ddx, -ddz) * 180.0 / Math.PI);
+            m.Pitch = (float)(Math.Atan2(-ddy, dist) * 180.0 / Math.PI);
+
+            // chase: stride toward the victim (the c0.30 target branch in WanderAI
+            // pushes forward; Indev v1 reuses it pending the A* port)
+            float speed = indev ? IndevMoveSpeed(m.Type) : info.RunSpeed;
+            m.MoveForward = speed;
+            if (rng.Next(100) < 4) m.Jumping = true;
+
+            if (indev) IndevAttack(lvl, lm, m, target, dist, rng);
+            else       ClassicAttack(lvl, lm, m, target, dSq, rng);
+        }
+
+        static void ClassicAttack(Level lvl, LevelMobs lm, SurvMob m, Player target, double dSq, Random rng) {
+            MobType info = Types[m.Type];
+            if (dSq >= 4.0 || m.AttackDelay > 0) return;
+
+            m.AttackDelay  = 10 + rng.Next(20);
+            m.NoActionTime = 0;
+            int damage = (int)((rng.NextDouble() + rng.NextDouble()) / 2.0 * info.Damage + 1.0);
+            SurvivalNet.DamagePlayer(target, damage, "@p was slain by a " + info.Name);
+
+            // CreeperAI.attack: headbutting hurts the creeper WITH ITS VICTIM AS
+            // CAUSE; the self-damage death triggers the c0.30 death-explosion.
+            if (info.IsCreeper) {
+                if (m.InvincTicks > 10) {
+                    if (m.LastHealth - 6 < m.Health) { m.Health = m.LastHealth - 6; m.HurtThisTick = true; }
+                } else {
+                    m.LastHealth = m.Health; m.InvincTicks = 20;
+                    m.Health -= 6; m.HurtThisTick = true;
+                }
+                if (m.Health <= 0) KillMob(lvl, lm, m, target);
+            }
+        }
+
+        static void IndevAttack(Level lvl, LevelMobs lm, SurvMob m, Player target, double dist, Random rng) {
+            if (Types[m.Type].IsCreeper) {
+                // EntityCreeper.attackEntity: fuse starts within 3 blocks, keeps
+                // burning within 7 once lit, blows at 30 ticks.
+                if ((m.FuseState <= 0 && dist < 3.0) || (m.FuseState > 0 && dist < 7.0)) {
+                    m.FuseState = 1;
+                    m.FuseTicks++;
+                    m.MoveForward = 0; // stands its ground while swelling
+                    if (m.FuseTicks >= 30) {
+                        // Indev fuse blast (client Mob_IndevCreeperBlast): radius 3
+                        CreeperExplode(lvl, m, 3.0f);
+                        KillMob(lvl, lm, m, null);
+                        m.DeathTicks = 20; // blast leaves no corpse window
+                    }
+                } else {
+                    m.FuseState = -1;
+                    if (m.FuseTicks > 0) m.FuseTicks--;
+                }
+                return;
+            }
+
+            if (m.Type == TYPE_SPIDER) {
+                // EntitySpider.attackEntity: light makes it lose interest; a 2-6
+                // block pounce roll; otherwise the shared melee below.
+                if (IsBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; return; }
+                if (dist > 2.0 && dist < 6.0 && rng.Next(10) == 0) {
+                    if (m.OnGround) {
+                        double dx = target.Pos.X / 32.0 - m.X, dz = target.Pos.Z / 32.0 - m.Z;
+                        double hor = Math.Sqrt(dx * dx + dz * dz);
+                        m.VX = dx / hor * 0.5 * 0.8 + m.VX * 0.2;
+                        m.VZ = dz / hor * 0.5 * 0.8 + m.VZ * 0.2;
+                        m.VY = 0.4;
+                    }
+                    return;
+                }
+            }
+
+            // EntityMob.attackEntity: melee within 2.5 blocks (zombie 5, default 2).
+            // (Skeleton ranged AI needs arrow streaming - melee fallback for v1.)
+            int strength = Types[m.Type].IndevMelee;
+            if (strength == 0 || dist >= 2.5 || m.AttackDelay > 0) return;
+            m.AttackDelay  = 10;
+            m.NoActionTime = 0;
+            SurvivalNet.DamagePlayer(target, strength, "@p was slain by a " + Types[m.Type].Name);
+        }
+
+
+        // ==================== spawning ====================
+
+        static void SpawnerRun(Level lvl, LevelMobs lm, int attempts, bool avoidSpawnPoint) {
+            Random rng = lm.Rng;
+            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+
+            for (int attempt = 0; attempt < attempts; attempt++)
+            {
+                if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) return;
+                byte type = (byte)rng.Next(SPAWN_TYPES);
+                // MobSpawner.spawn: Y biased toward low altitude (min of two uniforms)
+                int x = rng.Next(lvl.Width);
+                int y = Math.Min(rng.Next(lvl.Height), rng.Next(lvl.Height));
+                int z = rng.Next(lvl.Length);
+
+                if (!SpawnValid(lvl, x, y, z)) continue;
+
+                // Indev-approx darkness rule: monsters spawn in the dark (covered
+                // columns, or anywhere at night); animals only in the light.
+                if (indev) {
+                    bool dark = !ColumnLit(lvl, x, y, z);
+                    if (!Types[type].Passive && !dark) continue;
+                    if (Types[type].Passive && dark)   continue;
+                }
+
+                // scatter a small same-type cluster around the point (up to 3 in
+                // v1 - the genuine 9-roll cluster with jitter walks is trimmed to
+                // keep server populations tame)
+                int cluster = 1 + rng.Next(3);
+                for (int i = 0; i < cluster && lm.Mobs.Count < MAX_MOBS_PER_LEVEL; i++)
+                {
+                    int cx = x + rng.Next(7) - 3, cy = y, cz = z + rng.Next(7) - 3;
+                    if (!SpawnValid(lvl, cx, cy, cz)) continue;
+                    if (avoidSpawnPoint) {
+                        double sx = lvl.spawnx - (cx + 0.5), sz = lvl.spawnz - (cz + 0.5);
+                        if (sx * sx + sz * sz < 256.0) continue; // 16 blocks of the level spawn
+                    }
+                    SpawnMob(lvl, lm, type, cx + 0.5, cy, cz + 0.5, (float)(rng.NextDouble() * 360.0));
+                }
+            }
+        }
+
+        static bool SpawnValid(Level lvl, int x, int y, int z) {
+            if (x < 0 || y <= 0 || z < 0 || x >= lvl.Width || y >= lvl.Height - 1 || z >= lvl.Length) return false;
+            if (!IsSolidAt(lvl, x, y - 1, z)) return false; // solid ground below
+            // 2-block air column, no liquid
+            for (int i = 0; i < 2; i++)
+            {
+                if (y + i >= lvl.Height) return false;
+                byte collide = lvl.CollideType(BlockAt(lvl, x, y + i, z));
+                if (collide != CollideType.WalkThrough) return false;
+            }
+            return true;
+        }
+
+        static bool ColumnLit(Level lvl, int x, int y, int z) {
+            if (SurvivalNet.CurrentSkyLight() <= 7) return false; // night: everywhere is dark
+            for (int by = y; by < lvl.Height; by++)
+            {
+                if (IsSolidAt(lvl, x, by, z)) return false;
+            }
+            return true;
+        }
+
+        static void SpawnMob(Level lvl, LevelMobs lm, byte type, double x, double y, double z, float yaw) {
+            SurvMob m = new SurvMob();
+            m.Id   = nextMobId++;
+            if (nextMobId == 0) nextMobId = 1;
+            m.Type = type;
+            m.X = x; m.Y = y; m.Z = z; m.Yaw = yaw;
+            // EntityLiving defaults to 10 HP; only EntityMob raises it to 20 - so
+            // Indev pigs/sheep have 10. c0.30 mobs are a flat 20.
+            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+            m.Health = indev && Types[type].Passive ? 10 : 20;
+            // HumanoidMob's 20% helmet/armor field initialisers - c0.30 only
+            // (Indev's EntityZombie/EntitySkeleton have no such fields)
+            if (!indev && (type == TYPE_ZOMBIE || type == TYPE_SKELETON)) {
+                m.HasHelmet = lm.Rng.NextDouble() < 0.2;
+                m.HasArmor  = lm.Rng.NextDouble() < 0.2;
+            }
+            lm.Mobs.Add(m);
+            BroadcastSpawn(lvl, m);
+        }
+
+
+        // ==================== the tick ====================
+
+        static void Tick(SchedulerTask task) {
+            Level[] loaded = LevelInfo.Loaded.Items;
+            List<Level> dead = null;
+
+            foreach (Level lvl in loaded)
+            {
+                if (lvl.Config.SurvivalMode == SurvivalMode.Off) continue;
+                Player[] watchers = Watchers(lvl);
+                if (watchers.Length == 0) continue; // mobs freeze on empty maps
+
+                LevelMobs lm = GetLevel(lvl, true);
+                lock (lm.Mobs) TickLevel(lvl, lm, watchers);
+            }
+
+            // prune registries for levels no longer loaded
+            lock (registryLock) {
+                foreach (KeyValuePair<Level, LevelMobs> kvp in registry)
+                {
+                    if (Array.IndexOf(loaded, kvp.Key) < 0) {
+                        if (dead == null) dead = new List<Level>();
+                        dead.Add(kvp.Key);
+                    }
+                }
+                if (dead != null) foreach (Level lvl in dead) registry.Remove(lvl);
+            }
+        }
+
+        static void TickLevel(Level lvl, LevelMobs lm, Player[] watchers) {
+            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+            Random rng = lm.Rng;
+
+            // player combat bookkeeping (invulnerability window countdown)
+            foreach (Player p in watchers) SurvivalNet.TickPlayerCombat(p);
+
+            // population: c0.30 primes the level once then tops up on a roll;
+            // Indev fills gradually under the darkness rule (no initial burst)
+            long volume = (long)lvl.Width * lvl.Height * lvl.Length;
+            int area = (int)(volume / 64 / 64 / 64);
+            if (!lm.InitialSpawned) {
+                lm.InitialSpawned = true;
+                if (!indev) SpawnerRun(lvl, lm, (int)(volume / 6400), true);
+            }
+            if (area > 0 && rng.Next(100) < area && lm.Mobs.Count < Math.Min(area * 20, MAX_MOBS_PER_LEVEL)) {
+                SpawnerRun(lvl, lm, area, true);
+            }
+
+            for (int i = lm.Mobs.Count - 1; i >= 0; i--)
+            {
+                SurvMob m = lm.Mobs[i];
+                if (TickMob(lvl, lm, m, indev, watchers)) {
+                    StreamMob(lvl, watchers, m);
+                } else {
+                    BroadcastDespawn(lvl, m, m.Dead ? (byte)1 : (byte)0);
+                    lm.Mobs.RemoveAt(i);
+                }
+            }
+        }
+
+        // Returns false when the mob should be removed (despawn/corpse finished).
+        static bool TickMob(Level lvl, LevelMobs lm, SurvMob m, bool indev, Player[] watchers) {
+            Random rng = lm.Rng;
+
+            // fell out of a floating map - genuine mobs just vanish
+            if (m.Y < -32) { m.Dead = false; return false; }
+
+            if (m.InvincTicks > 0) m.InvincTicks--;
+            if (m.AttackDelay > 0) m.AttackDelay--;
+
+            if (m.Dead) {
+                m.DeathTicks++;
+                if (m.DeathTicks > 20) {
+                    // c0.30 creepers blow up when their corpse window closes
+                    if (Types[m.Type].IsCreeper && !indev) CreeperExplode(lvl, m, 4.0f);
+                    return false;
+                }
+                // corpse: no AI, but gravity still settles the body
+                m.Jumping = false; m.MoveStrafe = 0; m.MoveForward = 0; m.TurnRate = 0;
+                bool dWater = InLiquid(lvl, m, false), dLava = InLiquid(lvl, m, true);
+                Travel(lvl, m, dWater, dLava);
+                return true;
+            }
+
+            bool inWater = InLiquid(lvl, m, false), inLava = InLiquid(lvl, m, true);
+
+            // ---- environment: drowning / lava / fire / sunburn ----
+            bool headUnder = false;
+            {
+                int hx = (int)Math.Floor(m.X), hz = (int)Math.Floor(m.Z);
+                int hy = (int)Math.Floor(m.Y + Height(lvl, m) * 0.85);
+                byte collide = lvl.CollideType(BlockAt(lvl, hx, hy, hz));
+                headUnder = collide == CollideType.LiquidWater || collide == CollideType.SwimThrough;
+            }
+            if (headUnder) {
+                m.AirTicks--;
+                if (m.AirTicks <= -20) { m.AirTicks = 0; HurtMob(lvl, lm, m, null, 2); }
+            } else {
+                m.AirTicks = 300;
+            }
+            if (inLava) HurtMob(lvl, lm, m, null, 10);
+
+            if (indev) {
+                if (inWater && m.Fire > 0) m.Fire = 0;
+                if (m.Fire > 0) {
+                    if (m.Fire % 20 == 0) HurtMob(lvl, lm, m, null, 1);
+                    m.Fire--;
+                }
+                if (inLava) m.Fire = 600;
+                // undead burn in daylight (EntityZombie/EntitySkeleton.onLivingUpdate),
+                // with the brightness approximated as sky exposure x day/night
+                if ((m.Type == TYPE_ZOMBIE || m.Type == TYPE_SKELETON) &&
+                    IsBright(lvl, m) && rng.Next(30) == 0) {
+                    m.Fire = 300;
+                }
+            }
+            if (m.Dead) return true; // environment just killed it - stream the corpse
+
+            // ---- despawn roll (BasicAI.tick) ----
+            m.NoActionTime++;
+            if (indev && !Types[m.Type].Passive && IsBright(lvl, m)) m.NoActionTime += 2;
+            if (m.NoActionTime > 600 && rng.Next(800) == 0) {
+                bool near = false;
+                foreach (Player p in watchers)
+                {
+                    double dx = p.Pos.X / 32.0 - m.X, dy = (p.Pos.Y - Entities.CharacterHeight) / 32.0 - m.Y,
+                           dz = p.Pos.Z / 32.0 - m.Z;
+                    if (dx * dx + dy * dy + dz * dz < 1024.0) { near = true; break; }
+                }
+                if (near) m.NoActionTime = 0;
+                else return false;
+            }
+
+            // ---- AI ----
+            if (m.Type == TYPE_SHEEP) SheepAI(lvl, lm, m, indev, inWater, inLava);
+            else                      WanderAI(lm, m, indev, inWater, inLava);
+            if (!Types[m.Type].Passive) AttackAI(lvl, lm, m, indev, watchers);
+
+            // ---- physics ----
+            bool spiderLunge = m.Type == TYPE_SPIDER && m.Target != null;
+            DoJump(m, inWater, inLava, spiderLunge);
+            m.MoveStrafe *= 0.98f; m.MoveForward *= 0.98f; m.TurnRate *= 0.9f;
+            double oldY = m.Y;
+            Travel(lvl, m, inWater, inLava);
+
+            // ---- fall damage (Mob.causeFallDamage) ----
+            if (inWater || inLava) m.Falling = false;
+            if (m.OnGround) {
+                if (m.Falling) {
+                    double distFallen = m.FallPeakY - m.Y;
+                    if (distFallen > 3.0) HurtMob(lvl, lm, m, null, (int)Math.Ceiling(distFallen - 3.0));
+                    m.Falling = false;
+                }
+            } else if (m.VY < 0 || m.Y < oldY) {
+                if (!m.Falling) { m.Falling = true; m.FallPeakY = m.Y; }
+                else if (m.Y > m.FallPeakY) m.FallPeakY = m.Y;
+            }
+            if (m.Y > m.FallPeakY && m.Falling) m.FallPeakY = m.Y;
+
+            return true;
+        }
+
+        static void SheepAI(Level lvl, LevelMobs lm, SurvMob m, bool indev, bool inWater, bool inLava) {
+            // Sheep.SheepAI: over grass it stops to graze; after 60 ticks the grass
+            // becomes dirt and there's a 1/5 chance the fur regrows.
+            double sinYaw = Math.Sin(m.Yaw * Math.PI / 180.0);
+            double cosYaw = Math.Cos(m.Yaw * Math.PI / 180.0);
+            int x = (int)Math.Floor(m.X + 0.7 * sinYaw);
+            int y = (int)Math.Floor(m.Y) - 1;
+            int z = (int)Math.Floor(m.Z - 0.7 * cosYaw);
+            bool overGrass = x >= 0 && y >= 0 && z >= 0 && x < lvl.Width && y < lvl.Height && z < lvl.Length &&
+                             lvl.GetBlock((ushort)x, (ushort)y, (ushort)z) == Block.Grass;
+
+            if (m.Grazing) {
+                if (!overGrass) {
+                    m.Grazing = false;
+                } else {
+                    if (m.GrazeTime++ == 60) {
+                        lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.Dirt);
+                        if (lm.Rng.Next(5) == 0) m.HasFur = true;
+                    }
+                    m.MoveStrafe = 0; m.MoveForward = 0;
+                }
+            } else {
+                if (overGrass) { m.Grazing = true; m.GrazeTime = 0; }
+                WanderAI(lm, m, indev, inWater, inLava);
+            }
+        }
+
+
+        // ==================== debug ====================
+
+        /// <summary> Console/test aid: spawns one mob of the given type near a position.
+        /// Used by the /Survival spawn subcommand. </summary>
+        public static bool DebugSpawn(Level lvl, byte type, int x, int y, int z) {
+            if (type >= SPAWN_TYPES) return false;
+            // snap to the ground below so a test mob doesn't take a spawn fall
+            // (the level spawn point routinely floats well above the terrain)
+            while (y > 1 && !IsSolidAt(lvl, x, y - 1, z)) y--;
+            LevelMobs lm = GetLevel(lvl, true);
+            lock (lm.Mobs) {
+                if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) return false;
+                SpawnMob(lvl, lm, type, x + 0.5, y, z + 0.5, 0);
+            }
+            return true;
+        }
+
+        public static int CountMobs(Level lvl) {
+            LevelMobs lm = GetLevel(lvl, false);
+            if (lm == null) return 0;
+            lock (lm.Mobs) return lm.Mobs.Count;
+        }
+    }
+}
