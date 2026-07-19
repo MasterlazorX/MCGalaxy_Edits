@@ -15,6 +15,11 @@ on:
     branches:
       - survival-support
       - 'survival-**'
+      # combined-session development branches: without this, pushes there never
+      # produce artifacts and "download the latest build" silently serves the
+      # stale survival-support tip (exactly the confusion hit in live testing -
+      # the ClassiCube fork's survival CI already includes claude/**)
+      - 'claude/**'
   pull_request:
   workflow_dispatch:
 

@@ -73,21 +73,29 @@ namespace MCGalaxy.Commands.World
 
         // Turning a map survival should make its hazards real without a second,
         // easy-to-miss command: fall/drown/lava death detection is MCGalaxy's
-        // per-level SurvivalDeath option ("/map death"), off by default. Also
-        // warns when the map spawn floats high enough to make every (re)spawn
-        // a lethal fall (the default generated spawn sits well above ground).
+        // per-level SurvivalDeath option ("/map death"), off by default. And a
+        // default generated spawn floats well above the terrain, which with
+        // death detection on makes every (re)spawn a lethal fall - so the
+        // spawn is grounded too (unless the column is bottomless, e.g. a
+        // Floating-theme void, where moving it would be worse than warning).
         static void EnableHazards(Player p, Level lvl) {
             if (!lvl.Config.SurvivalDeath) {
                 lvl.Config.SurvivalDeath = true;
                 p.Message("&SEnabled fall/drown death detection (&T/Map {0} death off &Sto revert).", lvl.name);
             }
 
-            int x = lvl.spawnx, y = lvl.spawny, z = lvl.spawnz, drop = 0;
-            while (y - drop > 1 && !CollideSolid(lvl, x, y - drop - 1, z)) drop++;
-            if (drop > lvl.Config.FallHeight) {
-                p.Message("&WThe map spawn floats {0} blocks up - every spawn is a lethal fall.", drop);
-                p.Message("&WFix with &T/Spawn set &Won the ground or &T/Map {0} fall {1}&W.", lvl.name, drop + 4);
+            int x = lvl.spawnx, y = lvl.spawny, z = lvl.spawnz, ground = y;
+            while (ground > 0 && !CollideSolid(lvl, x, ground - 1, z)) ground--;
+
+            if (y - ground <= lvl.Config.FallHeight) return; // close enough to survive
+            if (ground == 0 && !CollideSolid(lvl, x, 0, z)) {
+                p.Message("&WThe map spawn hangs over a bottomless column - set a safe one with &T/SetSpawn&W.");
+                return;
             }
+            lvl.spawny  = (ushort)ground;
+            lvl.Changed = true;
+            p.Message("&SGrounded the floating map spawn (y {0} &S-> &b{1}&S) so respawning is survivable.", y, ground);
+            p.Message("&SMove it with &T/SetSpawn &Sif you want it somewhere else.");
         }
 
         static bool CollideSolid(Level lvl, int x, int y, int z) {
@@ -148,6 +156,9 @@ namespace MCGalaxy.Commands.World
                       cfg.SurvivalEnhanced, cfg.SurvivalCreative, cfg.SurvivalPvP, cfg.SurvivalDeathDrops);
             p.Message("  hazards: death detection &b{0}&S, fall height &b{1}&S, live mobs &b{2}",
                       cfg.SurvivalDeath, cfg.FallHeight, SurvivalMobs.CountMobs(lvl));
+            // stale-build tripwire: if this line is missing in-game, the server
+            // binary predates the phase the missing feature shipped in
+            p.Message("  server build: &bphases 0-4 &S(dwell, hacks-override, mobs, inventory)");
         }
 
         public override void Help(Player p) {
