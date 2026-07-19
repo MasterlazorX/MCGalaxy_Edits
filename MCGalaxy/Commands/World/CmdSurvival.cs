@@ -40,8 +40,8 @@ namespace MCGalaxy.Commands.World
 
             switch (opt) {
                 case "off":     cfg.SurvivalMode = SurvivalMode.Off;     break;
-                case "classic": cfg.SurvivalMode = SurvivalMode.Classic; break;
-                case "indev":   cfg.SurvivalMode = SurvivalMode.Indev;   break;
+                case "classic": cfg.SurvivalMode = SurvivalMode.Classic; EnableHazards(p, lvl); break;
+                case "indev":   cfg.SurvivalMode = SurvivalMode.Indev;   EnableHazards(p, lvl); break;
                 case "theme":
                     if (args.Length < 2 || !SetTheme(cfg, args[1])) {
                         p.Message("Themes: Normal, Hell, Paradise, Woods, Floating"); return;
@@ -69,6 +69,30 @@ namespace MCGalaxy.Commands.World
             SurvivalNet.RefreshLevel(lvl); // apply live to survival-test clients on this level
             p.Message("Updated survival settings for {0}&S:", lvl.ColoredName);
             PrintInfo(p, lvl);
+        }
+
+        // Turning a map survival should make its hazards real without a second,
+        // easy-to-miss command: fall/drown/lava death detection is MCGalaxy's
+        // per-level SurvivalDeath option ("/map death"), off by default. Also
+        // warns when the map spawn floats high enough to make every (re)spawn
+        // a lethal fall (the default generated spawn sits well above ground).
+        static void EnableHazards(Player p, Level lvl) {
+            if (!lvl.Config.SurvivalDeath) {
+                lvl.Config.SurvivalDeath = true;
+                p.Message("&SEnabled fall/drown death detection (&T/Map {0} death off &Sto revert).", lvl.name);
+            }
+
+            int x = lvl.spawnx, y = lvl.spawny, z = lvl.spawnz, drop = 0;
+            while (y - drop > 1 && !CollideSolid(lvl, x, y - drop - 1, z)) drop++;
+            if (drop > lvl.Config.FallHeight) {
+                p.Message("&WThe map spawn floats {0} blocks up - every spawn is a lethal fall.", drop);
+                p.Message("&WFix with &T/Spawn set &Won the ground or &T/Map {0} fall {1}&W.", lvl.name, drop + 4);
+            }
+        }
+
+        static bool CollideSolid(Level lvl, int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return false;
+            return Blocks.CollideType.IsSolid(lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z)));
         }
 
         static bool SetTheme(LevelConfig cfg, string val) {
@@ -122,6 +146,8 @@ namespace MCGalaxy.Commands.World
             p.Message("Survival on {0}&S: mode &b{1}&S, theme &b{2}", lvl.ColoredName, cfg.SurvivalMode, cfg.SurvivalTheme);
             p.Message("  flags: enhanced &b{0}&S, creative &b{1}&S, pvp &b{2}&S, deathDrops &b{3}",
                       cfg.SurvivalEnhanced, cfg.SurvivalCreative, cfg.SurvivalPvP, cfg.SurvivalDeathDrops);
+            p.Message("  hazards: death detection &b{0}&S, fall height &b{1}&S, live mobs &b{2}",
+                      cfg.SurvivalDeath, cfg.FallHeight, SurvivalMobs.CountMobs(lvl));
         }
 
         public override void Help(Player p) {
