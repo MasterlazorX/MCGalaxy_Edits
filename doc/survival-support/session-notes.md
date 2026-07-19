@@ -262,6 +262,39 @@ your feet, ground-snapped) and `/Survival mobs` (live count).
   player unable to build is most likely standard realm/level build
   permissions (`/os allow`, perbuild), not survival code.
 
+### Genuine Indev player damage (`SurvivalHazards.cs`) — the death system, properly
+
+**The problem (user-identified):** player hazards rode MCGalaxy's binary
+`SurvivalDeath` system (lethal-or-nothing fall/drown), so health only ever
+went 20 → 0 — graduated Indev damage never happened and the death system
+didn't sync.
+
+**Now:** a 20 TPS per-player hazard tick (on the `SurvivalMobs` scheduler,
+next to the combat window countdown) simulates the genuine rules from the
+same position stream `PlayerPhysics` consumed, all applied through
+`DamagePlayer` so the invulnerability window + death-screen dwell hold:
+- **fall**: peak-Y tracking, `ceil(dist − 3)` on landing (liquid cushions;
+  teleports/respawns detected by the >8-block single-tick jump and never
+  counted) — verified live: a 12-block fall dealt exactly 9 (20 → 11 HP),
+  a 23-block fall killed into the dwell
+- **drowning**: Indev's air counter with the −20 underflow timer (2 HP,
+  first hit 320 ticks under, then every 20); c0.30's empty-air cadence
+- **lava**: 10/tick through the window; **fire** (Indev): lava arms the
+  600-tick burn, 1 HP per 20 ticks, water fizzes it out (fire-block contact
+  waits on phase 1's custom blocks; no on-fire overlay flag exists for
+  players yet — reserved-bit/`SURV_PLAYER_STATE` handoff item)
+- **void**: 4/tick below y = −16 (floating maps)
+
+The classic binary system is now fully off on survival-mode maps (visitors
+untouched — re-verified with the synthetic stock client); plain maps using
+`/map death on` keep stock behaviour. `OnPlayerDied` remains the bridge for
+killer blocks and `/kill` only. Damage ticks log at Debug level.
+
+**Also open from live testing:** the "classic players can't build" report —
+wire-level evidence says stock building works (synthetic client transcript);
+prime suspect is `/os` realm build permissions (`/os allow`). Awaiting the
+exact client-side message before treating it as a survival bug.
+
 **V1 deviations (deliberate, revisit later):**
 - Indev's A* creature pathfinding is not ported — both modes use the c0.30
   direct-steer chase (mobs bump into obstacles rather than pathing around).

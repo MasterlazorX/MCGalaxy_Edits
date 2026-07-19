@@ -844,8 +844,13 @@ namespace MCGalaxy.Network
             bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
             Random rng = lm.Rng;
 
-            // player combat bookkeeping (invulnerability window countdown)
-            foreach (Player p in watchers) SurvivalNet.TickPlayerCombat(p);
+            // player combat bookkeeping (invulnerability window countdown) and
+            // the genuine graduated hazard simulation (fall/drown/lava/fire/void)
+            foreach (Player p in watchers)
+            {
+                SurvivalNet.TickPlayerCombat(p);
+                SurvivalHazards.TickPlayer(p, lvl, indev);
+            }
 
             // population: c0.30 primes the level once then tops up on a roll;
             // Indev fills gradually under the darkness rule (no initial burst).

@@ -342,14 +342,13 @@ namespace MCGalaxy
                 AABB bb = ModelBB.OffsetPosition(next);
                 int index = level.PosToInt(P.X, P.Y, P.Z);
                 
-                // On a survival-mode map, hazard detection only applies to
-                // survival-capable clients - stock/plain-CPE visitors play
-                // classic, unharmed (the fork's compatibility policy). Plain
-                // maps using '/map death on' keep the stock MCGalaxy behaviour
-                // for everyone.
+                // Survival-mode maps never use this binary lethal-or-nothing
+                // system: survival clients get the genuine graduated hazard
+                // simulation (SurvivalHazards, 20 TPS server tick) and
+                // stock/plain-CPE visitors play classic, unharmed. Plain maps
+                // using '/map death on' keep stock behaviour for everyone.
                 bool hazards = level.Config.SurvivalDeath &&
-                    (level.Config.SurvivalMode == Network.SurvivalMode.Off ||
-                     (Session != null && Session.hasSurvival));
+                    level.Config.SurvivalMode == Network.SurvivalMode.Off;
                 if (hazards) {
                     bool movingDown = next.Y < prev.Y;
                     PlayerPhysics.Drown(this, bb);

@@ -91,7 +91,12 @@ respawn) is complete; graduated Indev damage is the one refinement left.
   Game Over screen held, revive round-trip, stray-intent rejection).
 - ✅ Hack permissions resolved from the survival config (`SurvivalCreative` ↔
   HELLO creative bit) instead of the MOTD on active survival maps.
-- ⬜ *Refinement:* graduated Indev damage (partial HP; drowning/fire ticks).
+- ✅ Genuine graduated player damage (`SurvivalHazards`): 20 TPS server tick
+  for fall/drown/lava/fire/void, replacing the binary MCGalaxy bridge (which
+  now only serves killer blocks + `/kill`). Live-tested.
+- ⬜ *Refinements:* fire-block ignition (needs phase-1 custom blocks), a
+  player on-fire overlay flag (reserved bit or `SURV_PLAYER_STATE`), armor
+  absorption once armor exists.
 - Damage sources: fall, drown, fire, lava, mob attacks, PvP (gated on
   `SurvivalPvP`). Death drops gated on `SurvivalDeathDrops`.
 
