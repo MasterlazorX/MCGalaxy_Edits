@@ -114,12 +114,20 @@ namespace MCGalaxy.Network
             public bool HurtThisTick;
         }
 
+        class SpawnStats
+        {
+            public long Ticks, Rolls, Attempts, Spawned;
+            public long RejOutOfBounds, RejNoGround, RejLightMonster, RejLightAnimal, RejCap;
+            public string LastSpawn = "(none yet)";
+        }
+
         class LevelMobs
         {
             public Level Level;
             public List<SurvMob> Mobs = new List<SurvMob>();
             public bool InitialSpawned;
             public Random Rng = new Random();
+            public SpawnStats Stats = new SpawnStats();
         }
 
         static readonly Dictionary<Level, LevelMobs> registry = new Dictionary<Level, LevelMobs>();
@@ -287,6 +295,11 @@ namespace MCGalaxy.Network
             int minX = (int)Math.Floor(x - w), maxX = (int)Math.Floor(x + w - 0.001);
             int minY = (int)Math.Floor(y),     maxY = (int)Math.Floor(y + h - 0.001);
             int minZ = (int)Math.Floor(z - w), maxZ = (int)Math.Floor(z + w - 0.001);
+
+            // The map edge is a wall for mobs: BlockAt clamps out-of-bounds reads
+            // to the edge column, which reads as open air above ground - knockback
+            // was punting mobs clean off the map (live-testing report).
+            if (minX < 0 || maxX >= lvl.Width || minZ < 0 || maxZ >= lvl.Length) return false;
 
             for (int by = minY; by <= maxY; by++)
                 for (int bz = minZ; bz <= maxZ; bz++)
@@ -679,43 +692,73 @@ namespace MCGalaxy.Network
 
         // ==================== spawning ====================
 
-        static void SpawnerRun(Level lvl, LevelMobs lm, int attempts, bool avoidSpawnPoint) {
+        // c0.30 prepareLevel's one-time population: map-wide random points, kept
+        // clear of the level spawn point (MobSpawner.spawn's else branch).
+        static void InitialSpawnerRun(Level lvl, LevelMobs lm, int attempts) {
             Random rng = lm.Rng;
-            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
-
             for (int attempt = 0; attempt < attempts; attempt++)
             {
                 if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) return;
-                byte type = (byte)rng.Next(SPAWN_TYPES);
-                // MobSpawner.spawn: Y biased toward low altitude (min of two uniforms)
                 int x = rng.Next(lvl.Width);
                 int y = Math.Min(rng.Next(lvl.Height), rng.Next(lvl.Height));
                 int z = rng.Next(lvl.Length);
+                double sx = lvl.spawnx - (x + 0.5), sz = lvl.spawnz - (z + 0.5);
+                if (sx * sx + sz * sz < 256.0) continue; // 16 blocks of the level spawn
+                TrySpawnCluster(lvl, lm, x, y, z);
+            }
+        }
 
-                if (!SpawnValid(lvl, x, y, z)) continue;
+        // Ongoing top-up: candidates in a ring 16..48 blocks around a random online
+        // survival player, so the 256-mob budget concentrates where players ARE.
+        // (Deviation from c0.30's map-wide roll, which on big maps saturated the
+        // cap with mobs nobody ever met - "they spawned once when I entered, then
+        // never again". The Alpha+ spawners made the same change for the same
+        // reason. Y keeps the genuine min-of-two-uniforms low-altitude bias.)
+        static void TopUpSpawnerRun(Level lvl, LevelMobs lm, Player[] watchers, int attempts) {
+            Random rng = lm.Rng;
+            for (int attempt = 0; attempt < attempts; attempt++)
+            {
+                if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) { lm.Stats.RejCap++; return; }
+                lm.Stats.Attempts++;
+                Player near = watchers[rng.Next(watchers.Length)];
+                double ang  = rng.NextDouble() * 2 * Math.PI;
+                double dist = 16 + rng.NextDouble() * 32;
+                int x = (int)Math.Floor(near.Pos.X / 32.0 + Math.Cos(ang) * dist);
+                int z = (int)Math.Floor(near.Pos.Z / 32.0 + Math.Sin(ang) * dist);
+                int y = Math.Min(rng.Next(lvl.Height), rng.Next(lvl.Height));
+                TrySpawnCluster(lvl, lm, x, y, z);
+            }
+        }
 
-                // Indev-approx darkness rule: monsters spawn in the dark (covered
-                // columns, or anywhere at night); animals only in the light.
-                if (indev) {
-                    bool dark = !ColumnLit(lvl, x, y, z);
-                    if (!Types[type].Passive && !dark) continue;
-                    if (Types[type].Passive && dark)   continue;
-                }
+        static void TrySpawnCluster(Level lvl, LevelMobs lm, int x, int y, int z) {
+            Random rng  = lm.Rng;
+            bool indev  = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+            byte type   = (byte)rng.Next(SPAWN_TYPES);
 
-                // scatter a small same-type cluster around the point (up to 3 in
-                // v1 - the genuine 9-roll cluster with jitter walks is trimmed to
-                // keep server populations tame)
-                int cluster = 1 + rng.Next(3);
-                for (int i = 0; i < cluster && lm.Mobs.Count < MAX_MOBS_PER_LEVEL; i++)
-                {
-                    int cx = x + rng.Next(7) - 3, cy = y, cz = z + rng.Next(7) - 3;
-                    if (!SpawnValid(lvl, cx, cy, cz)) continue;
-                    if (avoidSpawnPoint) {
-                        double sx = lvl.spawnx - (cx + 0.5), sz = lvl.spawnz - (cz + 0.5);
-                        if (sx * sx + sz * sz < 256.0) continue; // 16 blocks of the level spawn
-                    }
-                    SpawnMob(lvl, lm, type, cx + 0.5, cy, cz + 0.5, (float)(rng.NextDouble() * 360.0));
-                }
+            if (x < 0 || z < 0 || x >= lvl.Width || z >= lvl.Length) { lm.Stats.RejOutOfBounds++; return; }
+            if (!SpawnValid(lvl, x, y, z)) { lm.Stats.RejNoGround++; return; }
+
+            // Indev-approx darkness rule: monsters spawn in the dark (covered
+            // columns, or anywhere at night); animals only in the light.
+            if (indev) {
+                bool dark = !ColumnLit(lvl, x, y, z);
+                if (!Types[type].Passive && !dark) { lm.Stats.RejLightMonster++; return; }
+                if (Types[type].Passive && dark)   { lm.Stats.RejLightAnimal++;  return; }
+            }
+
+            // scatter a small same-type cluster around the point (up to 3 in
+            // v1 - the genuine 9-roll cluster with jitter walks is trimmed to
+            // keep server populations tame)
+            int cluster = 1 + rng.Next(3);
+            for (int i = 0; i < cluster && lm.Mobs.Count < MAX_MOBS_PER_LEVEL; i++)
+            {
+                int cx = x + rng.Next(7) - 3, cy = y, cz = z + rng.Next(7) - 3;
+                if (!SpawnValid(lvl, cx, cy, cz)) continue;
+                SpawnMob(lvl, lm, type, cx + 0.5, cy, cz + 0.5, (float)(rng.NextDouble() * 360.0));
+                lm.Stats.Spawned++;
+                lm.Stats.LastSpawn = Types[type].Name + " at (" + cx + ", " + cy + ", " + cz + ")";
+                Logger.Log(LogType.Debug, "survival: spawner placed a {0} at ({1}, {2}, {3}) on {4}",
+                           Types[type].Name, cx, cy, cz, lvl.name);
             }
         }
 
@@ -765,6 +808,12 @@ namespace MCGalaxy.Network
         // ==================== the tick ====================
 
         static void Tick(SchedulerTask task) {
+            try { TickCore(); } catch (Exception ex) {
+                Logger.LogError("Error in the survival mob tick", ex);
+            }
+        }
+
+        static void TickCore() {
             Level[] loaded = LevelInfo.Loaded.Items;
             List<Level> dead = null;
 
@@ -799,15 +848,18 @@ namespace MCGalaxy.Network
             foreach (Player p in watchers) SurvivalNet.TickPlayerCombat(p);
 
             // population: c0.30 primes the level once then tops up on a roll;
-            // Indev fills gradually under the darkness rule (no initial burst)
+            // Indev fills gradually under the darkness rule (no initial burst).
+            // area floors at 1 so small (< 64^3) maps still spawn at all.
+            lm.Stats.Ticks++;
             long volume = (long)lvl.Width * lvl.Height * lvl.Length;
-            int area = (int)(volume / 64 / 64 / 64);
+            int area = Math.Max(1, (int)(volume / 64 / 64 / 64));
             if (!lm.InitialSpawned) {
                 lm.InitialSpawned = true;
-                if (!indev) SpawnerRun(lvl, lm, (int)(volume / 6400), true);
+                if (!indev) InitialSpawnerRun(lvl, lm, (int)(volume / 6400));
             }
-            if (area > 0 && rng.Next(100) < area && lm.Mobs.Count < Math.Min(area * 20, MAX_MOBS_PER_LEVEL)) {
-                SpawnerRun(lvl, lm, area, true);
+            if (rng.Next(100) < Math.Min(area, 25) && lm.Mobs.Count < Math.Min(area * 20, MAX_MOBS_PER_LEVEL)) {
+                lm.Stats.Rolls++;
+                TopUpSpawnerRun(lvl, lm, watchers, Math.Min(area, 10));
             }
 
             for (int i = lm.Mobs.Count - 1; i >= 0; i--)
@@ -967,6 +1019,56 @@ namespace MCGalaxy.Network
                 SpawnMob(lvl, lm, type, x + 0.5, y, z + 0.5, 0);
             }
             return true;
+        }
+
+        /// <summary> Debug: spawner statistics + clock state for /Survival spawner. </summary>
+        public static void ReportSpawner(Player p, Level lvl) {
+            LevelMobs lm = GetLevel(lvl, false);
+            if (lm == null) { p.Message("No mob registry for this level yet (no survival player has ticked it)."); return; }
+            SpawnStats st = lm.Stats;
+            int time = SurvivalNet.WorldTime;
+            p.Message("Spawner on {0}&S: &b{1}&S ticks, &b{2}&S rolls, &b{3}&S attempts, &b{4}&S spawned",
+                      lvl.ColoredName, st.Ticks, st.Rolls, st.Attempts, st.Spawned);
+            p.Message("  rejected: &b{0}&S no-ground, &b{1}&S monster-in-light, &b{2}&S animal-in-dark, &b{3}&S out-of-bounds, &b{4}&S at-cap",
+                      st.RejNoGround, st.RejLightMonster, st.RejLightAnimal, st.RejOutOfBounds, st.RejCap);
+            p.Message("  last spawn: &b{0}&S; live mobs &b{1}&S/&b{2}",
+                      st.LastSpawn, CountMobs(lvl), MAX_MOBS_PER_LEVEL);
+            p.Message("  clock: worldTime &b{0}&S ({1}&S), sky light &b{2}&S - monsters need dark, animals light",
+                      time, DescribeTime(time), SurvivalNet.CurrentSkyLight());
+        }
+
+        /// <summary> Debug: the nearest live mobs to a player, for /Survival mobs. </summary>
+        public static void ReportMobs(Player p, Level lvl, int max) {
+            LevelMobs lm = GetLevel(lvl, false);
+            p.Message("Live mobs on {0}&S: &b{1}", lvl.ColoredName, CountMobs(lvl));
+            if (lm == null) return;
+            double px = p.Pos.X / 32.0, py = (p.Pos.Y - Entities.CharacterHeight) / 32.0, pz = p.Pos.Z / 32.0;
+
+            List<SurvMob> mobs;
+            lock (lm.Mobs) mobs = new List<SurvMob>(lm.Mobs);
+            mobs.Sort((a, b) => DistSq(a, px, py, pz).CompareTo(DistSq(b, px, py, pz)));
+            for (int i = 0; i < mobs.Count && i < max; i++)
+            {
+                SurvMob m = mobs[i];
+                p.Message("  &b{0}&S #{1} at ({2}, {3}, {4}) - {5} blocks, {6} HP{7}{8}",
+                          Types[m.Type].Name, m.Id,
+                          (int)m.X, (int)m.Y, (int)m.Z,
+                          (int)Math.Sqrt(DistSq(m, px, py, pz)), m.Health,
+                          m.Dead ? ", dying" : "",
+                          m.Target != null ? ", hunting " + m.Target.name : "");
+            }
+        }
+
+        static double DistSq(SurvMob m, double x, double y, double z) {
+            double dx = m.X - x, dy = m.Y - y, dz = m.Z - z;
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        internal static string DescribeTime(int time) {
+            if (time < 11000) return "&eday";
+            if (time < 12000) return "&6dusk";
+            if (time < 23000) return "&9night";
+            return "&edawn";
         }
 
         public static int CountMobs(Level lvl) {

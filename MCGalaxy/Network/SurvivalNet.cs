@@ -261,6 +261,24 @@ namespace MCGalaxy.Network
         /// (sunburn, darkness spawn rule, spider light-flee). </summary>
         internal static byte CurrentSkyLight() { return SkyLight(worldTime); }
 
+        /// <summary> Current world time (0..23999; 0 sunrise, 6000 noon, 12000 sunset). </summary>
+        public static int WorldTime { get { return worldTime; } }
+
+        /// <summary> CurrentSkyLight for callers outside the assembly-internal sim. </summary>
+        public static byte CurrentSkyLightPublic() { return CurrentSkyLight(); }
+
+        /// <summary> Sets the world clock (debug / testing: forcing night to check monster
+        /// spawns, sunburn, the client's celestial sky). Pushed to every survival player
+        /// immediately rather than waiting for the next 1 s clock tick. </summary>
+        public static void SetWorldTime(int time) {
+            worldTime = ((time % DAY_TICKS) + DAY_TICKS) % DAY_TICKS;
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player p in players)
+            {
+                if (Active(p, p.level)) SendTime(p);
+            }
+        }
+
         /// <summary> Standard 0..15 sky light for the given world time, with short dawn/dusk ramps. </summary>
         static byte SkyLight(int time) {
             const int day = 15, night = 4;

@@ -229,6 +229,26 @@ Kill credit awards the c0.30 death scores in Classic mode only.
 Test aids: `/Survival spawn [zombie/skeleton/pig/creeper/spider/sheep]` (at
 your feet, ground-snapped) and `/Survival mobs` (live count).
 
+**Live-testing round 2 (user reports) — spawner + boundary fixes:**
+- *"Mobs spawned once when I entered, then never again"*: the top-up spawner
+  rolled map-wide random positions with a 256 cap (the client's puppet-pool
+  limit), so on big maps the cap saturated with mobs nobody ever met. The
+  top-up spawner now picks candidates in a ring **16–48 blocks around a
+  random online survival player** (the Alpha+ spawners made the same change
+  for the same reason); the c0.30 initial population stays map-wide. `area`
+  floors at 1 so sub-64³ maps spawn at all.
+- *"Mobs get pushed out of the map boundaries"*: `BlockAt` clamps
+  out-of-bounds reads to the edge column (genuine `getBlockId` semantics),
+  which reads as open air above ground — knockback punted mobs clean off the
+  map. The map edge is now a wall for mob collision.
+- Debug/test surface (`/Survival ...`): `time` (show or set the world clock —
+  `day/noon/sunset/night/midnight/<ticks>` — pushed to all survival players
+  instantly), `spawner` (tick/roll/attempt/spawn counters with per-reason
+  rejection tallies + clock state), `mobs` (nearest live mobs with id/pos/
+  distance/HP/target), `inv [player]` (server-side slot + cursor dump),
+  `spawn [type]` (force-spawn at your feet). Natural spawns log at Debug
+  level. The mob tick is wrapped in a logging try/catch.
+
 **V1 deviations (deliberate, revisit later):**
 - Indev's A* creature pathfinding is not ported — both modes use the c0.30
   direct-steer chase (mobs bump into obstacles rather than pathing around).

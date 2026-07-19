@@ -224,6 +224,30 @@ namespace MCGalaxy.Network
         }
 
 
+        /// <summary> Debug: prints a player's non-empty server-side slots + cursor
+        /// to the viewer (/Survival inv). </summary>
+        public static void DebugDump(Player viewer, Player target) {
+            PlayerInv inv = Get(target);
+            int shown = 0;
+            viewer.Message("Server inventory of {0}&S (held slot &b{1}&S):", target.ColoredName, inv.HeldSlot);
+            for (int i = 0; i < TOTAL_SLOTS; i++)
+            {
+                if (inv.Slots[i].Count == 0) continue;
+                string kind = i < MAIN_SLOTS ? (i < 9 ? "hotbar" : "main")
+                            : i < CONT_BASE  ? "craft"
+                            : i < ARMOR_BASE ? "container"
+                            : "armor";
+                viewer.Message("  slot &b{0}&S ({1}): id &b{2}&S x&b{3}&S dmg &b{4}",
+                               i, kind, inv.Slots[i].Id, inv.Slots[i].Count, inv.Slots[i].Damage);
+                shown++;
+            }
+            if (shown == 0) viewer.Message("  (all slots empty)");
+            if (inv.Cursor.Count > 0) {
+                viewer.Message("  cursor: id &b{0}&S x&b{1}", inv.Cursor.Id, inv.Cursor.Count);
+            }
+        }
+
+
         // ==================== add / consume ====================
 
         // InventoryPlayer.storePartialItemStack order: merge into an existing stack

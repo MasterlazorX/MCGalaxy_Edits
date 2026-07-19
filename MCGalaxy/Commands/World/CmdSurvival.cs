@@ -59,7 +59,16 @@ namespace MCGalaxy.Commands.World
                     }
                     return; // no config change - skip save/refresh
                 case "mobs":
-                    p.Message("Live mobs on {0}&S: &b{1}", lvl.ColoredName, SurvivalMobs.CountMobs(lvl));
+                    SurvivalMobs.ReportMobs(p, lvl, 8);
+                    return;
+                case "spawner":
+                    SurvivalMobs.ReportSpawner(p, lvl);
+                    return;
+                case "time":
+                    HandleTime(p, args);
+                    return;
+                case "inv":
+                    HandleInv(p, args);
                     return;
                 default:
                     Help(p); return;
@@ -127,6 +136,44 @@ namespace MCGalaxy.Commands.World
             return true;
         }
 
+        static void HandleTime(Player p, string[] args) {
+            if (args.Length < 2) {
+                int t = SurvivalNet.WorldTime;
+                p.Message("World time: &b{0}&S ({1}&S), sky light &b{2}&S/15",
+                          t, SurvivalMobs.DescribeTime(t), SurvivalNet.CurrentSkyLightPublic());
+                p.Message("Cycle: 0 sunrise, 6000 noon, 12000 sunset, 18000 midnight (20 min/day).");
+                p.Message("Set with &T/Survival time [day/noon/sunset/night/midnight/sunrise/<ticks>]");
+                return;
+            }
+            int time;
+            switch (args[1].ToLower()) {
+                case "day": case "sunrise": time = 500;   break;
+                case "noon":                time = 6000;  break;
+                case "sunset": case "dusk": time = 11500; break;
+                case "night":               time = 14000; break;
+                case "midnight":            time = 18000; break;
+                default:
+                    if (!int.TryParse(args[1], out time)) {
+                        p.Message("&WNot a time: {0}", args[1]); return;
+                    }
+                    break;
+            }
+            SurvivalNet.SetWorldTime(time);
+            p.Message("World time set to &b{0}&S ({1}&S) - pushed to all survival players.",
+                      SurvivalNet.WorldTime, SurvivalMobs.DescribeTime(SurvivalNet.WorldTime));
+        }
+
+        static void HandleInv(Player p, string[] args) {
+            Player target = p;
+            if (args.Length >= 2) {
+                target = PlayerInfo.FindMatches(p, args[1]);
+                if (target == null) return;
+            } else if (p == Player.Console) {
+                p.Message("From console, use: &T/Survival inv [player]"); return;
+            }
+            SurvivalInventory.DebugDump(p, target);
+        }
+
         static bool SpawnMob(Player p, Level lvl, string typeName) {
             string[] names = { "zombie", "skeleton", "pig", "creeper", "spider", "sheep" };
             int type = Array.IndexOf(names, typeName.ToLower());
@@ -167,7 +214,10 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Survival theme [normal/hell/paradise/woods/floating]");
             p.Message("&T/Survival [enhanced/creative/pvp/deathdrops] [on/off] &H- sets a flag");
             p.Message("&T/Survival spawn [type] &H- spawns a test mob at your feet");
-            p.Message("&T/Survival mobs &H- shows the level's live mob count");
+            p.Message("&T/Survival mobs &H- lists the nearest live mobs");
+            p.Message("&T/Survival spawner &H- natural-spawn statistics + clock state");
+            p.Message("&T/Survival time [value] &H- shows or sets the world clock");
+            p.Message("&T/Survival inv [player] &H- dumps the server-side inventory");
             p.Message("&HChanges apply live to survival-test clients on this level.");
         }
     }
