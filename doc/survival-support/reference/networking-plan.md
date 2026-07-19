@@ -90,7 +90,7 @@ pointer. `.mclevel` handling is fully covered — format §18, save lifecycle §
       (not the Classic entity list). — §15.1, §17.5, §23.1
       *(landed + integration‑tested: SurvivalTest_NetMob* appliers, puppet tick
       keeps only presentation - interpolation, cosmetic timers, sounds)*
-- [ ] **Classic‑client policy** — creative maps allow build; survival maps
+- [x] **Classic‑client policy** — creative maps allow build; survival maps
       visitor/deny; never let a non‑survival client edit a survival world. — §16, §20.2
 - [ ] **Custom blocks on stock clients** — `DefineBlock`/`DefineBlockExt` (shape +
       draw + textures + bounds), fallback ids for pure Classic. — §22
