@@ -37,6 +37,18 @@ namespace MCGalaxy.Network
         Normal = 0, Hell = 1, Paradise = 2, Woods = 3, Floating = 4,
     }
 
+    /// <summary> What a client that has NOT negotiated SurvivalTest may do on a
+    /// survival-mode map (networking-plan §16's ClassicClientPolicy). </summary>
+    /// <remarks> The hard invariant behind the default: a non-survival client
+    /// bypasses tools, consumption, drops and physics, so letting it place/break
+    /// would corrupt the authoritative survival world. </remarks>
+    public enum SurvivalVisitorPolicy : byte
+    {
+        Visitor = 0, // may join and look, but block changes are rejected (default)
+        Allow   = 1, // may build normally (the map owner's choice to accept desync)
+        Deny    = 2, // may not even join the map
+    }
+
     /// <summary> Server side of the "SurvivalTest" sub-protocol spoken by survival-test ClassiCube clients. </summary>
     /// <remarks>
     /// This is the <b>foundation</b> only, mirroring the client-side foundation documented in

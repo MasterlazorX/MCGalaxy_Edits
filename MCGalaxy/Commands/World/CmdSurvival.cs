@@ -47,6 +47,13 @@ namespace MCGalaxy.Commands.World
                         p.Message("Themes: Normal, Hell, Paradise, Woods, Floating"); return;
                     }
                     break;
+                case "visitors":
+                    if (args.Length < 2 || !SetVisitors(cfg, args[1])) {
+                        p.Message("Use: &T/Survival visitors [visitor/allow/deny]");
+                        p.Message("&Hvisitor = join but not build (default), allow = build, deny = no entry");
+                        return;
+                    }
+                    break;
                 case "enhanced": case "creative": case "pvp": case "deathdrops":
                     if (args.Length < 2 || !SetFlag(cfg, opt, args[1])) {
                         p.Message("Use: &T/Survival {0} [on/off]", opt); return;
@@ -110,6 +117,15 @@ namespace MCGalaxy.Commands.World
         static bool CollideSolid(Level lvl, int x, int y, int z) {
             if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return false;
             return Blocks.CollideType.IsSolid(lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z)));
+        }
+
+        static bool SetVisitors(LevelConfig cfg, string val) {
+            try {
+                SurvivalVisitorPolicy pol = (SurvivalVisitorPolicy)Enum.Parse(typeof(SurvivalVisitorPolicy), val, true);
+                if (!Enum.IsDefined(typeof(SurvivalVisitorPolicy), pol)) return false;
+                cfg.SurvivalVisitors = pol;
+                return true;
+            } catch { return false; }
         }
 
         static bool SetTheme(LevelConfig cfg, string val) {
@@ -203,6 +219,7 @@ namespace MCGalaxy.Commands.World
                       cfg.SurvivalEnhanced, cfg.SurvivalCreative, cfg.SurvivalPvP, cfg.SurvivalDeathDrops);
             p.Message("  hazards: death detection &b{0}&S, fall height &b{1}&S, live mobs &b{2}",
                       cfg.SurvivalDeath, cfg.FallHeight, SurvivalMobs.CountMobs(lvl));
+            p.Message("  non-survival clients: &b{0}&S (change with &T/Survival visitors&S)", cfg.SurvivalVisitors);
             // stale-build tripwire: if this line is missing in-game, the server
             // binary predates the phase the missing feature shipped in
             p.Message("  server build: &bphases 0-4 &S(dwell, hacks-override, mobs, inventory)");
@@ -213,6 +230,7 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Survival [off/classic/indev] &H- sets the survival mode (the per-map gate)");
             p.Message("&T/Survival theme [normal/hell/paradise/woods/floating]");
             p.Message("&T/Survival [enhanced/creative/pvp/deathdrops] [on/off] &H- sets a flag");
+            p.Message("&T/Survival visitors [visitor/allow/deny] &H- what stock clients may do here");
             p.Message("&T/Survival spawn [type] &H- spawns a test mob at your feet");
             p.Message("&T/Survival mobs &H- lists the nearest live mobs");
             p.Message("&T/Survival spawner &H- natural-spawn statistics + clock state");

@@ -295,6 +295,25 @@ wire-level evidence says stock building works (synthetic client transcript);
 prime suspect is `/os` realm build permissions (`/os allow`). Awaiting the
 exact client-side message before treating it as a survival bug.
 
+### Visitor policy — survival worlds are survival-client-only (§16)
+
+The networking-plan §16 invariant is now enforced: *a client that has not
+negotiated `SurvivalTest` must never place or break blocks in a survival map*
+(it bypasses tools, consumption, drops and physics — its edits would corrupt
+the authoritative world). New per-level `SurvivalVisitors` policy
+(`/Survival visitors ...`), consulted only while `SurvivalMode` is on:
+
+- **visitor** (default) — non-survival clients may join and look; their block
+  changes are cancelled + reverted, with a rate-limited explanation.
+- **allow** — they build normally (owner's choice to accept desync).
+- **deny** — they may not even join the map (`OnJoiningLevelEvent`).
+
+Creative-flag maps stay free-build for everyone (no sim to corrupt), referees
+keep their staff escape hatch, and draw commands are unaffected (the gate
+covers manual changes). Verified with the synthetic stock client: place +
+delete cancelled with the policy message; the survival client's mine→pickup
+loop unaffected.
+
 **V1 deviations (deliberate, revisit later):**
 - Indev's A* creature pathfinding is not ported — both modes use the c0.30
   direct-steer chase (mobs bump into obstacles rather than pathing around).

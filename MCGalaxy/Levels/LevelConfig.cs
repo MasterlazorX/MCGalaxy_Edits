@@ -325,6 +325,9 @@ namespace MCGalaxy
         public SurvivalMode SurvivalMode = SurvivalMode.Off;
         [ConfigEnum("SurvivalTheme", "Survival", SurvivalTheme.Normal, typeof(SurvivalTheme))]
         public SurvivalTheme SurvivalTheme = SurvivalTheme.Normal;
+        // What non-survival clients may do here while SurvivalMode is on (§16 policy)
+        [ConfigEnum("SurvivalVisitors", "Survival", SurvivalVisitorPolicy.Visitor, typeof(SurvivalVisitorPolicy))]
+        public SurvivalVisitorPolicy SurvivalVisitors = SurvivalVisitorPolicy.Visitor;
         [ConfigBool("SurvivalEnhanced", "Survival", false)]
         public bool SurvivalEnhanced;
         [ConfigBool("SurvivalCreative", "Survival", false)]

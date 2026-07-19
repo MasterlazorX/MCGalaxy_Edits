@@ -291,8 +291,22 @@ namespace MCGalaxy.Network
         /// player doesn't have the block. Creative survival maps build freely. </summary>
         public static void OnBlockChanging(Player p, ushort x, ushort y, ushort z, BlockID block, bool placing, ref bool cancel) {
             Level lvl = p.level;
-            if (!SurvivalNet.Active(p, lvl)) return;
-            if (lvl.Config.SurvivalCreative)  return; // creative: free build, no pickup/consume
+            if (lvl == null || lvl.Config.SurvivalMode == SurvivalMode.Off) return;
+            if (lvl.Config.SurvivalCreative) return; // creative: free build for everyone, no pickup/consume
+
+            // networking-plan §16's hard invariant: a client that never negotiated
+            // SurvivalTest bypasses tools/consumption/drops, so letting it modify a
+            // survival world would corrupt the authoritative state. Default policy
+            // is look-but-don't-touch; the map owner may opt into Allow. Referees
+            // keep their staff escape hatch (draw commands are unaffected anyway).
+            if (p.Session == null || !p.Session.hasSurvival) {
+                if (lvl.Config.SurvivalVisitors == SurvivalVisitorPolicy.Allow) return;
+                if (p.Game.Referee) return;
+                cancel = true;
+                p.RevertBlock(x, y, z);
+                WarnVisitor(p);
+                return;
+            }
             if (SurvivalNet.IsDead(p)) { cancel = true; p.RevertBlock(x, y, z); return; }
 
             PlayerInv inv = Get(p);
@@ -323,6 +337,27 @@ namespace MCGalaxy.Network
                     if (idx >= 0) SendSlot(p, inv, idx);
                 } // full inventory: the block is simply not picked up (phase 5 drops fix this)
             }
+        }
+
+        // Rate-limited so click-spam doesn't flood the visitor's chat
+        static void WarnVisitor(Player p) {
+            const string WARN_KEY = "survival.visitorWarned";
+            DateTime now = DateTime.UtcNow;
+            object o;
+            if (p.Extras.TryGet(WARN_KEY, out o) && now < (DateTime)o) return;
+            p.Extras[WARN_KEY] = now.AddSeconds(10);
+            p.Message("&WThis map runs the survival simulation - only survival-test clients can modify it.");
+        }
+
+        /// <summary> The Deny visitor policy: non-survival clients may not even join.
+        /// Registered on OnJoiningLevelEvent. </summary>
+        public static void OnJoiningLevel(Player p, Level lvl, ref bool canJoin) {
+            if (lvl == null || lvl.Config.SurvivalMode == SurvivalMode.Off) return;
+            if (lvl.Config.SurvivalVisitors != SurvivalVisitorPolicy.Deny) return;
+            if (p.Session != null && p.Session.hasSurvival) return;
+            if (p.Game.Referee) return;
+            canJoin = false;
+            p.Message("&W{0} &Wruns the survival simulation - a survival-test client is required to join.", lvl.ColoredName);
         }
 
         // consume one of `raw`, preferring the held hotbar slot (SURV_HELD_SLOT),
