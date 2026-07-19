@@ -342,7 +342,15 @@ namespace MCGalaxy
                 AABB bb = ModelBB.OffsetPosition(next);
                 int index = level.PosToInt(P.X, P.Y, P.Z);
                 
-                if (level.Config.SurvivalDeath) {
+                // On a survival-mode map, hazard detection only applies to
+                // survival-capable clients - stock/plain-CPE visitors play
+                // classic, unharmed (the fork's compatibility policy). Plain
+                // maps using '/map death on' keep the stock MCGalaxy behaviour
+                // for everyone.
+                bool hazards = level.Config.SurvivalDeath &&
+                    (level.Config.SurvivalMode == Network.SurvivalMode.Off ||
+                     (Session != null && Session.hasSurvival));
+                if (hazards) {
                     bool movingDown = next.Y < prev.Y;
                     PlayerPhysics.Drown(this, bb);
                     PlayerPhysics.Fall(this,  bb, movingDown);

@@ -249,6 +249,19 @@ your feet, ground-snapped) and `/Survival mobs` (live count).
   `spawn [type]` (force-spawn at your feet). Natural spawns log at Debug
   level. The mob tick is wrapped in a logging try/catch.
 
+**Live-testing round 3 — visitors play classic, untouched:**
+- *"Classic players shouldn't die from falls"*: `/Survival` auto-enables
+  MCGalaxy's per-level `SurvivalDeath`, whose fall/drown detection applied to
+  every client on the level. On survival-mode maps hazard detection is now
+  gated to survival-capable sessions — stock/plain-CPE visitors walk the map
+  unharmed (mobs already ignore them: the watcher filter only targets
+  survival players). Plain maps using `/map death on` keep the stock
+  behaviour for everyone.
+- Stock-client building on survival maps was verified working by a synthetic
+  no-CPE protocol client (place + delete accepted on the wire); a classic
+  player unable to build is most likely standard realm/level build
+  permissions (`/os allow`, perbuild), not survival code.
+
 **V1 deviations (deliberate, revisit later):**
 - Indev's A* creature pathfinding is not ported — both modes use the c0.30
   direct-steer chase (mobs bump into obstacles rather than pathing around).
