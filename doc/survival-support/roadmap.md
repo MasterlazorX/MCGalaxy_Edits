@@ -138,9 +138,13 @@ Server owns inventory, containers, crafting, smelting.
   `SURV_RESULT_CLICK 0x83` / `SURV_CONT_CLOSE 0x84` handled server-side
   (GuiContainer model, echo-only). Mining→pickup / placing→consume block
   bridge. Live-tested. See session-notes for layouts + v1 deviations.
-- ⬜ Containers/crafting: `SURV_CONT_OPEN 0x22`, `SURV_CONT_SLOT 0x23`,
-  `SURV_FURN_PROG 0x24`, recipes server-side, `SURV_USE_ITEM 0x81` (eat/open),
-  `SURV_PLAYER_EQUIP 0x50`, per-id item/max-stack tables.
+- ✅ Container GUIs over the wire: `SURV_USE_ITEM 0x81` (v1: opens) →
+  `SURV_CONT_OPEN 0x22` / `SURV_CONT_SLOT 0x23` / `SURV_FURN_PROG 0x24`;
+  server tile entities (chest/large chest/furnace), container clicks via the
+  45..98 slot range, force-close on destruction. Live-tested.
+- ⬜ Remaining: recipes server-side (RESULT_CLICK is still a no-op), smelting,
+  eating/tool USE_ITEM handling, `SURV_PLAYER_EQUIP 0x50`, per-id
+  item/max-stack tables — all land with the ITEM definitions.
 
 ## ⬜ Phase 5 — Drops & advanced simulation
 
@@ -162,12 +166,12 @@ Server owns inventory, containers, crafting, smelting.
 | 0x03 | HEALTH | S→C | ✅ 2 |
 | 0x04 | TIME | S→C | ✅ 2 |
 | 0x10–0x13 | MOB_* | S→C | ✅ 3 |
-| 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | 🔶 4 (0x20/21/25 ✅) |
+| 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | ✅ 4 |
 | 0x30–0x32 | DROP_* | S→C | 5 |
 | 0x40 | BLOCKMETA | S→C | 1 |
 | 0x50 | PLAYER_EQUIP | S→C | 4 |
 | 0x80 | ATTACK | C→S | ✅ 3 |
-| 0x81 | USE_ITEM | C→S | 4 |
+| 0x81 | USE_ITEM | C→S | 🔶 4 (opens ✅, eat/tools with items) |
 | 0x82–0x85 | SLOT/RESULT/CONT/HELD | C→S | ✅ 4 |
 | 0x86 | DROP_ITEM | C→S | 5 |
 | 0x87 | RESPAWN | C→S | ✅ 2 |

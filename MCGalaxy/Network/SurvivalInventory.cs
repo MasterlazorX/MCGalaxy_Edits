@@ -16,6 +16,7 @@
     permissions and limitations under the Licenses.
  */
 using System;
+using System.Collections.Generic;
 using MCGalaxy.Blocks;
 using BlockID = System.UInt16;
 
@@ -137,6 +138,216 @@ namespace MCGalaxy.Network
         }
 
 
+        // ==================== containers (rest of the phase-4 GUI) ====================
+        // Server-side tile entities: chests (27 slots) and furnaces (3 slots),
+        // created lazily on first open, keyed by level + position, session-scoped
+        // like the rest of the survival state (no persistence yet). A chest
+        // touching another chest opens as the genuine InventoryLargeChest: the
+        // -X/-Z neighbour is the UPPER 27 slots, the clicked chest the lower.
+        // V1 deviations: destroying a container discards its contents (chest
+        // scatter needs phase-5 drops); no smelting until items exist (the
+        // furnace holds blocks and FURN_PROG stays 0); container GUIs are not
+        // opened on creative maps (the client inventory is a local palette there).
+
+        public const byte CONT_NONE = 0, CONT_CHEST = 1, CONT_FURNACE = 2,
+                          CONT_LARGE = 3, CONT_WORKBENCH = 4;
+
+        class Container
+        {
+            public byte  Kind; // CONT_CHEST or CONT_FURNACE (a large chest is two of these)
+            public Slot[] Slots;
+            public int X, Y, Z;
+        }
+        class OpenRef { public Container Upper, Lower; public Level Lvl; }
+
+        const string OPEN_KEY = "survival.container";
+        static readonly object contLock = new object();
+        static readonly Dictionary<Level, Dictionary<long, Container>> contRegistry =
+            new Dictionary<Level, Dictionary<long, Container>>();
+
+        static long PackPos(int x, int y, int z) {
+            return ((long)x << 40) | ((long)y << 20) | (uint)z;
+        }
+
+        static bool IsChestView(ushort raw) {
+            return raw == SurvivalBlocks.CHEST ||
+                   (raw >= SurvivalBlocks.CHEST_V0 && raw <= SurvivalBlocks.CHEST_V0 + 3);
+        }
+        static bool IsFurnaceView(ushort raw) {
+            return raw == SurvivalBlocks.FURNACE || raw == SurvivalBlocks.FURNACE_LIT ||
+                   (raw >= SurvivalBlocks.FURN_V0 && raw <= SurvivalBlocks.FURNL_V0 + 3);
+        }
+
+        static ushort RawAt(Level lvl, int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return 0;
+            return Block.ToRaw(Block.Convert(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z)));
+        }
+
+        static Container GetTE(Level lvl, int x, int y, int z, byte kind) {
+            lock (contLock) {
+                Dictionary<long, Container> map;
+                if (!contRegistry.TryGetValue(lvl, out map)) {
+                    map = new Dictionary<long, Container>();
+                    contRegistry[lvl] = map;
+                }
+                long key = PackPos(x, y, z);
+                Container te;
+                if (!map.TryGetValue(key, out te)) {
+                    te = new Container();
+                    te.Kind  = kind;
+                    te.Slots = new Slot[kind == CONT_FURNACE ? 3 : 27];
+                    te.X = x; te.Y = y; te.Z = z;
+                    map[key] = te;
+                }
+                return te;
+            }
+        }
+
+        static OpenRef GetOpen(Player p) {
+            object o;
+            return p.Extras.TryGet(OPEN_KEY, out o) ? (OpenRef)o : null;
+        }
+
+        static int OpenSlotCount(OpenRef open) {
+            if (open == null || open.Upper == null) return 0;
+            int n = open.Upper.Slots.Length;
+            if (open.Lower != null) n += open.Lower.Slots.Length;
+            return n;
+        }
+        // container-relative slot resolution (large chest: upper 0..26, lower 27..53)
+        static Slot GetContSlot(OpenRef open, int ci) {
+            if (open.Lower != null && ci >= open.Upper.Slots.Length)
+                return open.Lower.Slots[ci - open.Upper.Slots.Length];
+            return open.Upper.Slots[ci];
+        }
+        static void SetContSlot(OpenRef open, int ci, Slot s) {
+            if (open.Lower != null && ci >= open.Upper.Slots.Length)
+                open.Lower.Slots[ci - open.Upper.Slots.Length] = s;
+            else
+                open.Upper.Slots[ci] = s;
+        }
+
+        // BlockChest.blockActivated: a solid cube directly above a chest half
+        // keeps the lid shut (approximated with the collide model; furnaces
+        // have no such rule).
+        static bool SolidAbove(Level lvl, int x, int y, int z) {
+            if (y + 1 >= lvl.Height) return false;
+            BlockID above = lvl.GetBlock((ushort)x, (ushort)(y + 1), (ushort)z);
+            return CollideType.IsSolid(lvl.CollideType(above));
+        }
+
+        /// <summary> SURV_USE_ITEM: right-click use of a block. V1 opens container
+        /// GUIs (workbench/chest/large chest/furnace); eating and tool use land
+        /// with the item definitions. </summary>
+        public static void HandleUseItem(Player p, int held, int x, int y, int z, int face) {
+            Level lvl = p.level;
+            if (lvl == null || lvl.Config.SurvivalMode != SurvivalMode.Indev) return;
+            if (!SurvivalNet.Active(p, lvl) || SurvivalNet.IsDead(p)) return;
+            if (lvl.Config.SurvivalCreative) return; // v1: no container sync in creative
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return;
+
+            // reach: same envelope as melee (Player.getEntitiesWithinAABB reach)
+            double dx = p.Pos.X / 32.0 - (x + 0.5), dy = p.Pos.Y / 32.0 - (y + 0.5),
+                   dz = p.Pos.Z / 32.0 - (z + 0.5);
+            if (dx * dx + dy * dy + dz * dz > 6.0 * 6.0) return;
+
+            ushort raw = RawAt(lvl, x, y, z);
+
+            if (raw == SurvivalBlocks.WORKBENCH) {
+                // no server-side container state - the client opens its 3x3 grid
+                // (the craft slots 36..44 are already part of the streamed inventory)
+                SurvivalNet.SendContOpen(p, CONT_WORKBENCH, 0);
+                return;
+            }
+
+            if (IsChestView(raw)) {
+                if (SolidAbove(lvl, x, y, z)) return; // lid blocked - click still consumed
+                // genuine neighbour scan order: -X, +X, -Z, +Z; at most one matches
+                int nx = x, nz = z; bool neighbourUpper = false, hasNeighbour = false;
+                if      (IsChestView(RawAt(lvl, x - 1, y, z))) { nx = x - 1; neighbourUpper = true;  hasNeighbour = true; }
+                else if (IsChestView(RawAt(lvl, x + 1, y, z))) { nx = x + 1; neighbourUpper = false; hasNeighbour = true; }
+                else if (IsChestView(RawAt(lvl, x, y, z - 1))) { nz = z - 1; neighbourUpper = true;  hasNeighbour = true; }
+                else if (IsChestView(RawAt(lvl, x, y, z + 1))) { nz = z + 1; neighbourUpper = false; hasNeighbour = true; }
+                if (hasNeighbour && SolidAbove(lvl, nx, y, nz)) return; // other half blocked
+
+                OpenRef open = new OpenRef();
+                open.Lvl = lvl;
+                Container clicked = GetTE(lvl, x, y, z, CONT_CHEST);
+                if (!hasNeighbour) {
+                    open.Upper = clicked;
+                } else {
+                    Container other = GetTE(lvl, nx, y, nz, CONT_CHEST);
+                    open.Upper = neighbourUpper ? other : clicked;
+                    open.Lower = neighbourUpper ? clicked : other;
+                }
+                p.Extras[OPEN_KEY] = open;
+                SurvivalNet.SendContOpen(p, hasNeighbour ? CONT_LARGE : CONT_CHEST,
+                                         (byte)OpenSlotCount(open));
+                StreamContainer(p, open);
+                return;
+            }
+
+            if (IsFurnaceView(raw)) {
+                OpenRef open = new OpenRef();
+                open.Lvl   = lvl;
+                open.Upper = GetTE(lvl, x, y, z, CONT_FURNACE);
+                p.Extras[OPEN_KEY] = open;
+                SurvivalNet.SendContOpen(p, CONT_FURNACE, 3);
+                StreamContainer(p, open);
+                SurvivalNet.SendFurnProg(p, 0, 0); // smelting lands with items
+                return;
+            }
+        }
+
+        // the client zeroes its container view on CONT_OPEN, so only send occupied slots
+        static void StreamContainer(Player p, OpenRef open) {
+            int n = OpenSlotCount(open);
+            for (int i = 0; i < n; i++)
+            {
+                Slot s = GetContSlot(open, i);
+                if (s.Count == 0) continue;
+                SurvivalNet.SendContSlot(p, i, s.Id, s.Count, s.Damage);
+            }
+        }
+
+        // echo a changed container slot to every viewer of the same tile entity
+        static void EchoContSlot(OpenRef open, int ci) {
+            Slot s = GetContSlot(open, ci);
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player pl in players)
+            {
+                OpenRef o = GetOpen(pl);
+                if (o == null || (o.Upper != open.Upper && o.Upper != open.Lower)) continue;
+                // same upper container = same view (large-chest halves share both)
+                SurvivalNet.SendContSlot(pl, ci, s.Id, s.Count, s.Damage);
+            }
+        }
+
+        /// <summary> A container block was mined/removed: discard its tile entity
+        /// (contents vanish until phase-5 drops implement the genuine scatter) and
+        /// force-close any screens viewing it. Called from OnBlockChanging. </summary>
+        public static void ContainerRemoved(Level lvl, int x, int y, int z) {
+            Container te = null;
+            lock (contLock) {
+                Dictionary<long, Container> map;
+                if (contRegistry.TryGetValue(lvl, out map)) {
+                    long key = PackPos(x, y, z);
+                    if (map.TryGetValue(key, out te)) map.Remove(key);
+                }
+            }
+            if (te == null) return;
+
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player pl in players)
+            {
+                OpenRef o = GetOpen(pl);
+                if (o == null || (o.Upper != te && o.Lower != te)) continue;
+                pl.Extras.Remove(OPEN_KEY);
+                SurvivalNet.SendContOpen(pl, CONT_NONE, 0); // force-close the screen
+            }
+        }
+
+
         // ==================== intents ====================
 
         public static void HandleHeldSlot(Player p, int slot) {
@@ -151,12 +362,18 @@ namespace MCGalaxy.Network
             // creative maps: the inventory is client-local (the palette) - a stray
             // intent must not mutate the server's (unused) slots
             if (p.level != null && p.level.Config.SurvivalCreative) return;
-            // containers aren't streamed yet; reject that range (and anything oob)
             if (idx < 0 || idx >= TOTAL_SLOTS) return;
-            if (idx >= CONT_BASE && idx < CONT_BASE + CONT_MAX) {
-                Logger.Log(LogType.Debug, "survival: rejected container click from {0} (not streamed yet)", p.name);
-                return;
+
+            // container range: resolve through the player's OPEN container view
+            bool isCont = idx >= CONT_BASE && idx < CONT_BASE + CONT_MAX;
+            OpenRef open = null;
+            int ci = 0;
+            if (isCont) {
+                open = GetOpen(p);
+                ci   = idx - CONT_BASE;
+                if (open == null || ci >= OpenSlotCount(open)) return;
             }
+
             PlayerInv inv = Get(p);
             bool right = button != 0;
 
@@ -164,7 +381,7 @@ namespace MCGalaxy.Network
             // (no armor items exist in MP v1); taking out is always allowed.
             if (idx >= ARMOR_BASE && inv.Cursor.Count > 0) return;
 
-            Slot slot = inv.Slots[idx];
+            Slot slot = isCont ? GetContSlot(open, ci) : inv.Slots[idx];
             Slot cur  = inv.Cursor;
 
             if (cur.Count == 0) {
@@ -195,9 +412,14 @@ namespace MCGalaxy.Network
                 Slot tmp = slot; slot = cur; cur = tmp;
             }
 
-            inv.Slots[idx] = slot;
-            inv.Cursor     = cur;
-            SendSlot(p, inv, idx);
+            inv.Cursor = cur;
+            if (isCont) {
+                SetContSlot(open, ci, slot);
+                EchoContSlot(open, ci); // every viewer of this tile entity
+            } else {
+                inv.Slots[idx] = slot;
+                SendSlot(p, inv, idx);
+            }
             SendCursor(p, inv);
         }
 
@@ -211,6 +433,7 @@ namespace MCGalaxy.Network
         /// craft grid to the inventory (never lose either), then resync. </summary>
         public static void HandleContClose(Player p) {
             if (!SurvivalNet.Active(p, p.level)) return;
+            p.Extras.Remove(OPEN_KEY); // the container view is closed either way
             if (p.level != null && p.level.Config.SurvivalCreative) return; // client-local palette
             PlayerInv inv = Get(p);
 
@@ -347,6 +570,9 @@ namespace MCGalaxy.Network
                 BlockID old = lvl.GetBlock(x, y, z);
                 ushort raw  = p.Session.ConvertBlock(Block.Convert(old));
                 if (raw == Block.Air) return;
+                // a mined container discards its tile entity + force-closes viewers
+                if (indev && (IsChestView(raw) || IsFurnaceView(raw)))
+                    ContainerRemoved(lvl, x, y, z);
                 ushort pick = raw <= Block.CLASSIC_MAX_BLOCK ? raw
                             : indev ? SurvivalBlocks.PickupFor(raw) : (ushort)0;
                 if (pick == 0) return; // yields nothing (crops/fire/leftover CPE ids)

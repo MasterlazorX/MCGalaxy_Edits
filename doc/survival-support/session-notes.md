@@ -390,7 +390,21 @@ armor. State lives in `Player.Extras`, so it follows a `/goto` within a session.
 | `SURV_HELD_SLOT` 0x85 | C→S | `[hotbarIndex]` — tracked for place-consume preference |
 | `SURV_SLOT_CLICK` 0x82 | C→S | `[slotIdx:u16][button]` — the GuiContainer click model (pickup all/half, merge to max stack, right-place-one, swap) runs on server state; container range rejected until streamed; armor accepts nothing yet |
 | `SURV_RESULT_CLICK` 0x83 | C→S | validated no-op (no server-side recipes yet) |
-| `SURV_CONT_CLOSE` 0x84 | C→S | refunds cursor + craft grid into the inventory (hotbar-first `storePartialItemStack` order), full resync |
+| `SURV_CONT_CLOSE` 0x84 | C→S | refunds cursor + craft grid into the inventory (hotbar-first `storePartialItemStack` order), full resync; also closes the open container view |
+| `SURV_USE_ITEM` 0x81 | C→S | `[heldSlot][x:i16][y:i16][z:i16][face]` — v1 opens container GUIs (reach-validated; chest lid-block rule; large-chest pairing); eating/tools land with items |
+| `SURV_CONT_OPEN` 0x22 | S→C | `[kind][slotCount]` — 0 force-close, 1 chest(27), 2 furnace(3), 3 large chest(54), 4 workbench (3×3 over the streamed craft slots) |
+| `SURV_CONT_SLOT` 0x23 | S→C | `[slot(0..53 container-relative)][id:u16][count][dmg:i16]` — client zeroes on OPEN, only occupied slots streamed, click echoes go to every viewer of the entity |
+| `SURV_FURN_PROG` 0x24 | S→C | `[burn(0..12)][cook(0..24)]` pre-scaled; 0 until item smelting exists |
+
+**Containers** (rest of the phase-4 GUI, landed): session-scoped tile
+entities keyed by level+position (chest 27 / furnace 3 slots), lazily
+created on first open; genuine large-chest pairing (the -X/-Z neighbour is
+the upper 27 slots) and the BlockChest lid-block rule; the GuiContainer
+click model resolves slots 45..98 through the player's open view. Mining a
+container discards its tile entity and force-closes any viewer's screen
+(CONT_OPEN kind 0). Not opened on creative maps (client-local palette
+there). V1 deviations: contents vanish on destruction (scatter needs
+phase-5 drops), no restart persistence, no smelting/recipes until items.
 
 **The block bridge** (`OnBlockChangingEvent`): survival players' manual edits
 feed the inventory. Mining adds the broken classic block (raw ≤ 49; liquids

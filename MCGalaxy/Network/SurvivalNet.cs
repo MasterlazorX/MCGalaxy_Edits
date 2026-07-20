@@ -245,6 +245,40 @@ namespace MCGalaxy.Network
             p.Send(Packet.PluginMessage(Channel, payload));
         }
 
+        // ==================== container GUIs (rest of phase 4) ====================
+
+        /// <summary> SURV_CONT_OPEN: [kind][slotCount]. Kinds: 0 = force-close the
+        /// open container screen, 1 chest (27), 2 furnace (3), 3 large chest (54),
+        /// 4 workbench (no container slots - the client opens its 3x3 grid). </summary>
+        public static void SendContOpen(Player p, byte kind, byte slots) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = CONT_OPEN;
+            msg[1] = kind;
+            msg[2] = slots;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_CONT_SLOT: [slot(0..53 container-relative)][id:u16][count][dmg:i16]. </summary>
+        public static void SendContSlot(Player p, int slot, ushort id, byte count, short dmg) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = CONT_SLOT;
+            msg[1] = (byte)slot;
+            msg[2] = (byte)(id >> 8); msg[3] = (byte)id;
+            msg[4] = count;
+            msg[5] = (byte)(dmg >> 8); msg[6] = (byte)dmg;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_FURN_PROG: [burn(0..12)][cook(0..24)] - the open furnace's
+        /// pre-scaled flame height + arrow width. Always 0 until item smelting lands. </summary>
+        public static void SendFurnProg(Player p, byte burn, byte cook) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = FURN_PROG;
+            msg[1] = burn;
+            msg[2] = cook;
+            SendMessage(p, msg);
+        }
+
 
         // ==================== day / night clock (SURV_TIME) ====================
         //
@@ -571,9 +605,18 @@ namespace MCGalaxy.Network
                     SurvivalInventory.HandleContClose(p);
                     break;
                 case USE_ITEM:
+                    // [id][heldSlot][x:i16][y:i16][z:i16 BE][face] - right-click use.
+                    // v1 scope: opens container GUIs (chest/large chest/furnace/
+                    // workbench); eating/tools land with the item definitions.
+                    if (data.Length >= 9) {
+                        SurvivalInventory.HandleUseItem(p, data[1],
+                            (short)((data[2] << 8) | data[3]),
+                            (short)((data[4] << 8) | data[5]),
+                            (short)((data[6] << 8) | data[7]), data[8]);
+                    }
+                    break;
                 case DROP_ITEM:
-                    // TODO(survival): USE_ITEM lands with containers/eating (rest of phase 4);
-                    // DROP_ITEM needs drop entities (phase 5). Framing is logged meanwhile.
+                    // TODO(survival): DROP_ITEM needs drop entities (phase 5).
                     Logger.Log(LogType.Debug, "survival: intent 0x{0:X2} from {1} (handler deferred)", id, p.name);
                     break;
                 default:

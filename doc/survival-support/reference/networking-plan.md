@@ -1896,9 +1896,16 @@ SURV_INV_FULL   0x20  [1]baseSlot  [2]runLen  then runLen×{id(u16),count(u8),dm
                       (5 bytes each → ≤12/frame; chunk across frames)
 SURV_INV_SLOT   0x21  [1]slot  [2..3]id(u16)  [4]count  [5..6]dmg(i16)
                       (slots: 0..35 main, 36..44 craft, 45..98 container, 100+ armor)
-SURV_CONT_OPEN  0x22  [1]kind(1 chest/2 furnace/3 large)  [2]rows
-SURV_CONT_SLOT  0x23  [1]slot  [2..3]id  [4]count  [5..6]dmg
-SURV_FURN_PROG  0x24  [1]burn(0..12)  [2]cook(0..24)
+SURV_CONT_OPEN  0x22  ** AS IMPLEMENTED: ** [1]kind  [2]slotCount
+                      kinds: 0 force-close (container destroyed under the open
+                      screen), 1 chest(27), 2 furnace(3), 3 large chest(54),
+                      4 workbench (no container slots - the client opens its 3x3
+                      grid over the normal streamed craft slots 36..44)
+SURV_CONT_SLOT  0x23  [1]slot(0..53 container-RELATIVE)  [2..3]id  [4]count  [5..6]dmg
+                      (client zeroes its view on CONT_OPEN; only occupied slots
+                      are streamed; clicks echo to every viewer of the entity)
+SURV_FURN_PROG  0x24  [1]burn(0..12)  [2]cook(0..24)  (pre-scaled; 0 until items
+                      bring smelting)
 SURV_CURSOR     0x25  [1..2]id(u16)  [3]count  [4..5]dmg  (server-owned held stack)
 SURV_DROP_SPAWN 0x30  [1..2]dropId(u16)  [3..4]itemId(u16, ≥256 = item)  [5]count
                       [6..11]pos  [12..17]vel(i16 = coord/sec × 512)  [18]rot0(u8)
@@ -1913,7 +1920,12 @@ SURV_BLOCKMETA  0x40  [1..6]xyz(i16 block coords)  [7]meta
 ```
 SURV_ATTACK       0x80  [1]targetKind(0 mob/1 player)  [2..3]targetId
                         (mob = 16‑bit SURV id; player = 8‑bit Classic entity id)
-SURV_USE_ITEM     0x81  [1]heldSlot  [2..7]targetBlock xyz  [8]face
+SURV_USE_ITEM     0x81  [1]heldSlot  [2..7]targetBlock xyz(i16 BE each)  [8]face
+                        ** v1 handling: opens container GUIs (chest/large/
+                        furnace/workbench, reach-validated, chest lid-block rule);
+                        eating/tool use lands with the item definitions. Both
+                        sides shipped together - an old server just logs the
+                        intent, an old client never sends it (no ext bump). **
 SURV_SLOT_CLICK   0x82  [1..2]slotIdx(u16, extended: 0..35 main, 36..44 craft,
                         45..98 container, 100..103 armor)  [3]button(0 L/1 R)
 SURV_RESULT_CLICK 0x83  (take the craft result onto the cursor)
