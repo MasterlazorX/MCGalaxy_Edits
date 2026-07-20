@@ -154,7 +154,11 @@ namespace MCGalaxy.Network
             SendTime(p);   // seed the client with the current world time right away
             SendHealth(p); // and the current health/score
             SurvivalMobs.SendLevelMobs(p, lvl); // phase 3: the level's live mob population
-            SurvivalInventory.SendAll(p);       // phase 4: the server-owned inventory + cursor
+            // phase 4: the server-owned inventory + cursor. NOT on creative maps -
+            // there the client keeps the genuine local palette inventory (the
+            // server tracks no inventory in creative: free build, no consume),
+            // and streaming would wipe the palette the HELLO just filled.
+            if (!cfg.SurvivalCreative) SurvivalInventory.SendAll(p);
             Logger.Log(LogType.Debug, "survival: sent handshake to {0} for {1} (mode {2})",
                        p.name, lvl.name, cfg.SurvivalMode);
         }

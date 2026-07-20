@@ -66,7 +66,7 @@ line matches the phases you expect).
 | `/Survival [off/classic/indev]` | sets the per-map survival mode; `indev` also applies the block set + hazards, `off` strips them |
 | `/Survival theme [normal/hell/paradise/woods/floating]` | sets the WORLDINFO theme byte (generated maps set this themselves) |
 | `/Survival visitors [visitor/allow/deny]` | what non-survival clients may do: look-only (default) / build freely / not even join |
-| `/Survival [enhanced/creative/pvp/deathdrops] [on/off]` | gameplay flags; `creative` = free build, no consume/pickup |
+| `/Survival [enhanced/creative/pvp/deathdrops] [on/off]` | gameplay flags; `creative` = free build, no consume/pickup (the fork client switches to the Indev creative palette inventory; the classic picker deposits stacks into it) |
 | `/Survival give [block] <count> <player>` | puts blocks in a survival player's server inventory (e.g. `torch`, `chest`, `workbench`, `diamondore`, or a raw id). Count defaults to a stack; console must name the player |
 | `/Survival spawn [zombie/skeleton/pig/creeper/spider/sheep]` | spawns a test mob at your feet |
 | `/Survival mobs` | lists the nearest live mobs |

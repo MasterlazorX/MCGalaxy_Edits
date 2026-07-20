@@ -148,6 +148,9 @@ namespace MCGalaxy.Network
         /// authoritative slots + cursor, echoing the changed slot and the cursor. </summary>
         public static void HandleSlotClick(Player p, int idx, int button) {
             if (!SurvivalNet.Active(p, p.level) || SurvivalNet.IsDead(p)) return;
+            // creative maps: the inventory is client-local (the palette) - a stray
+            // intent must not mutate the server's (unused) slots
+            if (p.level != null && p.level.Config.SurvivalCreative) return;
             // containers aren't streamed yet; reject that range (and anything oob)
             if (idx < 0 || idx >= TOTAL_SLOTS) return;
             if (idx >= CONT_BASE && idx < CONT_BASE + CONT_MAX) {
@@ -208,6 +211,7 @@ namespace MCGalaxy.Network
         /// craft grid to the inventory (never lose either), then resync. </summary>
         public static void HandleContClose(Player p) {
             if (!SurvivalNet.Active(p, p.level)) return;
+            if (p.level != null && p.level.Config.SurvivalCreative) return; // client-local palette
             PlayerInv inv = Get(p);
 
             while (inv.Cursor.Count > 0 && AddOne(p, inv, inv.Cursor.Id, inv.Cursor.Damage)) inv.Cursor.Count--;
