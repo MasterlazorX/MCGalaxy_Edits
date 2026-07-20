@@ -334,8 +334,21 @@ sub-protocol streams):
   ClassiCube ships all six c0.30 models; sheared sheep use `sheep_nofur`;
   pre-CPE clients see humanoids). Entity ids allocate 254 downward (far above
   MCGalaxy's low player/bot range), up to 48 mobs per viewer, positions at
-  5 Hz. No bespoke animations (hurt flash, swell) - visible + moving is the
-  goal. Wire-verified: 48 models + the exact 5 Hz teleport stream.
+  **10 Hz** - the same cadence MCGalaxy relays player positions at, so stock
+  clients' own entity interpolation smooths mobs exactly like other players
+  (raised from the original 5 Hz after user feedback). No bespoke animations
+  (hurt flash, swell) - visible + moving is the goal. Wire-verified: 48
+  models + a ~10 Hz-per-mob teleport stream.
+- **The sim stays alive for classic-only maps:** the mob tick runs whenever
+  ANY player is on the level - survival clients remain the only AI targets,
+  hazard tickees and puppet-stream receivers, but wandering/grazing/physics,
+  the despawn "is anyone near" check, and the spawner's player-ring centres
+  all count classic spectators too. Previously the sim required a survival
+  client, so mobs froze mid-step the moment the last one left even with
+  spectators watching (user report). Mobs still freeze on maps with nobody
+  on them at all (the server-cost deviation). Verified live: with only a
+  stock client on the map, the spawner kept placing and 48 mirrored mobs
+  streamed at 10 Hz.
 
 **Spawner pace fix ("awfully slow"):** the old attempt rolled a fully random
 Y (~97% landed underground/in air) and pre-rolled the type (the light rule
@@ -356,7 +369,8 @@ provides the equilibrium.
 - Explosions damage players (approximate linear falloff) but never blocks —
   most MCGalaxy maps are protected builds; block damage needs opt-in config.
 - No drops (phase 5): mob deaths and shears yield nothing yet.
-- Mobs freeze on playerless maps and do not persist across server restarts.
+- Mobs freeze on maps with no players at all (any player - survival or
+  classic - keeps the sim running) and do not persist across restarts.
 - Spawn clusters trimmed to 1–3 (genuine rolls up to 9) to tame populations.
 
 ### Phase 4 (first slice) — the server-owned inventory (`SurvivalInventory.cs`)

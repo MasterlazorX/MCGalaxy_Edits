@@ -32,7 +32,9 @@ namespace MCGalaxy.Network
     /// simulation, itself a verified port of the original c0.30 Survival Test /
     /// Indev decompiles (Mob.java, BasicAI/BasicAttackAI, EntityMob/EntityCreeper...).
     /// Ticks at 20 TPS on a dedicated scheduler; only levels that currently have
-    /// players are simulated (mobs freeze on empty maps - a server-cost deviation).
+    /// ANY player (survival or classic spectator) are simulated - mobs keep
+    /// roaming for classic viewers via the mirror, and freeze only on maps with
+    /// nobody at all on them (a server-cost deviation).
     ///
     /// V1 scope cuts, all deliberate and documented in doc/survival-support/session-notes.md:
     ///  * Indev's A* creature pathfinding is NOT ported yet - both modes chase with the
@@ -193,6 +195,19 @@ namespace MCGalaxy.Network
             foreach (Player p in players)
             {
                 if (p.level == lvl && SurvivalNet.Active(p, lvl)) result.Add(p);
+            }
+            return result.ToArray();
+        }
+
+        // EVERY player on the level, survival or not. Classic spectators keep the
+        // sim alive (mobs roam for them via the mirror); only survival clients
+        // are streamed to, hazard-ticked, or targeted by hostile AI.
+        static Player[] AnyPlayers(Level lvl) {
+            Player[] players = PlayerInfo.Online.Items;
+            List<Player> result = new List<Player>();
+            foreach (Player p in players)
+            {
+                if (p.level == lvl) result.Add(p);
             }
             return result.ToArray();
         }
@@ -723,13 +738,13 @@ namespace MCGalaxy.Network
         // cap with mobs nobody ever met - "they spawned once when I entered, then
         // never again". The Alpha+ spawners made the same change for the same
         // reason. Y keeps the genuine min-of-two-uniforms low-altitude bias.)
-        static void TopUpSpawnerRun(Level lvl, LevelMobs lm, Player[] watchers, int attempts) {
+        static void TopUpSpawnerRun(Level lvl, LevelMobs lm, Player[] viewers, int attempts) {
             Random rng = lm.Rng;
             for (int attempt = 0; attempt < attempts; attempt++)
             {
                 if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) { lm.Stats.RejCap++; return; }
                 lm.Stats.Attempts++;
-                Player near = watchers[rng.Next(watchers.Length)];
+                Player near = viewers[rng.Next(viewers.Length)];
                 double ang  = rng.NextDouble() * 2 * Math.PI;
                 double dist = 16 + rng.NextDouble() * 32;
                 int x = (int)Math.Floor(near.Pos.X / 32.0 + Math.Cos(ang) * dist);
@@ -845,11 +860,12 @@ namespace MCGalaxy.Network
             foreach (Level lvl in loaded)
             {
                 if (lvl.Config.SurvivalMode == SurvivalMode.Off) continue;
-                Player[] watchers = Watchers(lvl);
-                if (watchers.Length == 0) continue; // mobs freeze on empty maps
+                Player[] watchers = Watchers(lvl);   // survival clients
+                Player[] viewers  = AnyPlayers(lvl); // anyone at all (incl. classic)
+                if (viewers.Length == 0) continue; // mobs freeze on truly EMPTY maps only
 
                 LevelMobs lm = GetLevel(lvl, true);
-                lock (lm.Mobs) TickLevel(lvl, lm, watchers);
+                lock (lm.Mobs) TickLevel(lvl, lm, watchers, viewers);
             }
 
             // prune registries for levels no longer loaded
@@ -865,7 +881,7 @@ namespace MCGalaxy.Network
             }
         }
 
-        static void TickLevel(Level lvl, LevelMobs lm, Player[] watchers) {
+        static void TickLevel(Level lvl, LevelMobs lm, Player[] watchers, Player[] viewers) {
             bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
             Random rng = lm.Rng;
 
@@ -889,13 +905,15 @@ namespace MCGalaxy.Network
             }
             if (rng.Next(100) < Math.Min(area, 25) && lm.Mobs.Count < Math.Min(area * 20, MAX_MOBS_PER_LEVEL)) {
                 lm.Stats.Rolls++;
-                TopUpSpawnerRun(lvl, lm, watchers, 2); // column-scan attempts nearly always land
+                // ring centres come from ANY player, so a classic-only map still
+                // feels alive; hostile targeting stays survival-clients-only
+                TopUpSpawnerRun(lvl, lm, viewers, 2); // column-scan attempts nearly always land
             }
 
             for (int i = lm.Mobs.Count - 1; i >= 0; i--)
             {
                 SurvMob m = lm.Mobs[i];
-                if (TickMob(lvl, lm, m, indev, watchers)) {
+                if (TickMob(lvl, lm, m, indev, watchers, viewers)) {
                     StreamMob(lvl, watchers, m);
                 } else {
                     BroadcastDespawn(lvl, m, m.Dead ? (byte)1 : (byte)0);
@@ -904,8 +922,10 @@ namespace MCGalaxy.Network
             }
 
             // non-survival clients on this map see the mobs as plain Classic
-            // entities with ChangeModel (SurvivalFallbacks) - synced at 5 Hz
-            if (lm.Stats.Ticks % 4 == 0) SyncSpectators(lvl, lm);
+            // entities with ChangeModel (SurvivalFallbacks) - synced at 10 Hz,
+            // the same cadence MCGalaxy relays player positions at, so stock
+            // clients' own interpolation smooths mobs just like other players
+            if (lm.Stats.Ticks % 2 == 0) SyncSpectators(lvl, lm);
         }
 
         static void SyncSpectators(Level lvl, LevelMobs lm) {
@@ -931,7 +951,9 @@ namespace MCGalaxy.Network
         }
 
         // Returns false when the mob should be removed (despawn/corpse finished).
-        static bool TickMob(Level lvl, LevelMobs lm, SurvMob m, bool indev, Player[] watchers) {
+        // watchers = survival clients (AI targets); viewers = anyone on the map
+        // (keeps mobs from despawning while classic spectators watch them).
+        static bool TickMob(Level lvl, LevelMobs lm, SurvMob m, bool indev, Player[] watchers, Player[] viewers) {
             Random rng = lm.Rng;
 
             // fell out of a floating map - genuine mobs just vanish
@@ -993,7 +1015,7 @@ namespace MCGalaxy.Network
             if (indev && !Types[m.Type].Passive && IsBright(lvl, m)) m.NoActionTime += 2;
             if (m.NoActionTime > 600 && rng.Next(800) == 0) {
                 bool near = false;
-                foreach (Player p in watchers)
+                foreach (Player p in viewers)
                 {
                     double dx = p.Pos.X / 32.0 - m.X, dy = (p.Pos.Y - Entities.CharacterHeight) / 32.0 - m.Y,
                            dz = p.Pos.Z / 32.0 - m.Z;
