@@ -114,6 +114,16 @@ namespace MCGalaxy.Network
             public bool HurtThisTick;
         }
 
+        /// <summary> Read-only mob snapshot for the non-survival-client mirror
+        /// (SurvivalFallbacks): id, feet position, yaw and model name. </summary>
+        public struct MirrorMob
+        {
+            public ushort Id;
+            public double X, Y, Z;
+            public byte   Yaw;
+            public string Model;
+        }
+
         class SpawnStats
         {
             public long Ticks, Rolls, Attempts, Spawned;
@@ -700,11 +710,10 @@ namespace MCGalaxy.Network
             {
                 if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) return;
                 int x = rng.Next(lvl.Width);
-                int y = Math.Min(rng.Next(lvl.Height), rng.Next(lvl.Height));
                 int z = rng.Next(lvl.Length);
                 double sx = lvl.spawnx - (x + 0.5), sz = lvl.spawnz - (z + 0.5);
                 if (sx * sx + sz * sz < 256.0) continue; // 16 blocks of the level spawn
-                TrySpawnCluster(lvl, lm, x, y, z);
+                TrySpawnCluster(lvl, lm, x, z);
             }
         }
 
@@ -725,25 +734,41 @@ namespace MCGalaxy.Network
                 double dist = 16 + rng.NextDouble() * 32;
                 int x = (int)Math.Floor(near.Pos.X / 32.0 + Math.Cos(ang) * dist);
                 int z = (int)Math.Floor(near.Pos.Z / 32.0 + Math.Sin(ang) * dist);
-                int y = Math.Min(rng.Next(lvl.Height), rng.Next(lvl.Height));
-                TrySpawnCluster(lvl, lm, x, y, z);
+                TrySpawnCluster(lvl, lm, x, z);
             }
         }
 
-        static void TrySpawnCluster(Level lvl, LevelMobs lm, int x, int y, int z) {
+        static readonly byte[] monsterTypes = { TYPE_ZOMBIE, TYPE_SKELETON, TYPE_CREEPER, TYPE_SPIDER };
+        static readonly byte[] animalTypes  = { TYPE_PIG, TYPE_SHEEP };
+
+        // The old fully-random Y wasted ~97% of attempts underground or in the air
+        // ("awfully slow for mobs to spawn" - live-testing report), and pre-rolling
+        // the type wasted most of the rest on the light rule. Now the COLUMN is
+        // scanned for every standable spot (surface and caves alike), one is
+        // picked, and its darkness picks the type POOL: dark spots roll monsters,
+        // lit spots roll animals (the same Indev outcome, none of the waste).
+        static void TrySpawnCluster(Level lvl, LevelMobs lm, int x, int z) {
             Random rng  = lm.Rng;
             bool indev  = lvl.Config.SurvivalMode == SurvivalMode.Indev;
-            byte type   = (byte)rng.Next(SPAWN_TYPES);
 
             if (x < 0 || z < 0 || x >= lvl.Width || z >= lvl.Length) { lm.Stats.RejOutOfBounds++; return; }
-            if (!SpawnValid(lvl, x, y, z)) { lm.Stats.RejNoGround++; return; }
 
-            // Indev-approx darkness rule: monsters spawn in the dark (covered
-            // columns, or anywhere at night); animals only in the light.
+            int found = 0, y = -1;
+            for (int cy = 1; cy < lvl.Height - 1; cy++)
+            {
+                if (!SpawnValid(lvl, x, cy, z)) continue;
+                found++;
+                if (rng.Next(found) == 0) y = cy; // uniform pick over valid spots
+            }
+            if (y < 0) { lm.Stats.RejNoGround++; return; }
+
+            byte type;
             if (indev) {
                 bool dark = !ColumnLit(lvl, x, y, z);
-                if (!Types[type].Passive && !dark) { lm.Stats.RejLightMonster++; return; }
-                if (Types[type].Passive && dark)   { lm.Stats.RejLightAnimal++;  return; }
+                byte[] pool = dark ? monsterTypes : animalTypes;
+                type = pool[rng.Next(pool.Length)];
+            } else {
+                type = (byte)rng.Next(SPAWN_TYPES); // c0.30 has no light rule
             }
 
             // scatter a small same-type cluster around the point (up to 3 in
@@ -864,7 +889,7 @@ namespace MCGalaxy.Network
             }
             if (rng.Next(100) < Math.Min(area, 25) && lm.Mobs.Count < Math.Min(area * 20, MAX_MOBS_PER_LEVEL)) {
                 lm.Stats.Rolls++;
-                TopUpSpawnerRun(lvl, lm, watchers, Math.Min(area, 10));
+                TopUpSpawnerRun(lvl, lm, watchers, 2); // column-scan attempts nearly always land
             }
 
             for (int i = lm.Mobs.Count - 1; i >= 0; i--)
@@ -876,6 +901,32 @@ namespace MCGalaxy.Network
                     BroadcastDespawn(lvl, m, m.Dead ? (byte)1 : (byte)0);
                     lm.Mobs.RemoveAt(i);
                 }
+            }
+
+            // non-survival clients on this map see the mobs as plain Classic
+            // entities with ChangeModel (SurvivalFallbacks) - synced at 5 Hz
+            if (lm.Stats.Ticks % 4 == 0) SyncSpectators(lvl, lm);
+        }
+
+        static void SyncSpectators(Level lvl, LevelMobs lm) {
+            List<MirrorMob> snap = null;
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player p in players)
+            {
+                if (p.level != lvl || p.Session == null || p.Session.hasSurvival) continue;
+                if (snap == null) {
+                    snap = new List<MirrorMob>();
+                    foreach (SurvMob m in lm.Mobs)
+                    {
+                        MirrorMob mm;
+                        mm.Id  = m.Id;
+                        mm.X   = m.X; mm.Y = m.Y; mm.Z = m.Z;
+                        mm.Yaw = Angle(m.Yaw);
+                        mm.Model = m.Type == TYPE_SHEEP && !m.HasFur ? "sheep_nofur" : Types[m.Type].Name;
+                        snap.Add(mm);
+                    }
+                }
+                SurvivalFallbacks.SyncMirror(p, lvl, snap);
             }
         }
 
@@ -1034,8 +1085,8 @@ namespace MCGalaxy.Network
             int time = SurvivalNet.WorldTime;
             p.Message("Spawner on {0}&S: &b{1}&S ticks, &b{2}&S rolls, &b{3}&S attempts, &b{4}&S spawned",
                       lvl.ColoredName, st.Ticks, st.Rolls, st.Attempts, st.Spawned);
-            p.Message("  rejected: &b{0}&S no-ground, &b{1}&S monster-in-light, &b{2}&S animal-in-dark, &b{3}&S out-of-bounds, &b{4}&S at-cap",
-                      st.RejNoGround, st.RejLightMonster, st.RejLightAnimal, st.RejOutOfBounds, st.RejCap);
+            p.Message("  rejected: &b{0}&S empty-column, &b{1}&S out-of-bounds, &b{2}&S at-cap",
+                      st.RejNoGround, st.RejOutOfBounds, st.RejCap);
             p.Message("  last spawn: &b{0}&S; live mobs &b{1}&S/&b{2}",
                       st.LastSpawn, CountMobs(lvl), MAX_MOBS_PER_LEVEL);
             p.Message("  clock: worldTime &b{0}&S ({1}&S), sky light &b{2}&S - monsters need dark, animals light",

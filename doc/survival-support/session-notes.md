@@ -314,6 +314,34 @@ covers manual changes). Verified with the synthetic stock client: place +
 delete cancelled with the policy message; the survival client's mine→pickup
 loop unaffected.
 
+### Fallbacks for non-survival clients (§21 env + §15.1 mob mirror) + spawner pace
+
+`SurvivalFallbacks.cs` — strictly per-session views for clients that did NOT
+negotiate SurvivalTest, on survival maps (survival clients keep the genuine
+sub-protocol streams):
+- **Day/night via EnvColors (§21):** the survival clock scales the level's
+  sky/cloud/fog/shadow/sunlight colours (quadratic ease, floored at 0.15 so
+  night stays readable), sent only when the eased sky-light level changes.
+  Wire-verified: noon = the level's own colours, midnight = the darkened set;
+  colours restore on `/Survival off` and any normal map join.
+- **Mob mirror (§15.1 fallback):** the level's mobs appear to spectators as
+  plain Classic entities with CPE ChangeModel set to the mob's model (stock
+  ClassiCube ships all six c0.30 models; sheared sheep use `sheep_nofur`;
+  pre-CPE clients see humanoids). Entity ids allocate 254 downward (far above
+  MCGalaxy's low player/bot range), up to 48 mobs per viewer, positions at
+  5 Hz. No bespoke animations (hurt flash, swell) - visible + moving is the
+  goal. Wire-verified: 48 models + the exact 5 Hz teleport stream.
+
+**Spawner pace fix ("awfully slow"):** the old attempt rolled a fully random
+Y (~97% landed underground/in air) and pre-rolled the type (the light rule
+then rejected most of the rest). Now each attempt scans its column for every
+standable spot (surface and caves), picks one uniformly, and the spot's
+darkness picks the type pool (dark→monsters, lit→animals - the same Indev
+outcome with none of the waste). Attempts per roll dropped 10 → 2 since they
+nearly always land. Measured: 29 spawns in the first ~6 s of a fresh map vs
+3 per 10 s before, zero rejections. The population cap (area×20, ≤256)
+provides the equilibrium.
+
 **V1 deviations (deliberate, revisit later):**
 - Indev's A* creature pathfinding is not ported — both modes use the c0.30
   direct-steer chase (mobs bump into obstacles rather than pathing around).

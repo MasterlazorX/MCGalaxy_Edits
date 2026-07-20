@@ -53,6 +53,8 @@ Foundation, landed. See `session-notes.md`.
 - 🔁 **Fallbacks for non-fork clients.** Keep driving day/night via stock CPE
   `EnvColors`, custom blocks via `BlockDefinitions`/fallback ids, etc., so stock
   Classic and CPE-only clients degrade gracefully (visitors on survival maps).
+  ✅ *Landed so far (`SurvivalFallbacks.cs`): EnvColors day/night scaling and
+  the ChangeModel mob mirror.* Still open: custom-block fallback ids (phase 1).
 - 🔁 **Namespace hygiene.** `0xB0` is a shared PluginMessages namespace with no
   registry; keep the one-line "do not reuse" note in the server code.
 

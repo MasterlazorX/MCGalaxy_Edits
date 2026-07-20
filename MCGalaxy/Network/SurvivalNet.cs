@@ -167,7 +167,16 @@ namespace MCGalaxy.Network
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player p in players)
             {
-                if (p.level != lvl || p.Session == null || !p.Session.hasSurvival) continue;
+                if (p.level != lvl || p.Session == null) continue;
+                if (!p.Session.hasSurvival) {
+                    // the map stopped being survival: give spectators their
+                    // normal environment + entity view back
+                    if (lvl.Config.SurvivalMode == SurvivalMode.Off) {
+                        SurvivalFallbacks.RestoreEnv(p);
+                        SurvivalFallbacks.ClearMirror(p);
+                    }
+                    continue;
+                }
                 if (lvl.Config.SurvivalMode != SurvivalMode.Off) SendHandshake(p, lvl);
                 else SendHello(p, lvl.Config); // mode 0 -> client leaves survival mode
                 // Hack permissions are resolved from the survival config while a survival map is
@@ -253,9 +262,15 @@ namespace MCGalaxy.Network
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player p in players)
             {
-                if (!Active(p, p.level)) continue;
-                SendTime(p);
-                TickDeathDwell(p);
+                if (Active(p, p.level)) {
+                    SendTime(p);
+                    TickDeathDwell(p);
+                } else if (p.level != null && p.Session != null &&
+                           p.level.Config.SurvivalMode != SurvivalMode.Off) {
+                    // §21 fallback: non-survival clients see the day/night cycle
+                    // as scaled environment colours instead of the sub-protocol
+                    SurvivalFallbacks.TickEnv(p, p.level);
+                }
             }
         }
 
