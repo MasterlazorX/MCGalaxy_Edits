@@ -544,6 +544,52 @@ Also fixed while there (client): `Server.SupportsSurvival` was never reset in
 `Server_ResetState` on reconnect (despite a comment claiming it was) - both
 it and the new `SurvivalExtVersion` now reset.
 
+### `.mclevel` import/export (phase-1 step 3) + the furnace output guard
+
+**Furnace output is take-only** (user-reported): `HandleSlotClick` refuses any
+click on furnace container slot 2 while the cursor holds a stack (placing AND
+merging), like genuine `SlotFurnace`; the client's singleplayer click path
+carries the same rule. Taking from the output is the unchanged cursor-empty
+pickup path. Verified live: with the furnace open, a click on the output with
+coal held left the slot empty; the next click dropped the coal into the fuel
+slot normally.
+
+**`.mclevel` I/O** (`McLevelImporter` extended + new `McLevelExporter`,
+`Levels/IO/`): the server now round-trips Indev's native format through the
+same `SurvivalBlocks` bijection the generator uses.
+
+- *Import* (`/Import`, files in `extra/import/`): after the stock
+  Blocks/Spawn/env read, genuine ids ≥ 50 expand through
+  `FromIndev` + the `Data` array's metadata **high nibble** (`ApplyDataMeta`)
+  into the view-id space - chest/furnace facings 71-82, farmland 83/84, crop
+  stages 85-92, wall torches 94-97 - and ids > 65 become extended custom
+  blocks (`ConvertCustom`). Imported maps come out survival-ready
+  (`SurvivalMode=Indev`, `SurvivalDeath=true`); the theme is recognised from
+  the genuine sky colours (below-zero water level ⇒ Floating), and the OOB
+  horizon planes normalise exactly like the generator (still fluid,
+  grass/dirt sides).
+- *Export* (`/Survival export <name> <level>` → `extra/import/<name>.mclevel`,
+  immediately `/Import`-able): hand-rolled gzip NBT writer emitting the
+  client's `MCLevel_Save` schema - `About`, the `Environment` set (colours,
+  signed `Surrounding*Height`, always-grass `SurroundingGroundType`, genuine
+  fluid id, `TimeOfDay` from the global clock), `Map` with
+  `Blocks`=`ToIndev(view)` and `Data`=`DataMeta(view)<<4 | 0x0F` (full light),
+  a minimal `LocalPlayer` entity at the spawn (genuine Indev expects one),
+  and chest/furnace `TileEntities` with live contents via
+  `SurvivalInventory.SnapshotContainers` - one entry per container *block*
+  (genuine Indev NPE-crashes opening a chest with no tile entity), empty for
+  never-opened containers.
+
+Verified live: export gt1 → `/Import` → per-cell view-id comparison of the
+two `.lvl` files = **0 of 1,048,576 cells differ**, env/survival properties
+identical, the imported map re-applies the block set on load, and the client
+spawns inside the round-tripped house (chest/furnace/workbench/wall-torch
+views intact); a furnace loaded with coal exports its tile entity with the
+stack in fuel slot 1. Deliberate v1 gaps: imported `TileEntities` contents
+are NOT restored (the container registry is session-scoped - persistence is
+a known deviation), player inventory/mob entities are not exported, and
+`TimeOfDay` imports as nothing (global clock).
+
 **NEXT SESSION (user-requested): an in-depth bug & quality pass** over the
 whole survival stack - both repos, all phases landed so far. Known candidates
 to start from: buried-spawn death loops (grounding only fixes floating

@@ -80,6 +80,9 @@ namespace MCGalaxy.Commands.World
                 case "give":
                     HandleGive(p, args);
                     return;
+                case "export":
+                    HandleExport(p, lvl, args);
+                    return;
                 default:
                     Help(p); return;
             }
@@ -244,6 +247,32 @@ namespace MCGalaxy.Commands.World
             }
         }
 
+        // Writes the level as Indev's own .mclevel format, into extra/import/
+        // so the file is immediately /Import-able (round trips) as well as easy
+        // to grab for genuine Indev or the client's singleplayer loader.
+        static void HandleExport(Player p, Level lvl, string[] args) {
+            if (args.Length >= 3) { // export a level other than the current one
+                lvl = Matcher.FindLevels(p, args[2]);
+                if (lvl == null) return;
+            }
+            string name = args.Length >= 2 ? args[1] : lvl.MapName;
+            if (!Formatter.ValidMapName(p, name)) return;
+
+            if (!System.IO.Directory.Exists(Paths.ImportsDir))
+                System.IO.Directory.CreateDirectory(Paths.ImportsDir);
+            string path = Paths.ImportsDir + name + ".mclevel";
+
+            try {
+                new Levels.IO.McLevelExporter().Write(path, lvl);
+            } catch (Exception ex) {
+                Logger.LogError("Error exporting map " + lvl.name, ex);
+                p.Message("&WExporting {0} &Wfailed. See error logs.", lvl.ColoredName);
+                return;
+            }
+            p.Message("Exported {0}&S to &b{1}&S (&T/Import {2}&S loads it back).",
+                      lvl.ColoredName, path, name);
+        }
+
         static bool SpawnMob(Player p, Level lvl, string typeName) {
             string[] names = { "zombie", "skeleton", "pig", "creeper", "spider", "sheep" };
             int type = Array.IndexOf(names, typeName.ToLower());
@@ -291,6 +320,7 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Survival time [value] &H- shows or sets the world clock");
             p.Message("&T/Survival inv [player] &H- dumps the server-side inventory");
             p.Message("&T/Survival give [block] <count> &H- puts blocks in your inventory");
+            p.Message("&T/Survival export <name> <level> &H- saves a map as a .mclevel file");
             p.Message("&HChanges apply live to survival-test clients on this level.");
         }
     }

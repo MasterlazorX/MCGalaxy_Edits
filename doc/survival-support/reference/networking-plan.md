@@ -64,7 +64,9 @@ pointer. `.mclevel` handling is fully covered — format §18, save lifecycle §
       with `src/Formats.c` (`MCLevel_Save` + parse callbacks); the generator
       persists into `survival/<map>/` (world + per‑player files) on save/unload/
       disconnect/shutdown; temp‑file+atomic‑rename; loaded worlds restore mobs
-      (don't re‑run the initial spawn). — §18, §28
+      (don't re‑run the initial spawn). *(schema I/O landed: server import/export
+      via `/Survival export` + `/Import`, world round trip cell‑identical — the
+      save‑folder lifecycle + entity/inventory persistence remain)* — §18, §28
 
 **P1 — Indev *creative* multiplayer (first playable; simplest — §14):**
 - [x] **Indev Creative** SP mode — `SurvivalTest_CreativeActive()` gates no‑HUD,
@@ -1252,6 +1254,20 @@ from `doc/indev-generation.md`. Watch the known gotchas: the **signed**
 `Surrounding*Height` (floating = negative), the always‑grass `SurroundingGroundType`
 quirk, armor **Slot 100+** numbering, the `Data` nibble packing (meta high / light
 low), and the genuine↔engine block remaps (crate/furnace/torch/chest).
+
+**As implemented (server v1).** MCGalaxy's `McLevelImporter` now expands the
+`Data` metadata nibble through the shared `SurvivalBlocks.FromIndev`/
+`ApplyDataMeta` bijection (facings/moisture/stage/orientation survive), sets
+`SurvivalMode=Indev` + hazards, normalises the surrounding planes and infers
+the theme from the genuine sky colours; a new `McLevelExporter` writes the
+§18.1 schema (`About`/`Environment`/`Map` + a `LocalPlayer` stub + chest/
+furnace `TileEntities` with live contents — one per container *block*, genuine
+Indev NPE‑crashes otherwise), driven by `/Survival export <name> <level>` into
+`extra/import/` where `/Import` reads it back. Live round trip verified
+cell‑identical (128×64×128). Deliberate v1 gaps, documented server‑side:
+player inventory/mob entities and imported tile‑entity contents are session
+state the server doesn't persist yet, and `TimeOfDay` is exported but not
+imported (the server clock is global).
 
 ## 19. Texture handling & serving
 

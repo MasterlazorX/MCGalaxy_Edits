@@ -464,6 +464,46 @@ namespace MCGalaxy.Network
         }
 
 
+        // ==================== .mclevel export bridge ====================
+
+        /// <summary> A plain-data snapshot of one container tile entity, for the
+        /// .mclevel exporter (contents + furnace progress; positions in blocks). </summary>
+        public class ContSnapshot
+        {
+            public bool Furnace;
+            public int X, Y, Z, BurnTime, CookTime;
+            public ushort[] Ids; public byte[] Counts; public short[] Damages;
+        }
+
+        /// <summary> Snapshots every live container tile entity on a level. </summary>
+        public static List<ContSnapshot> SnapshotContainers(Level lvl) {
+            List<ContSnapshot> list = new List<ContSnapshot>();
+            lock (contLock) {
+                Dictionary<long, Container> map;
+                if (!contRegistry.TryGetValue(lvl, out map)) return list;
+
+                foreach (Container te in map.Values)
+                {
+                    ContSnapshot s = new ContSnapshot();
+                    s.Furnace  = te.Kind == CONT_FURNACE;
+                    s.X = te.X; s.Y = te.Y; s.Z = te.Z;
+                    s.BurnTime = te.BurnTime; s.CookTime = te.CookTime;
+
+                    int n = te.Slots.Length;
+                    s.Ids = new ushort[n]; s.Counts = new byte[n]; s.Damages = new short[n];
+                    for (int i = 0; i < n; i++)
+                    {
+                        s.Ids[i]     = te.Slots[i].Id;
+                        s.Counts[i]  = te.Slots[i].Count;
+                        s.Damages[i] = te.Slots[i].Damage;
+                    }
+                    list.Add(s);
+                }
+            }
+            return list;
+        }
+
+
         // ==================== intents ====================
 
         public static void HandleHeldSlot(Player p, int slot) {
@@ -496,6 +536,10 @@ namespace MCGalaxy.Network
             // SlotArmor.isItemValid: nothing is placeable into armor slots yet
             // (no armor items exist in MP v1); taking out is always allowed.
             if (idx >= ARMOR_BASE && inv.Cursor.Count > 0) return;
+            // SlotFurnace (the output, container slot 2): TAKE-ONLY - placing
+            // into it (including merging onto an existing stack) is refused,
+            // like the genuine furnace GUI (user-reported).
+            if (isCont && open.Kind == CONT_FURNACE && ci == 2 && inv.Cursor.Count > 0) return;
 
             Slot slot = isCont ? GetContSlot(open, ci) : inv.Slots[idx];
             Slot cur  = inv.Cursor;

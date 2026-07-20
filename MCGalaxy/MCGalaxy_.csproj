@@ -490,6 +490,7 @@
     <Compile Include="Levels\EnvPreset.cs" />
     <Compile Include="Levels\Hacks.cs" />
     <Compile Include="Levels\IO\Exporters\LvlExporter.cs" />
+    <Compile Include="Levels\IO\Exporters\McLevelExporter.cs" />
     <Compile Include="Levels\IO\fNbt.cs" />
     <Compile Include="Levels\IO\Importers\CwImporter.cs" />
     <Compile Include="Levels\IO\Importers\DatImporter.cs" />

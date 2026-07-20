@@ -82,10 +82,16 @@ Server generates Indev/c0.30-s worlds and owns block metadata.
 - ⬜ `SURV_BLOCKMETA (0x40)` — push block metadata (facing, crop stage, farmland
   moisture, furnace/chest orientation) as authoritative updates; placement
   rotation (chest/furnace face the placer, wall torches) rides on it.
-- ⬜ Block-ID space mapping at I/O boundaries: genuine on-disk Indev ids ⇄ client
-  runtime ids (metadata nibbles expanded) ⇄ MCGalaxy server ids. Careful
-  remapping prevents world corruption. See networking-plan §18.
-- ⬜ `.mclevel` (NBT) round-trip byte-compatibility for saves.
+- ✅ Block-ID space mapping at I/O boundaries + `.mclevel` (NBT) round trip:
+  `McLevelImporter` expands genuine ids + the `Data` metadata nibble through
+  the `SurvivalBlocks` bijection into view ids (imported maps come out
+  survival-ready, theme recognised); the new `McLevelExporter`
+  (`/Survival export <name> <level>` → `extra/import/`, `/Import`-able)
+  writes the client's `MCLevel_Save` schema with a `LocalPlayer` stub and
+  chest/furnace tile entities (live contents). Live round trip verified
+  cell-identical. Remaining (quality pass / later): restoring imported
+  tile-entity contents (needs container persistence), player/mob entities,
+  per-map `TimeOfDay`.
 
 ## ✅ Phase 2 — Health & damage
 

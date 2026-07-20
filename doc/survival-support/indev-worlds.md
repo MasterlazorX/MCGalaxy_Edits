@@ -73,6 +73,7 @@ line matches the phases you expect).
 | `/Survival spawner` | natural-spawn statistics + clock state |
 | `/Survival time [day/noon/sunset/night/midnight/<ticks>]` | shows or sets the shared world clock |
 | `/Survival inv [player]` | dumps a player's server-side inventory |
+| `/Survival export <name> <level>` | saves a map as Indev's own `.mclevel` format (defaults: current map's name, current map) |
 
 Changes apply live — survival clients on the level get a fresh handshake
 without rejoining.
@@ -93,7 +94,31 @@ grounds a floating spawn point. Caveats for hand-built maps:
 - The env (horizon/sides/colours) is whatever the map already had; only
   generated maps get the genuine Indev theme environment automatically.
 
-## 5. Client-side notes
+## 5. Exporting & importing `.mclevel` files
+
+Any map can be saved in Indev's native format and Indev worlds can be
+brought in — the block metadata (chest/furnace facings, crop stages,
+farmland moisture, wall-torch orientation) survives both directions:
+
+```
+/Survival export myWorld        exports the current map to extra/import/myWorld.mclevel
+/Survival export myWorld gt1    same, for a named (loaded) level
+/Import myWorld                 loads a .mclevel from extra/import/ as a new map
+```
+
+- Exports land in `extra/import/` so they are immediately `/Import`-able;
+  copy them out of the folder for genuine Indev or the fork client's
+  singleplayer loader (both open them directly).
+- Imports come out survival-ready (mode Indev, hazards on, block set applied
+  on load); the theme is recognised from the genuine sky colours.
+- Chest/furnace **contents** are exported (live tile entities) but not yet
+  restored on import — the container registry is session-scoped until
+  persistence lands. Player inventories, mobs and the clock stay
+  server-side state.
+- `/Import` refuses a name that already exists, so round trips need a fresh
+  name (e.g. `/Survival export gt1copy` then `/Import gt1copy`).
+
+## 6. Client-side notes
 
 - The **fork client** negotiates the `SurvivalTest` CPE extension (v2) and
   re-defines the genuine block models locally on the survival handshake;
