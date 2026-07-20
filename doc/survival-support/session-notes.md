@@ -378,13 +378,74 @@ feed the inventory. Mining adds the broken classic block (raw ≤ 49; liquids
 yield nothing) straight to the inventory — the drop-entity hop is phase 5;
 placing consumes one (held slot preferred) or is cancelled + `RevertBlock` +
 resync when the player doesn't have the block. Dead players' edits are
-cancelled. Creative-flag maps build free (no pickup/consume).
+cancelled. Creative-flag maps build free (no pickup/consume). *(Phase 1
+extended the bridge past raw 49 to the Indev block set on Indev maps — see
+the `SurvivalBlocks.cs` section below.)*
 
 **V1 deviations:** no crafting recipes, no containers/furnace streaming
 (0x22–0x24), no `USE_ITEM`, flat max stacks (99 c0.30 / 64 Indev — per-id
 tables land with item definitions), armor slots accept nothing, death keeps
 the inventory until phase-5 drops honour `SurvivalDeathDrops`, no persistence
 across restarts (session-scoped like health).
+
+### Phase 1 (step 1) — the Indev block set (`SurvivalBlocks.cs`)
+
+Indev-mode survival maps now carry the full Indev block set as **level-scoped
+BlockDefinitions** — a 1:1 port of the client fork's `IndevBlocks_Define` table
+(`src/IndevTest.c`): torch 50, fire 51, water/lava source 52/53, chest 54,
+gears 55, diamond ore/block 56/57, workbench 58, furnace 61 / lit 62, chest
+facing views 71–74, furnace views 75–78 idle / 79–82 lit, farmland 83 / wet 84
+(15/16 tall), crop stages 85–92, wall torches 94–97. Names, per-face tiles
+(fronts land on the −Z/+Z/−X/+X face matching Indev metadata 2–5), collide,
+sounds, lamp brightness (torch 14, fire 15, lit furnace 14) and classic
+fallback ids all match the client. **No new wire messages and no ext bump** —
+this rides stock CPE `DefineBlock`/`DefineBlockExt v2`/`UndefineBlock`.
+
+The id/metadata model (networking-plan §18): the level array stores the
+client's flattened **view ids** (each visible metadata state = its own id);
+`SurvivalBlocks.ToIndev/FromIndev/DataMeta/ApplyDataMeta` are the ported
+bijection between view ids and genuine `(id, Data nibble)` pairs — the
+authoritative encoding for the upcoming map generator (step 2) and `.mclevel`
+I/O (step 3).
+
+Lifecycle: `SurvivalBlocks.Sync(lvl)` applies the set when
+`SurvivalMode == Indev` and strips it otherwise — called from
+`OnLevelLoadedEvent`, `SurvivalNet.Start` (already-loaded levels) and
+`SurvivalNet.RefreshLevel` (live `/Survival` flips, verified: 37 undefines on
+`off`, full re-apply on `indev`). The defs are **runtime-only** (never saved to
+`blockdefs/lvl_*.json`); removal only strips reference-equal instances, so a
+map owner's own `/lb` override at the same id survives. Pre-BlockDefs clients
+get the fallback ids and a map reload on flips.
+
+Who sees what: the **fork client** redefines these blocks locally on
+`SURV_HELLO(mode=Indev)` (its `IndevTest_NetworkModeChanged` →
+`IndevBlocks_Define` — genuine torch stick model, fire mesh, wall-torch tilt),
+overriding the server defs, so no client change was needed. **Stock CPE
+clients** render the server defs (sprite torches/crops, textured cubes).
+**Pre-CPE clients** see fallbacks (torch→sapling, chest→crate, furnace→cobble,
+lit→magma, farmland→dirt, diamond ore/block→iron ore/block, fire→CPE fire).
+Tile indices 96+ target the fork's patched texture pack; a plain default pack
+shows placeholder art there until §19 texture-pack serving lands.
+
+The block bridge now accepts the set on Indev maps: mining a view id yields
+its normalized pickup (`PickupFor` — facing views → canonical chest/furnace,
+lit furnace → idle, wall torch → torch, farmland → dirt, crops/fire/sources →
+nothing) and placing consumes `PlaceCost` (canonical id; unowned → revert).
+**V1 deviations:** diamond ore drops itself (no diamond item yet), crops drop
+nothing (seeds are an item), placement always produces the canonical facing
+(placement-rotation + `SURV_BLOCKMETA` come later in phase 1), fire/sources
+are obtainable only via `/Survival give`.
+
+Debug aid: `/Survival give [block] <count> <player>` puts blocks straight into
+a survival player's server inventory (names resolve against the level's custom
+defs, so `torch`, `workbench`, `diamondore` work; console must name a player).
+
+Verified live (fork client + synthetic BlockDefs client + console): all 37
+defs stream on join with correct fields; give → INV echo (genuine item icons +
+held torch model); in-reach place consumed a torch (x4→x3) and breaking it
+picked it back up (x3→x4); placing an unowned lit furnace reverted without
+consuming; a reach-rejected far place consumed nothing; classic dirt mining
+still yields its pickup.
 
 ### Reserved message ids (`SurvivalNet.cs`)
 

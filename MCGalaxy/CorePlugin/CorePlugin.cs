@@ -18,6 +18,7 @@
 using System;
 using MCGalaxy.Events;
 using MCGalaxy.Events.EconomyEvents;
+using MCGalaxy.Events.LevelEvents;
 using MCGalaxy.Events.PlayerEvents;
 using MCGalaxy.Events.ServerEvents;
 
@@ -45,6 +46,7 @@ namespace MCGalaxy.Core {
             OnJoinedLevelEvent.Register(Network.SurvivalNet.OnJoinedLevel, Priority.Low);
             OnBlockChangingEvent.Register(Network.SurvivalInventory.OnBlockChanging, Priority.Low);
             OnJoiningLevelEvent.Register(Network.SurvivalInventory.OnJoiningLevel, Priority.Low);
+            OnLevelLoadedEvent.Register(Network.SurvivalBlocks.OnLevelLoaded, Priority.Low);
             Network.SurvivalNet.Start();
         }
         
@@ -67,6 +69,7 @@ namespace MCGalaxy.Core {
             OnJoinedLevelEvent.Unregister(Network.SurvivalNet.OnJoinedLevel);
             OnBlockChangingEvent.Unregister(Network.SurvivalInventory.OnBlockChanging);
             OnJoiningLevelEvent.Unregister(Network.SurvivalInventory.OnJoiningLevel);
+            OnLevelLoadedEvent.Unregister(Network.SurvivalBlocks.OnLevelLoaded);
             Network.SurvivalNet.Stop();
         }
     }

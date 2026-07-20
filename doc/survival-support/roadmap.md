@@ -53,26 +53,34 @@ Foundation, landed. See `session-notes.md`.
 - 🔁 **Fallbacks for non-fork clients.** Keep driving day/night via stock CPE
   `EnvColors`, custom blocks via `BlockDefinitions`/fallback ids, etc., so stock
   Classic and CPE-only clients degrade gracefully (visitors on survival maps).
-  ✅ *Landed so far (`SurvivalFallbacks.cs`): EnvColors day/night scaling and
-  the ChangeModel mob mirror.* Still open: custom-block fallback ids (phase 1).
+  ✅ *Landed so far: EnvColors day/night scaling and the ChangeModel mob mirror
+  (`SurvivalFallbacks.cs`), custom-block fallback ids (`SurvivalBlocks.cs`).*
 - 🔁 **Namespace hygiene.** `0xB0` is a shared PluginMessages namespace with no
   registry; keep the one-line "do not reuse" note in the server code.
 
 ---
 
-## ⬜ Phase 1 — World generation & block metadata
+## 🔶 Phase 1 — World generation & block metadata (block set landed)
 
 Server generates Indev/c0.30-s worlds and owns block metadata.
 
-- Server-side Indev world generation (themes, floating maps, ground/water) that
-  fills the full `SURV_WORLDINFO` field set (promote heights to int16, add the
-  remaining `.mclevel` env fields).
-- `SURV_BLOCKMETA (0x40)` — push block metadata (facing, crop stage, farmland
-  moisture, furnace/chest orientation) as authoritative updates.
-- Block-ID space mapping at I/O boundaries: genuine on-disk Indev ids ⇄ client
+- ✅ **The Indev block set** (`SurvivalBlocks.cs`): level-scoped BlockDefinitions
+  on Indev maps (1:1 port of the client's `IndevBlocks_Define` — ids 50–62 +
+  view ids 71–97), applied/stripped live with the survival mode; classic
+  fallback ids for pre-BlockDefs clients; the mine/place inventory bridge
+  extended to the set (`PickupFor`/`PlaceCost`); `/Survival give` debug
+  command; the `ToIndev`/`FromIndev`/`DataMeta` view-id ⇄ (id, meta) bijection
+  ported as the authoritative encoding for the steps below. Live-tested.
+- 🔜 Server-side Indev world generation (themes, floating maps, ground/water)
+  that fills the full `SURV_WORLDINFO` field set (promote heights to int16, add
+  the remaining `.mclevel` env fields). Port of the client's `IndevGen.c`.
+- ⬜ `SURV_BLOCKMETA (0x40)` — push block metadata (facing, crop stage, farmland
+  moisture, furnace/chest orientation) as authoritative updates; placement
+  rotation (chest/furnace face the placer, wall torches) rides on it.
+- ⬜ Block-ID space mapping at I/O boundaries: genuine on-disk Indev ids ⇄ client
   runtime ids (metadata nibbles expanded) ⇄ MCGalaxy server ids. Careful
   remapping prevents world corruption. See networking-plan §18.
-- `.mclevel` (NBT) round-trip byte-compatibility for saves.
+- ⬜ `.mclevel` (NBT) round-trip byte-compatibility for saves.
 
 ## ✅ Phase 2 — Health & damage
 

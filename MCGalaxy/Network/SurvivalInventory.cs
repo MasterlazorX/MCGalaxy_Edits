@@ -224,6 +224,18 @@ namespace MCGalaxy.Network
         }
 
 
+        /// <summary> Debug: puts `count` of a raw/view block id into a player's
+        /// server-side inventory (/Survival give). Returns how many actually fit
+        /// (0 = full), or -1 if the player isn't survival-active. </summary>
+        public static int Give(Player p, ushort raw, int count) {
+            if (!SurvivalNet.Active(p, p.level)) return -1;
+            PlayerInv inv = Get(p);
+            int given = 0;
+            while (given < count && AddOne(p, inv, raw, 0)) given++;
+            if (given > 0) SendAll(p); // several slots may change - full resync
+            return given;
+        }
+
         /// <summary> Debug: prints a player's non-empty server-side slots + cursor
         /// to the viewer (/Survival inv). </summary>
         public static void DebugDump(Player viewer, Player target) {
@@ -311,10 +323,14 @@ namespace MCGalaxy.Network
 
             PlayerInv inv = Get(p);
 
+            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+
             if (placing) {
-                ushort raw = p.Session.ConvertBlock(block);
-                if (raw > Block.CLASSIC_MAX_BLOCK) return; // not survival content yet - pass through
-                int idx = ConsumeSlot(p, inv, raw);
+                ushort raw  = p.Session.ConvertBlock(block);
+                ushort cost = raw <= Block.CLASSIC_MAX_BLOCK ? raw
+                            : indev ? SurvivalBlocks.PlaceCost(raw) : (ushort)0;
+                if (cost == 0) return; // not survival content - pass through unconsumed
+                int idx = ConsumeSlot(p, inv, cost);
                 if (idx < 0) {
                     cancel = true;
                     p.RevertBlock(x, y, z);
@@ -326,14 +342,17 @@ namespace MCGalaxy.Network
             } else {
                 BlockID old = lvl.GetBlock(x, y, z);
                 ushort raw  = p.Session.ConvertBlock(Block.Convert(old));
-                if (raw == Block.Air || raw > Block.CLASSIC_MAX_BLOCK) return;
+                if (raw == Block.Air) return;
+                ushort pick = raw <= Block.CLASSIC_MAX_BLOCK ? raw
+                            : indev ? SurvivalBlocks.PickupFor(raw) : (ushort)0;
+                if (pick == 0) return; // yields nothing (crops/fire/leftover CPE ids)
                 // liquids never yield a pickup (breaking still-water via commands etc.)
                 byte collide = lvl.CollideType(old);
                 if (collide == CollideType.SwimThrough || collide == CollideType.LiquidWater ||
                     collide == CollideType.LiquidLava) return;
 
-                if (AddOne(p, inv, raw, 0)) {
-                    int idx = FindStack(inv, raw);
+                if (AddOne(p, inv, pick, 0)) {
+                    int idx = FindStack(inv, pick);
                     if (idx >= 0) SendSlot(p, inv, idx);
                 } // full inventory: the block is simply not picked up (phase 5 drops fix this)
             }

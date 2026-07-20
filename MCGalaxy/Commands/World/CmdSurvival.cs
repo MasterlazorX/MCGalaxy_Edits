@@ -77,6 +77,9 @@ namespace MCGalaxy.Commands.World
                 case "inv":
                     HandleInv(p, args);
                     return;
+                case "give":
+                    HandleGive(p, args);
+                    return;
                 default:
                     Help(p); return;
             }
@@ -190,6 +193,42 @@ namespace MCGalaxy.Commands.World
             SurvivalInventory.DebugDump(p, target);
         }
 
+        // test aid: put blocks straight into a survival player's server inventory,
+        // so Indev-set blocks (torch/chest/workbench/...) are testable before
+        // crafting exists. Accepts block names (incl. the level's custom defs)
+        // or raw ids; count defaults to one stack.
+        static void HandleGive(Player p, string[] args) {
+            if (args.Length < 2) {
+                p.Message("Use: &T/Survival give [block] <count> <player>"); return;
+            }
+            Player target = p;
+            if (args.Length >= 4) {
+                target = PlayerInfo.FindMatches(p, args[3]);
+                if (target == null) return;
+            } else if (p == Player.Console) {
+                p.Message("From console, use: &T/Survival give [block] [count] [player]"); return;
+            }
+
+            ushort block;
+            if (!CommandParser.GetBlock(target, args[1], out block)) return;
+            ushort raw = Block.ToRaw(block);
+            if (raw > 255) { p.Message("&WOnly blocks with ids 0-255 can be given."); return; }
+
+            int count = 64;
+            if (args.Length >= 3 && (!int.TryParse(args[2], out count) || count < 1 || count > 576)) {
+                p.Message("&WCount must be 1-576."); return;
+            }
+
+            int given = SurvivalInventory.Give(target, raw, count);
+            if (given < 0) {
+                p.Message("&W{0} &Wis not on an active survival map (or not on a survival client).", target.name);
+            } else if (given == 0) {
+                p.Message("&W{0}'s &Winventory is full.", target.name);
+            } else {
+                p.Message("Gave {0} &b{1}&Sx &b{2}&S (id {3}).", target.ColoredName, given, Block.GetName(target, block), raw);
+            }
+        }
+
         static bool SpawnMob(Player p, Level lvl, string typeName) {
             string[] names = { "zombie", "skeleton", "pig", "creeper", "spider", "sheep" };
             int type = Array.IndexOf(names, typeName.ToLower());
@@ -222,7 +261,7 @@ namespace MCGalaxy.Commands.World
             p.Message("  non-survival clients: &b{0}&S (change with &T/Survival visitors&S)", cfg.SurvivalVisitors);
             // stale-build tripwire: if this line is missing in-game, the server
             // binary predates the phase the missing feature shipped in
-            p.Message("  server build: &bphases 0-4 &S(dwell, hacks-override, mobs, inventory)");
+            p.Message("  server build: &bphases 0-4 + indev blocks &S(dwell, hacks-override, mobs, inventory)");
         }
 
         public override void Help(Player p) {
@@ -236,6 +275,7 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Survival spawner &H- natural-spawn statistics + clock state");
             p.Message("&T/Survival time [value] &H- shows or sets the world clock");
             p.Message("&T/Survival inv [player] &H- dumps the server-side inventory");
+            p.Message("&T/Survival give [block] <count> &H- puts blocks in your inventory");
             p.Message("&HChanges apply live to survival-test clients on this level.");
         }
     }

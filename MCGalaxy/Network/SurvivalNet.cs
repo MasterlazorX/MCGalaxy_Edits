@@ -164,6 +164,9 @@ namespace MCGalaxy.Network
         /// survival, sends a mode-off HELLO so the client leaves survival mode. </summary>
         public static void RefreshLevel(Level lvl) {
             if (lvl == null) return;
+            // phase 1: the Indev block set follows the survival mode (level-scoped
+            // BlockDefinitions, pushed live to CPE clients by Sync itself)
+            SurvivalBlocks.Sync(lvl);
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player p in players)
             {
@@ -244,6 +247,7 @@ namespace MCGalaxy.Network
 
         /// <summary> Starts the survival day/night clock. Called once from CorePlugin. </summary>
         public static void Start() {
+            SurvivalBlocks.SyncLoadedLevels(); // levels loaded before our hooks registered
             SurvivalMobs.Start();
             if (timeTask != null) return;
             timeTask = Server.MainScheduler.QueueRepeat(TimeTick, null, TIME_INTERVAL);
