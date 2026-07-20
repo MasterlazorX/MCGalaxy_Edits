@@ -636,6 +636,7 @@
     <Compile Include="Network\SurvivalHazards.cs" />
     <Compile Include="Network\SurvivalBlocks.cs" />
     <Compile Include="Network\SurvivalInventory.cs" />
+    <Compile Include="Network\SurvivalItems.cs" />
     <Compile Include="Network\SurvivalMobs.cs" />
     <Compile Include="Network\SurvivalNet.cs" />
     <Compile Include="Network\Utils\BufferedBlockSender.cs" />

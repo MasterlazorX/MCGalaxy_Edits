@@ -142,9 +142,17 @@ Server owns inventory, containers, crafting, smelting.
   `SURV_CONT_OPEN 0x22` / `SURV_CONT_SLOT 0x23` / `SURV_FURN_PROG 0x24`;
   server tile entities (chest/large chest/furnace), container clicks via the
   45..98 slot range, force-close on destruction. Live-tested.
-- ⬜ Remaining: recipes server-side (RESULT_CLICK is still a no-op), smelting,
-  eating/tool USE_ITEM handling, `SURV_PLAYER_EQUIP 0x50`, per-id
-  item/max-stack tables — all land with the ITEM definitions.
+- ✅ **Items** (`SurvivalItems.cs`): the full Indev item table (ids 256+,
+  per-id max stacks: blocks 99 / items 64 / tools+food+armor 1), the genuine
+  mining drop table (stone→cobble, coal ore→coal ITEM, gravel flint roll,
+  crop seed rolls, pickaxe-tier harvest gating), the complete CraftingManager
+  recipe set (fixed + generated tools/armor, mirrored matching) behind a real
+  `RESULT_CLICK`, and TileEntityFurnace smelting on the 20 TPS tick (fuel
+  burn, lit-block flip, FURN_PROG + CONT_SLOT streaming). All identical to
+  the client's tables (the client renders the craft preview locally).
+  Live-tested. `/Survival give` accepts item names/ids.
+- ⬜ Remaining: eating/tool USE_ITEM handling (food, hoes, flint&steel, tool
+  durability), `SURV_PLAYER_EQUIP 0x50` + armor absorption.
 
 ## ⬜ Phase 5 — Drops & advanced simulation
 

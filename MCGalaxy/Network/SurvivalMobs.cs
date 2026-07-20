@@ -921,6 +921,9 @@ namespace MCGalaxy.Network
                 }
             }
 
+            // furnaces smelt on the same 20 TPS cadence (TileEntityFurnace)
+            SurvivalInventory.TickFurnaces(lvl);
+
             // non-survival clients on this map see the mobs as plain Classic
             // entities with ChangeModel (SurvivalFallbacks) - synced at 10 Hz,
             // the same cadence MCGalaxy relays player positions at, so stock

@@ -209,10 +209,25 @@ namespace MCGalaxy.Commands.World
                 p.Message("From console, use: &T/Survival give [block] [count] [player]"); return;
             }
 
-            ushort block;
-            if (!CommandParser.GetBlock(target, args[1], out block)) return;
-            ushort raw = Block.ToRaw(block);
-            if (raw > 255) { p.Message("&WOnly blocks with ids 0-255 can be given."); return; }
+            // items first (256+): by display name ("iron_pickaxe", "coal") or id
+            ushort raw;
+            string name;
+            int numeric;
+            ushort item = Network.SurvivalItems.FindByName(args[1]);
+            if (item == 0 && int.TryParse(args[1], out numeric) && numeric >= 256 && numeric <= 1023 &&
+                Network.SurvivalItems.NameOf((ushort)numeric) != null) {
+                item = (ushort)numeric;
+            }
+            if (item != 0) {
+                raw  = item;
+                name = Network.SurvivalItems.NameOf(item);
+            } else {
+                ushort block;
+                if (!CommandParser.GetBlock(target, args[1], out block)) return;
+                raw = Block.ToRaw(block);
+                if (raw > 255) { p.Message("&WOnly blocks with ids 0-255 can be given."); return; }
+                name = Block.GetName(target, block);
+            }
 
             int count = 64;
             if (args.Length >= 3 && (!int.TryParse(args[2], out count) || count < 1 || count > 576)) {
@@ -225,7 +240,7 @@ namespace MCGalaxy.Commands.World
             } else if (given == 0) {
                 p.Message("&W{0}'s &Winventory is full.", target.name);
             } else {
-                p.Message("Gave {0} &b{1}&Sx &b{2}&S (id {3}).", target.ColoredName, given, Block.GetName(target, block), raw);
+                p.Message("Gave {0} &b{1}&Sx &b{2}&S (id {3}).", target.ColoredName, given, name, raw);
             }
         }
 

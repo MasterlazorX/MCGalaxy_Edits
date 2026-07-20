@@ -32,17 +32,17 @@ namespace MCGalaxy.Network
     /// the cursor is server-owned, every mutation echoes authoritative slots, and TCP
     /// ordering removes Beta's transaction dance. No client claim is ever applied.
     ///
-    /// V1 scope (deliberate, see doc/survival-support/session-notes.md):
-    ///  * Main 36 + craft grid 9 + armor 4 slots stream; containers (45..98) are
-    ///    NOT streamed yet - clicks into that range are rejected.
-    ///  * No crafting recipes server-side yet: the craft grid holds items fine, but
-    ///    SURV_RESULT_CLICK is a no-op (the client computes no local result in MP).
-    ///  * Mining adds the broken block directly to the inventory and placing consumes
-    ///    it - the drop-entity hop arrives with phase 5.
-    ///  * Armor slots accept nothing (no armor items exist yet); taking out works.
+    /// Current scope (see doc/survival-support/session-notes.md):
+    ///  * Main 36 + craft 9 + armor 4 slots stream; the container range (45..98)
+    ///    resolves through the player's OPEN container view (chest/large/furnace).
+    ///  * Crafting is real: SURV_RESULT_CLICK matches the SurvivalItems recipe
+    ///    table (identical to the client's, which renders the preview locally).
+    ///  * Mining yields the genuine Indev drop table (SurvivalItems.MiningDrops,
+    ///    harvest-gated) straight into the inventory; the drop-entity hop is phase 5.
+    ///  * Furnaces smelt on the 20 TPS survival tick (TickFurnaces).
+    ///  * Armor slots accept nothing yet (equip/absorption is future work).
     ///  * Death keeps the inventory (drops are phase 5; SurvivalDeathDrops honoured then).
-    ///  * Max stacks: 99 in c0.30 mode, 64 in Indev (the per-id table - tools 1, etc. -
-    ///    lands with the item definitions in later phase-4 work).
+    ///  * Max stacks: per-id in Indev (blocks 99 / items 64 / tools 1), flat 99 in c0.30.
     /// </remarks>
     public static class SurvivalInventory
     {
@@ -69,6 +69,7 @@ namespace MCGalaxy.Network
         }
 
         const string INV_KEY = "survival.inventory";
+        static readonly Random dropRng = new Random();
 
         static PlayerInv Get(Player p) {
             object o;
@@ -81,7 +82,9 @@ namespace MCGalaxy.Network
         static int MaxStack(Player p, ushort id) {
             Level lvl = p.level;
             bool indev = lvl != null && lvl.Config.SurvivalMode == SurvivalMode.Indev;
-            return indev ? 64 : 99;
+            // Indev: the per-id table (blocks 99, items 64, tools/food/armor 1),
+            // identical to the client's. c0.30 has no items - flat 99.
+            return indev ? SurvivalItems.MaxStack(id) : 99;
         }
 
 
@@ -145,9 +148,8 @@ namespace MCGalaxy.Network
         // touching another chest opens as the genuine InventoryLargeChest: the
         // -X/-Z neighbour is the UPPER 27 slots, the clicked chest the lower.
         // V1 deviations: destroying a container discards its contents (chest
-        // scatter needs phase-5 drops); no smelting until items exist (the
-        // furnace holds blocks and FURN_PROG stays 0); container GUIs are not
-        // opened on creative maps (the client inventory is a local palette there).
+        // scatter needs phase-5 drops); container GUIs are not opened on
+        // creative maps (the client inventory is a local palette there).
 
         public const byte CONT_NONE = 0, CONT_CHEST = 1, CONT_FURNACE = 2,
                           CONT_LARGE = 3, CONT_WORKBENCH = 4;
@@ -157,8 +159,10 @@ namespace MCGalaxy.Network
             public byte  Kind; // CONT_CHEST or CONT_FURNACE (a large chest is two of these)
             public Slot[] Slots;
             public int X, Y, Z;
+            // furnace state (TileEntityFurnace): slots 0 input, 1 fuel, 2 output
+            public int BurnTime, CookTime, CurrentBurn;
         }
-        class OpenRef { public Container Upper, Lower; public Level Lvl; }
+        class OpenRef { public byte Kind; public Container Upper, Lower; public Level Lvl; }
 
         const string OPEN_KEY = "survival.container";
         static readonly object contLock = new object();
@@ -254,8 +258,12 @@ namespace MCGalaxy.Network
             ushort raw = RawAt(lvl, x, y, z);
 
             if (raw == SurvivalBlocks.WORKBENCH) {
-                // no server-side container state - the client opens its 3x3 grid
-                // (the craft slots 36..44 are already part of the streamed inventory)
+                // no container slots - the client opens its 3x3 grid over the
+                // streamed craft slots 36..44. The open ref records the 3x3 dim
+                // for RESULT_CLICK's recipe matching.
+                OpenRef wb = new OpenRef();
+                wb.Kind = CONT_WORKBENCH; wb.Lvl = lvl;
+                p.Extras[OPEN_KEY] = wb;
                 SurvivalNet.SendContOpen(p, CONT_WORKBENCH, 0);
                 return;
             }
@@ -271,7 +279,7 @@ namespace MCGalaxy.Network
                 if (hasNeighbour && SolidAbove(lvl, nx, y, nz)) return; // other half blocked
 
                 OpenRef open = new OpenRef();
-                open.Lvl = lvl;
+                open.Kind = CONT_CHEST; open.Lvl = lvl;
                 Container clicked = GetTE(lvl, x, y, z, CONT_CHEST);
                 if (!hasNeighbour) {
                     open.Upper = clicked;
@@ -289,12 +297,12 @@ namespace MCGalaxy.Network
 
             if (IsFurnaceView(raw)) {
                 OpenRef open = new OpenRef();
-                open.Lvl   = lvl;
+                open.Kind  = CONT_FURNACE; open.Lvl = lvl;
                 open.Upper = GetTE(lvl, x, y, z, CONT_FURNACE);
                 p.Extras[OPEN_KEY] = open;
                 SurvivalNet.SendContOpen(p, CONT_FURNACE, 3);
                 StreamContainer(p, open);
-                SurvivalNet.SendFurnProg(p, 0, 0); // smelting lands with items
+                SurvivalNet.SendFurnProg(p, FurnBurnScaled(open.Upper), FurnCookScaled(open.Upper));
                 return;
             }
         }
@@ -322,6 +330,114 @@ namespace MCGalaxy.Network
                 SurvivalNet.SendContSlot(pl, ci, s.Id, s.Count, s.Damage);
             }
         }
+
+        // ==================== furnace smelting (TileEntityFurnace) ====================
+
+        static byte FurnBurnScaled(Container te) {
+            return (byte)(te.CurrentBurn > 0 ? te.BurnTime * 12 / te.CurrentBurn : 0);
+        }
+        static byte FurnCookScaled(Container te) {
+            return (byte)(te.CookTime * 24 / 200);
+        }
+
+        static bool CanSmelt(Container te) {
+            if (te.Slots[0].Count == 0) return false;
+            ushort result = SurvivalItems.SmeltResult(te.Slots[0].Id);
+            if (result == 0) return false;
+            if (te.Slots[2].Count == 0) return true;
+            return te.Slots[2].Id == result &&
+                   te.Slots[2].Count < SurvivalItems.MaxStack(result);
+        }
+
+        /// <summary> One 20 TPS smelting pass over a level's furnaces - the genuine
+        /// TileEntityFurnace.updateEntity: burn the fuel down, cook for 200 ticks
+        /// per item, flip the block to its lit/unlit form (facing preserved), and
+        /// stream slots + FURN_PROG to viewers. Called from the survival mob tick
+        /// so furnaces run whenever anyone is on the map. </summary>
+        public static void TickFurnaces(Level lvl) {
+            if (lvl.Config.SurvivalMode != SurvivalMode.Indev) return;
+            List<Container> furnaces = null;
+            lock (contLock) {
+                Dictionary<long, Container> map;
+                if (!contRegistry.TryGetValue(lvl, out map)) return;
+                foreach (Container te in map.Values)
+                {
+                    if (te.Kind != CONT_FURNACE) continue;
+                    if (furnaces == null) furnaces = new List<Container>();
+                    furnaces.Add(te);
+                }
+            }
+            if (furnaces == null) return;
+
+            foreach (Container te in furnaces)
+            {
+                bool wasBurning = te.BurnTime > 0;
+                bool slotsChanged = false;
+                if (te.BurnTime > 0) te.BurnTime--;
+
+                bool canSmelt = CanSmelt(te);
+                if (te.BurnTime == 0 && canSmelt) {
+                    int fuel = SurvivalItems.FuelTime(te.Slots[1].Id);
+                    if (fuel > 0) {
+                        te.CurrentBurn = te.BurnTime = fuel;
+                        if (--te.Slots[1].Count == 0) { te.Slots[1].Id = 0; te.Slots[1].Damage = 0; }
+                        slotsChanged = true;
+                    }
+                }
+
+                if (te.BurnTime > 0 && canSmelt) {
+                    if (++te.CookTime >= 200) {
+                        te.CookTime = 0;
+                        ushort result = SurvivalItems.SmeltResult(te.Slots[0].Id);
+                        if (te.Slots[2].Count == 0) { te.Slots[2].Id = result; te.Slots[2].Damage = 0; }
+                        te.Slots[2].Count++;
+                        if (--te.Slots[0].Count == 0) { te.Slots[0].Id = 0; te.Slots[0].Damage = 0; }
+                        slotsChanged = true;
+                    }
+                } else {
+                    te.CookTime = 0;
+                }
+
+                bool burning = te.BurnTime > 0;
+                if (burning != wasBurning) FlipFurnaceBlock(lvl, te, burning);
+
+                // stream to viewers: slots on change, progress at 4 Hz while lit
+                // (or once when it goes out so the flame/arrow zero out)
+                bool tickProg = burning && (te.CookTime % 5) == 0;
+                if (!slotsChanged && !tickProg && burning == wasBurning) continue;
+                Player[] players = PlayerInfo.Online.Items;
+                foreach (Player pl in players)
+                {
+                    OpenRef o = GetOpen(pl);
+                    if (o == null || o.Upper != te) continue;
+                    if (slotsChanged) {
+                        for (int i = 0; i < 3; i++)
+                            SurvivalNet.SendContSlot(pl, i, te.Slots[i].Id, te.Slots[i].Count, te.Slots[i].Damage);
+                    }
+                    SurvivalNet.SendFurnProg(pl, FurnBurnScaled(te), FurnCookScaled(te));
+                }
+            }
+        }
+
+        // BlockFurnace.updateFurnaceBlockState: idle 61 <-> lit 62, facing views
+        // 75..78 <-> 79..82 (+4/-4), keeping the orientation
+        static void FlipFurnaceBlock(Level lvl, Container te, bool burning) {
+            ushort raw = RawAt(lvl, te.X, te.Y, te.Z);
+            ushort now = raw;
+            if (burning) {
+                if (raw == SurvivalBlocks.FURNACE) now = SurvivalBlocks.FURNACE_LIT;
+                else if (raw >= SurvivalBlocks.FURN_V0 && raw <= SurvivalBlocks.FURN_V0 + 3)
+                    now = (ushort)(raw + 4);
+            } else {
+                if (raw == SurvivalBlocks.FURNACE_LIT) now = SurvivalBlocks.FURNACE;
+                else if (raw >= SurvivalBlocks.FURNL_V0 && raw <= SurvivalBlocks.FURNL_V0 + 3)
+                    now = (ushort)(raw - 4);
+            }
+            if (now == raw) return;
+            lvl.UpdateBlock(Player.Console, (ushort)te.X, (ushort)te.Y, (ushort)te.Z,
+                            Block.FromRaw(now));
+        }
+
 
         /// <summary> A container block was mined/removed: discard its tile entity
         /// (contents vanish until phase-5 drops implement the genuine scatter) and
@@ -423,10 +539,43 @@ namespace MCGalaxy.Network
             SendCursor(p, inv);
         }
 
-        /// <summary> SURV_RESULT_CLICK: no server-side recipes yet - the craft result
-        /// is always empty in MP v1, so taking it is a validated no-op. </summary>
+        /// <summary> SURV_RESULT_CLICK: SlotCrafting pickup. Matches the craft grid
+        /// (2x2 pocket, or 3x3 with a workbench view open) against the recipe
+        /// table - which must stay identical to the client's, since the client
+        /// renders the preview locally - then yields the result onto the CURSOR
+        /// (stacking when it fits) and consumes one of each grid ingredient. </summary>
         public static void HandleResultClick(Player p) {
-            Logger.Log(LogType.Debug, "survival: result click from {0} (recipes not implemented yet)", p.name);
+            if (!SurvivalNet.Active(p, p.level) || SurvivalNet.IsDead(p)) return;
+            if (p.level == null || p.level.Config.SurvivalMode != SurvivalMode.Indev) return;
+            if (p.level.Config.SurvivalCreative) return;
+            PlayerInv inv = Get(p);
+
+            OpenRef open = GetOpen(p);
+            int dim = open != null && open.Kind == CONT_WORKBENCH ? 3 : 2;
+            ushort[] grid = new ushort[dim * dim];
+            for (int i = 0; i < grid.Length; i++)
+            {
+                Slot s = inv.Slots[CRAFT_BASE + i];
+                grid[i] = s.Count > 0 ? s.Id : (ushort)0;
+            }
+
+            ushort id; int count;
+            if (!SurvivalItems.MatchRecipe(grid, dim, dim, out id, out count)) return;
+            // result goes onto the cursor; refuse when it holds something else
+            // or the stack would overflow (the client's ResultClick rule)
+            if (inv.Cursor.Count > 0 &&
+                (inv.Cursor.Id != id || inv.Cursor.Count + count > MaxStack(p, id))) return;
+
+            inv.Cursor.Id     = id;
+            inv.Cursor.Count += (byte)count;
+            inv.Cursor.Damage = 0;
+            for (int i = CRAFT_BASE; i < CRAFT_BASE + CRAFT_SLOTS; i++)
+            {
+                if (inv.Slots[i].Count == 0) continue;
+                if (--inv.Slots[i].Count == 0) { inv.Slots[i].Id = 0; inv.Slots[i].Damage = 0; }
+                SendSlot(p, inv, i);
+            }
+            SendCursor(p, inv);
         }
 
         /// <summary> SURV_CONT_CLOSE: the window closed - return the cursor and the
@@ -573,18 +722,33 @@ namespace MCGalaxy.Network
                 // a mined container discards its tile entity + force-closes viewers
                 if (indev && (IsChestView(raw) || IsFurnaceView(raw)))
                     ContainerRemoved(lvl, x, y, z);
-                ushort pick = raw <= Block.CLASSIC_MAX_BLOCK ? raw
-                            : indev ? SurvivalBlocks.PickupFor(raw) : (ushort)0;
-                if (pick == 0) return; // yields nothing (crops/fire/leftover CPE ids)
                 // liquids never yield a pickup (breaking still-water via commands etc.)
                 byte collide = lvl.CollideType(old);
                 if (collide == CollideType.SwimThrough || collide == CollideType.LiquidWater ||
                     collide == CollideType.LiquidLava) return;
 
-                if (AddOne(p, inv, pick, 0)) {
-                    int idx = FindStack(inv, pick);
-                    if (idx >= 0) SendSlot(p, inv, idx);
-                } // full inventory: the block is simply not picked up (phase 5 drops fix this)
+                if (indev) {
+                    // the genuine Indev drop table (SpawnIndevDrops port): grass->
+                    // dirt, stone->cobble, coal ore->coal ITEM, gravel's flint
+                    // roll, harvest gating by held pickaxe tier, crops' seed
+                    // rolls... v1 puts yields straight into the inventory (the
+                    // drop-entity hop is phase 5).
+                    ushort held = inv.HeldSlot >= 0 && inv.HeldSlot < 9 ? inv.Slots[inv.HeldSlot].Id : (ushort)0;
+                    List<KeyValuePair<ushort, int>> drops = new List<KeyValuePair<ushort, int>>();
+                    lock (dropRng) SurvivalItems.MiningDrops(dropRng, raw, held, drops);
+                    bool any = false;
+                    foreach (KeyValuePair<ushort, int> d in drops)
+                    {
+                        for (int n = 0; n < d.Value; n++) any |= AddOne(p, inv, d.Key, 0);
+                    }
+                    if (any) SendAll(p); // several slots may change - resync
+                } else {
+                    if (raw > Block.CLASSIC_MAX_BLOCK) return;
+                    if (AddOne(p, inv, raw, 0)) {
+                        int idx = FindStack(inv, raw);
+                        if (idx >= 0) SendSlot(p, inv, idx);
+                    } // full inventory: the block is simply not picked up
+                }
             }
         }
 
