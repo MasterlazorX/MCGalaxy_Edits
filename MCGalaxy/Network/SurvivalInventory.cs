@@ -724,16 +724,32 @@ namespace MCGalaxy.Network
         public static void OnBlockChanging(Player p, ushort x, ushort y, ushort z, BlockID block, bool placing, ref bool cancel) {
             Level lvl = p.level;
             if (lvl == null || lvl.Config.SurvivalMode == SurvivalMode.Off) return;
-            if (lvl.Config.SurvivalCreative) return; // creative: free build for everyone, no pickup/consume
+            if (lvl.Config.SurvivalCreative) {
+                // creative: free build for everyone, no pickup/consume - but the
+                // Indev placement shaping (furnace/chest facing, torch mounting,
+                // leftover-block refusal) still applies so the authoritative
+                // world matches what the Indev client builds locally
+                if (placing && p.Session != null && lvl.Config.SurvivalMode == SurvivalMode.Indev)
+                    ShapeIndevPlacement(p, lvl, x, y, z, block, ref cancel);
+                return;
+            }
 
             // networking-plan §16's hard invariant: a client that never negotiated
             // SurvivalTest bypasses tools/consumption/drops, so letting it modify a
             // survival world would corrupt the authoritative state. Default policy
             // is look-but-don't-touch; the map owner may opt into Allow. Referees
             // keep their staff escape hatch (draw commands are unaffected anyway).
+            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+
             if (p.Session == null || !p.Session.hasSurvival) {
-                if (lvl.Config.SurvivalVisitors == SurvivalVisitorPolicy.Allow) return;
-                if (p.Game.Referee) return;
+                if (lvl.Config.SurvivalVisitors == SurvivalVisitorPolicy.Allow || p.Game.Referee) {
+                    // permitted stock-client builds still get the Indev placement
+                    // shaping so the world stays consistent (faced containers,
+                    // mounted torches, no leftover blocks)
+                    if (indev && placing && p.Session != null)
+                        ShapeIndevPlacement(p, lvl, x, y, z, block, ref cancel);
+                    return;
+                }
                 cancel = true;
                 p.RevertBlock(x, y, z);
                 WarnVisitor(p);
@@ -743,22 +759,40 @@ namespace MCGalaxy.Network
 
             PlayerInv inv = Get(p);
 
-            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
-
             if (placing) {
                 ushort raw  = p.Session.ConvertBlock(block);
-                ushort cost = raw <= Block.CLASSIC_MAX_BLOCK ? raw
-                            : indev ? SurvivalBlocks.PlaceCost(raw) : (ushort)0;
-                if (cost == 0) return; // not survival content - pass through unconsumed
-                int idx = ConsumeSlot(p, inv, cost);
-                if (idx < 0) {
+                ushort view = raw;
+
+                if (indev && !ValidateIndevPlace(p, lvl, x, y, z, raw, out view)) {
                     cancel = true;
                     p.RevertBlock(x, y, z);
-                    // resync the hotbar so a stale client view corrects itself
-                    SendAll(p);
-                    return;
+                    return; // refused before anything is consumed
                 }
-                SendSlot(p, inv, idx);
+
+                ushort cost = raw <= Block.CLASSIC_MAX_BLOCK ? raw
+                            : indev ? SurvivalBlocks.PlaceCost(raw) : (ushort)0;
+                if (cost != 0) {
+                    int idx = ConsumeSlot(p, inv, cost);
+                    if (idx < 0) {
+                        cancel = true;
+                        p.RevertBlock(x, y, z);
+                        // resync the hotbar so a stale client view corrects itself
+                        SendAll(p);
+                        return;
+                    }
+                    SendSlot(p, inv, idx);
+                } else if (!indev) {
+                    return; // not survival content - pass through unconsumed
+                }
+
+                if (view != raw) {
+                    // placement rotation/mounting: cancel the canonical place and
+                    // broadcast the directional view instead - one authoritative
+                    // write that also confirms (or corrects) the fork client's
+                    // own local facing guess
+                    cancel = true;
+                    lvl.UpdateBlock(Player.Console, x, y, z, Block.FromRaw(view));
+                }
             } else {
                 BlockID old = lvl.GetBlock(x, y, z);
                 ushort raw  = p.Session.ConvertBlock(Block.Convert(old));
@@ -795,6 +829,117 @@ namespace MCGalaxy.Network
                 }
             }
         }
+
+        // ==================== Indev placement shaping ====================
+        // Mirrors the client's SP placement handling (IndevTest_BlockChanged +
+        // IndevTest_CanPlaceBlockAt): canonical chests/furnaces rotate so the
+        // front faces the placer, torches wall-mount off their support, chest
+        // triples/L-shapes and the non-Indev CPE leftovers are refused. The
+        // server is authoritative - its rewrite is broadcast to everyone,
+        // confirming (or correcting) the fork client's local guess.
+
+        /// <summary> The creative-map variant: no inventory bookkeeping, just
+        /// validation + the directional rewrite. </summary>
+        static void ShapeIndevPlacement(Player p, Level lvl, ushort x, ushort y, ushort z,
+                                        BlockID block, ref bool cancel) {
+            ushort raw = p.Session.ConvertBlock(block);
+            ushort view;
+            if (!ValidateIndevPlace(p, lvl, x, y, z, raw, out view)) {
+                cancel = true;
+                p.RevertBlock(x, y, z);
+            } else if (view != raw) {
+                cancel = true;
+                lvl.UpdateBlock(Player.Console, x, y, z, Block.FromRaw(view));
+            }
+        }
+
+        /// <summary> Validates an Indev-map placement and picks the view id that
+        /// actually enters the world (facing/mount variants). False = refuse. </summary>
+        static bool ValidateIndevPlace(Player p, Level lvl, int x, int y, int z,
+                                       ushort raw, out ushort view) {
+            view = raw;
+
+            // ids 50-65 that hold no Indev block (turquoise wool, ice, pillar,
+            // crate, stone brick) don't exist in this world - refused, like the
+            // client's CanPlace=false on its nonGenuine list
+            if (raw > Block.CLASSIC_MAX_BLOCK && raw <= Block.CPE_MAX_BLOCK &&
+                !SurvivalBlocks.IsIndevBlock(raw)) return false;
+
+            // BlockTorch: canPlaceBlockAt needs a support; onBlockAdded's auto
+            // wall-pick mounts it (the clicked-face override needs face info the
+            // classic place packet doesn't carry - a documented deviation when
+            // several supports exist)
+            if (raw == SurvivalBlocks.TORCH) {
+                int meta = TorchAutoMeta(lvl, x, y, z);
+                if (meta == 0) return false;
+                if (meta != 5) view = (ushort)(SurvivalBlocks.TORCH_W1 + meta - 1);
+                return true;
+            }
+            // a wall-torch view placed directly still needs some support
+            if (raw >= SurvivalBlocks.TORCH_W1 && raw <= SurvivalBlocks.TORCH_W4) {
+                return TorchAutoMeta(lvl, x, y, z) != 0;
+            }
+
+            // BlockChest.canPlaceBlockAt: at most ONE neighbouring chest, and
+            // never one that is already half of a double
+            if (raw == SurvivalBlocks.CHEST) {
+                bool paired = false;
+                int n = ChestNeighbour(lvl, x - 1, y, z, ref paired)
+                      + ChestNeighbour(lvl, x + 1, y, z, ref paired)
+                      + ChestNeighbour(lvl, x, y, z - 1, ref paired)
+                      + ChestNeighbour(lvl, x, y, z + 1, ref paired);
+                if (n > 1 || paired) return false;
+                view = SurvivalBlocks.FacingVariant(raw, YawFacingMeta(p));
+                return true;
+            }
+
+            // BlockFurnace.setDefaultDirection: face the placer
+            if (raw == SurvivalBlocks.FURNACE || raw == SurvivalBlocks.FURNACE_LIT) {
+                view = SurvivalBlocks.FacingVariant(raw, YawFacingMeta(p));
+                return true;
+            }
+            return true;
+        }
+
+        // The client's yaw-quadrant facing pick (IndevTest_BlockChanged):
+        // floor(yaw * 4/360 + 0.5) & 3 -> Indev metadata 3/4/2/5. Yaw rides
+        // the wire as a byte, so *4/360 degrees = *4/256 raw.
+        static int YawFacingMeta(Player p) {
+            int q = ((p.Rot.RotY * 4 + 128) >> 8) & 3;
+            return q == 0 ? 3 : q == 1 ? 4 : q == 2 ? 2 : 5;
+        }
+
+        // World.isBlockNormalCube approximation: solid collide + light-blocking
+        // (glass, leaves, plants, slabs and the non-cube customs all pass
+        // light, so they can't hold a torch - matching genuine)
+        static bool NormalCube(Level lvl, int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return false;
+            BlockID b = lvl.GetBlock((ushort)x, (ushort)y, (ushort)z);
+            if (Block.Convert(b) == Block.Slab) return false; // half height
+            return CollideType.IsSolid(lvl.CollideType(b)) && !lvl.LightPasses(b);
+        }
+
+        // BlockTorch.onBlockAdded's wall-pick: first solid neighbour in the
+        // genuine -X, +X, -Z, +Z, floor order -> metadata 1/2/3/4/5 (0 = none)
+        static int TorchAutoMeta(Level lvl, int x, int y, int z) {
+            if (NormalCube(lvl, x - 1, y, z)) return 1;
+            if (NormalCube(lvl, x + 1, y, z)) return 2;
+            if (NormalCube(lvl, x, y, z - 1)) return 3;
+            if (NormalCube(lvl, x, y, z + 1)) return 4;
+            if (NormalCube(lvl, x, y - 1, z)) return 5;
+            return 0;
+        }
+
+        // one arm of BlockChest.isThereANeighborChest: the cell holds a chest,
+        // and `paired` picks up whether that chest already touches another
+        static int ChestNeighbour(Level lvl, int x, int y, int z, ref bool paired) {
+            if (!IsChestView(RawAt(lvl, x, y, z))) return 0;
+            if (IsChestView(RawAt(lvl, x - 1, y, z)) || IsChestView(RawAt(lvl, x + 1, y, z)) ||
+                IsChestView(RawAt(lvl, x, y, z - 1)) || IsChestView(RawAt(lvl, x, y, z + 1)))
+                paired = true;
+            return 1;
+        }
+
 
         // Rate-limited so click-spam doesn't flood the visitor's chat
         static void WarnVisitor(Player p) {

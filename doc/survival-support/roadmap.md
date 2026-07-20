@@ -79,9 +79,15 @@ Server generates Indev/c0.30-s worlds and owns block metadata.
   spawn house with wall torches). `SURV_WORLDINFO` now carries genuine
   per-map ground/water levels + edge fluid via the level env config.
   Live-tested across all themes/types.
-- ⬜ `SURV_BLOCKMETA (0x40)` — push block metadata (facing, crop stage, farmland
-  moisture, furnace/chest orientation) as authoritative updates; placement
-  rotation (chest/furnace face the placer, wall torches) rides on it.
+- ✅ Placement shaping (no 0x40 needed - the flattened view-id space carries
+  the metadata): chests/furnaces rotate to face the placer, torches
+  wall-mount off their support (unsupported = refused), chest
+  triples/L-shapes refused, the non-Indev CPE leftovers (59/60/63/64/65)
+  hidden + unplaceable on Indev maps; torch defs are proper thin columns
+  for stock clients. Deviation: torch clicked-face mounting needs a face
+  byte the classic place packet lacks (auto-pick wins; quality pass).
+- ⬜ `SURV_BLOCKMETA (0x40)` — reserved for metadata the view-id space does
+  NOT flatten (fire age, sapling growth stage) if it ever needs to stream.
 - ✅ Block-ID space mapping at I/O boundaries + `.mclevel` (NBT) round trip:
   `McLevelImporter` expands genuine ids + the `Data` metadata nibble through
   the `SurvivalBlocks` bijection into view ids (imported maps come out

@@ -132,12 +132,13 @@ namespace MCGalaxy.Network
             BlockDefinition[] t = new BlockDefinition[TORCH_W4 + 1];
             BlockDefinition d;
 
-            // Torch: genuine BlockTorch stick model approximated as a sprite for
-            // stock clients (the fork swaps in the real model on HELLO). Light 14
-            // in the lamp channel; pick bounds = the 2/16 wide, 10/16 tall column.
-            d = Sprite(TORCH, "Torch", 106, SND_WOOD, Block.Sapling);
-            d.SetBrightness(14, true);
-            d.MinX = 7; d.MaxX = 9; d.MinY = 7; d.MaxY = 9; d.MaxZ = 10;
+            // Torch: the genuine BlockTorch stick - a 2/16-wide, 10/16-tall
+            // column. Rendered as a CUBE def whose bounds crop the tile (the
+            // torch pixels live at x 7-9), so stock clients see a proper thin
+            // column instead of a full-size X sprite; the fork swaps in the
+            // real model on HELLO. Top tile 117 (torch shifted down 1px in the
+            // patcher) shows the ember through the 7-9 crop, like the client.
+            d = MiniColumn(TORCH, Block.Sapling);
             t[TORCH] = d;
 
             // Fire: the default pack's animated fire tile; full-bright 15.
@@ -223,18 +224,30 @@ namespace MCGalaxy.Network
                 Hide(d); t[CROPS_0 + k] = d;
             }
 
-            // Wall torch views (metadata 1-4): sprite approximation of the tilted
-            // genuine model; pick bounds from BlockTorch.collisionRayTrace (x16).
-            byte[,] wtMin = { {0,5,3}, {11,5,3}, {5,0,3}, {5,11,3} };  // x, z, y(vertical)
-            byte[,] wtMax = { {5,11,13}, {16,11,13}, {11,5,13}, {11,16,13} };
+            // Wall torch views (metadata 1-4): the def model can't express the
+            // genuine tilt, and offsetting the column toward its wall would
+            // move the bounds crop off the tile's torch pixels (rendering an
+            // empty box) - so stock clients get the same centred mini column
+            // as the standing torch. The fork renders the genuine tilted
+            // geometry locally (Builder_DrawWallTorch).
             for (int k = 0; k < 4; k++) {
-                d = Sprite((byte)(TORCH_W1 + k), "Torch", 106, SND_WOOD, Block.Sapling);
-                d.SetBrightness(14, true);
-                d.MinX = wtMin[k,0]; d.MinY = wtMin[k,1]; d.MinZ = wtMin[k,2];
-                d.MaxX = wtMax[k,0]; d.MaxY = wtMax[k,1]; d.MaxZ = wtMax[k,2];
+                d = MiniColumn((byte)(TORCH_W1 + k), Block.Sapling);
                 Hide(d); t[TORCH_W1 + k] = d;
             }
             return t;
+        }
+
+        // The shared thin-column torch def: tile 106 cropped to the stick
+        // (x 7-9, up to 10/16 tall), walk-through, lamp light 14.
+        static BlockDefinition MiniColumn(byte raw, byte fallback) {
+            BlockDefinition d = Cube(raw, "Torch", 117, 106, 106, SND_WOOD, fallback);
+            d.CollideType = CollideType.WalkThrough;
+            d.BlocksLight = false;
+            d.BlockDraw   = DrawType.Transparent;
+            d.SetBrightness(14, true);
+            d.Shape = 10;
+            d.MinX = 7; d.MaxX = 9; d.MinY = 7; d.MaxY = 9; d.MaxZ = 10;
+            return d;
         }
 
         // Front-tile placement for directional views, k = Indev meta - 2:
@@ -273,6 +286,15 @@ namespace MCGalaxy.Network
             foreach (Level lvl in loaded) Sync(lvl);
         }
 
+        // CPE decoration ids that hold no genuine Indev block: turquoise
+        // wool(59) and ice(60) - whose slots our crops/farmland views don't
+        // reuse - plus pillar(63)/crate(64)/stone brick(65), which don't exist
+        // in Indev at all. Mirrors the client's nonGenuine list: on Indev maps
+        // they are hidden from the block menu (their CPE default appearance is
+        // kept in case one is command-placed) and the block bridge refuses
+        // placing them.
+        static readonly byte[] leftovers = { 59, 60, 63, 64, 65 };
+
         static void Apply(Level lvl) {
             BlockDefinition[] tmpl = Template();
             BlockDefinition[] mine = new BlockDefinition[tmpl.Length];
@@ -281,6 +303,14 @@ namespace MCGalaxy.Network
                 if (tmpl[raw] == null) continue;
                 // per-level instances so /lb edits on one map never leak into another
                 BlockDefinition def = tmpl[raw].Copy();
+                BlockDefinition.Add(def, lvl.CustomBlockDefs, lvl);
+                mine[raw] = def;
+            }
+            foreach (byte raw in leftovers)
+            {
+                if (lvl.CustomBlockDefs[raw] != null) continue; // owner's own /lb def wins
+                BlockDefinition def = DefaultSet.MakeCustomBlock(raw);
+                Hide(def);
                 BlockDefinition.Add(def, lvl.CustomBlockDefs, lvl);
                 mine[raw] = def;
             }
@@ -410,6 +440,17 @@ namespace MCGalaxy.Network
             if (b == TORCH)                         return 5; // standing
             if (b >= TORCH_W1 && b <= TORCH_W4)     return 1 + (b - TORCH_W1);
             return 0;
+        }
+
+        /// <summary> Directional view of a canonical chest/furnace for Indev
+        /// facing metadata 2-5 (the client's IndevTest_FacingVariant). </summary>
+        public static ushort FacingVariant(ushort canonical, int meta) {
+            int k = meta - 2;
+            if (k < 0 || k > 3) return canonical;
+            if (canonical == CHEST)       return (ushort)(CHEST_V0 + k);
+            if (canonical == FURNACE)     return (ushort)(FURN_V0  + k);
+            if (canonical == FURNACE_LIT) return (ushort)(FURNL_V0 + k);
+            return canonical;
         }
 
         /// <summary> Applies a loaded Data nibble to a canonical view id,

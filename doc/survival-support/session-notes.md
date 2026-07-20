@@ -590,6 +590,61 @@ are NOT restored (the container registry is session-scoped - persistence is
 a known deviation), player inventory/mob entities are not exported, and
 `TimeOfDay` imports as nothing (global clock).
 
+### Placement shaping + block-def polish (user request)
+
+The server now mirrors the client's SP placement handling
+(`IndevTest_BlockChanged` + `IndevTest_CanPlaceBlockAt`) in the block
+bridge, so multiplayer placements come out shaped authoritatively
+(`ValidateIndevPlace` in `SurvivalInventory.cs`; the canonical place is
+cancelled and the directional view broadcast via `lvl.UpdateBlock`, which
+also confirms - or corrects - the fork client's local guess):
+
+- **Furnaces and chests face the placer** (BlockFurnace.setDefaultDirection):
+  the placer's yaw quadrant picks Indev facing metadata 3/4/2/5 - the exact
+  client formula, with yaw as the wire byte (`(RotY*4+128)>>8 & 3`).
+- **Torches wall-mount** off their support (BlockTorch.onBlockAdded's
+  -X/+X/-Z/+Z/floor order); an unsupported torch placement is refused
+  before anything is consumed. "Normal cube" is approximated as solid
+  collide + light-blocking (glass/leaves/plants/slabs excluded), matching
+  genuine's isBlockNormalCube closely. Deviation: the clicked-face override
+  (onBlockPlaced) needs face info the classic place packet doesn't carry -
+  when several supports exist the auto pick wins and the echo corrects the
+  client (quality-pass candidate: ride the face byte on a placement intent).
+- **Chest triples/L-shapes are refused** (BlockChest.canPlaceBlockAt: at
+  most one neighbouring chest, never one already half of a double) - stock
+  clients could previously build shapes the large-chest pairing can't open.
+- The shaping also runs on **creative maps** and for **permitted stock
+  builders** (visitors=allow / referees), so the world stays consistent
+  regardless of who builds.
+
+Block-set finishing (`SurvivalBlocks.cs`):
+
+- **The CPE leftovers are gone from Indev maps**: turquoise wool(59),
+  ice(60), pillar(63), crate(64), stone brick(65) hold no genuine Indev
+  block (the client's nonGenuine list). They are now defined with their CPE
+  default appearance but hidden from the block menu (`InventoryOrder 0`,
+  owner /lb defs respected), and the bridge refuses placing any 50-65 id
+  that isn't part of the set - previously they placed FREE (cost 0
+  passthrough) on survival maps.
+- **Torch defs are proper thin columns** for stock clients: the old
+  full-size X sprite is now a cube def whose bounds crop the tile to the
+  genuine 2/16-wide, 10/16-tall stick (top tile 117 shows the ember),
+  standing and wall views alike. The def model can't express the genuine
+  wall tilt, and offsetting the column would move the crop off the torch
+  pixels - so wall views render centred (the fork draws the real tilted
+  geometry locally). Farmland 15/16, crops' 4/16 pick box, sources, gears
+  and the container facings were audited against the client table - already
+  faithful.
+
+Verified live (fork client + gdb-driven placements on the round-tripped
+map): standing torch on open floor; floating torch refused (cell reverts,
+nothing consumed); furnace -> faced view 76 and chest -> 72 matching the
+placer's yaw; second chest forms a double; third chest refused (the cell
+reverted to the wall planks it replaced); a torch beside the placed furnace
+wall-mounts onto it (94, -X first); pillar(63) refused; inventory counts
+exact (refusals consume nothing); the def stream shows the torch mini
+columns + the five hidden leftovers.
+
 **NEXT SESSION (user-requested): an in-depth bug & quality pass** over the
 whole survival stack - both repos, all phases landed so far. Known candidates
 to start from: buried-spawn death loops (grounding only fixes floating
