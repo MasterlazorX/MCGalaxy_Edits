@@ -212,13 +212,28 @@ namespace MCGalaxy.Network
 
             byte[] msg = new byte[Packet.PluginMessageDataLength];
             msg[0] = WORLDINFO;
-            msg[1] = ClampByte(ground);
-            msg[2] = ClampByte(water);
-            msg[3] = RawBlock(p, fluidBlock);  // fluid the surface uses
-            msg[4] = (byte)cfg.SurvivalTheme;
-            msg[5] = (byte)WorldFlagsFor(cfg);
-            msg[6] = RawBlock(p, sidesBlock);  // map sides ("bedrock")
-            msg[7] = RawBlock(p, fluidBlock);  // horizon/edge block
+            if (p.Session.Supports(CpeExt.SurvivalTest, 2)) {
+                // v2 layout: ground/water are SIGNED int16 BE - floating maps
+                // genuinely use groundLevel -128 / waterLevel -127 (or -16 hell),
+                // which v1's u8 fields clamped to 0 (visible as a spurious dirt
+                // horizon plane under floating islands - user-diagnosed!)
+                msg[1] = (byte)(ground >> 8); msg[2] = (byte)ground;
+                msg[3] = (byte)(water >> 8);  msg[4] = (byte)water;
+                msg[5] = RawBlock(p, fluidBlock);  // fluid the surface uses
+                msg[6] = (byte)cfg.SurvivalTheme;
+                msg[7] = (byte)WorldFlagsFor(cfg);
+                msg[8] = RawBlock(p, sidesBlock);  // map sides ("bedrock")
+                msg[9] = RawBlock(p, fluidBlock);  // horizon/edge block
+            } else {
+                // v1 layout (legacy clients): u8 levels, clamped
+                msg[1] = ClampByte(ground);
+                msg[2] = ClampByte(water);
+                msg[3] = RawBlock(p, fluidBlock);  // fluid the surface uses
+                msg[4] = (byte)cfg.SurvivalTheme;
+                msg[5] = (byte)WorldFlagsFor(cfg);
+                msg[6] = RawBlock(p, sidesBlock);  // map sides ("bedrock")
+                msg[7] = RawBlock(p, fluidBlock);  // horizon/edge block
+            }
             SendMessage(p, msg);
         }
 

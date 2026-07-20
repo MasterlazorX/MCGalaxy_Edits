@@ -123,7 +123,7 @@ non-Classic world params.
 |---|---|
 | `src/SurvivalNet.h` | **New.** Wire contract: `SURVNET_CHANNEL 0xB0`, `enum SurvNetMsg` (server→client `0x01–0x50`, client→server `0x80–0x87`), `SurvivalNet_Component`, `SurvivalNet_Send`. |
 | `src/SurvivalNet.c` | **New.** `SurvivalNet_Active()` gate, receive dispatch, `SURV_HELLO`/`SURV_WORLDINFO` parse+chat-log stubs, `SurvivalNet_Send`, the `IGameComponent`. |
-| `src/Protocol.c` | `survival_Ext = { "SurvivalTest", 1 }`; appended `&survival_Ext` to `cpe_clientExtensions[]`; ExtEntry handler sets `Server.SupportsSurvival = true`. |
+| `src/Protocol.c` | `survival_Ext = { "SurvivalTest", 2 }` (v2 = WORLDINFO i16 levels); appended `&survival_Ext` to `cpe_clientExtensions[]`; ExtEntry handler sets `Server.SupportsSurvival = true` + `Server.SurvivalExtVersion` (the negotiated min - the authoritative wire version). |
 | `src/Server.h` | `cc_bool SupportsSurvival;` on the `Server` struct. |
 | `src/Game.c` | `#include "SurvivalNet.h"` + `Game_AddComponent(&SurvivalNet_Component);` |
 

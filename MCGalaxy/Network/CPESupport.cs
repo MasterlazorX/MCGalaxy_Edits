@@ -159,7 +159,9 @@ namespace MCGalaxy
             new CpeExtension(CpeExt.LightingMode,        "Allows changing how the client lights worlds"),
             new CpeExtension(CpeExt.CinematicGui,        "Allows changing the visibility of some GUI components"),
             new CpeExtension(CpeExt.NotifyAction,        "Allows server to be notified of certain client events"),
-            new CpeExtension(CpeExt.SurvivalTest,        "Allows survival-test clients to play server-driven survival maps"),
+            // v2: SURV_WORLDINFO carries ground/water levels as i16 (floating maps
+            // have genuinely negative levels which v1's u8 fields clamped away)
+            new CpeExtension(CpeExt.SurvivalTest,        "Allows survival-test clients to play server-driven survival maps", 2),
             #if TEN_BIT_BLOCKS
             new CpeExtension(CpeExt.ExtBlocks,           "Allows using block IDs over 255 in block definitions"),
             #endif

@@ -114,21 +114,26 @@ is untouched.
 | 3 | 1 | protoVer | `SurvivalNet.ProtoVersion` (1) |
 
 ### `SURV_WORLDINFO` (0x02) — server → client
+v2 layout (SurvivalTest **ext version 2** — sent when the client negotiated ≥ 2):
 | Off | Size | Field | Source |
 |---|---|---|---|
 | 0 | 1 | id = 0x02 | |
-| 1 | 1 | groundLevel | `EdgeLevel + SidesOffset` |
-| 2 | 1 | waterLevel | `EdgeLevel` (map default = height/2) |
-| 3 | 1 | fluid id | `HorizonBlock` (raw) |
-| 4 | 1 | theme | `SurvivalTheme` |
-| 5 | 1 | flags | bit0 floating (`theme == Floating`) |
-| 6 | 1 | sides block | `EdgeBlock` (raw; the "bedrock" sides) |
-| 7 | 1 | edge block | `HorizonBlock` (raw; the horizon water) |
+| 1 | 2 | groundLevel (i16 BE) | `EdgeLevel + SidesOffset` |
+| 3 | 2 | waterLevel (i16 BE) | `EdgeLevel` (map default = height/2) |
+| 5 | 1 | fluid id | `HorizonBlock` (raw) |
+| 6 | 1 | theme | `SurvivalTheme` |
+| 7 | 1 | flags | bit0 floating (`theme == Floating`) |
+| 8 | 1 | sides block | `EdgeBlock` (raw; the "bedrock" sides) |
+| 9 | 1 | edge block | `HorizonBlock` (raw; the horizon water) |
 
-Heights are one byte each in v1, matching the handshake doc's byte table. The
-fuller int16 heights and the remaining `.mclevel` env set are deferred; env
-colours already reach survival clients via the stock CPE `EnvColors` path
-(`SendCurrentEnv`), so they are not duplicated in `SURV_WORLDINFO`.
+The i16 promotion exists because floating maps genuinely use groundLevel −128
+/ waterLevel −127 (hell −16), which v1's u8 fields clamped to 0 — visible as
+a spurious dirt horizon plane under floating islands (user-diagnosed). Both
+sides branch on the **negotiated** ext version, so a v1 peer still exchanges
+the old u8 layout (offsets 1..7, one byte per level). The remaining
+`.mclevel` env set stays deferred; env colours already reach survival clients
+via the stock CPE `EnvColors` path (`SendCurrentEnv`), so they are not
+duplicated in `SURV_WORLDINFO`.
 
 ### `SURV_TIME` (0x04) — server → client
 | Off | Size | Field | Notes |
@@ -498,6 +503,25 @@ clock; `SurvivalTheme.Floating` folds the floating TYPE into the theme enum,
 so a floating hell map's config reads Floating (world content is still hell);
 findSpawn's 1M-attempt sky fallback drops to the sampled surface column
 instead (same graceful deviation as the client port).
+
+**Follow-up fix (same session): `SURV_WORLDINFO` v2.** Floating worlds
+exposed that the v1 u8 ground/water fields clamp the genuine negative levels
+to 0 (a dirt horizon plane appeared under the islands). The SurvivalTest CPE
+ext is now **version 2** on both sides and `SURV_WORLDINFO` carries the
+levels as i16 BE (see the wire table above); the env config the generator
+writes (EdgeLevel −127 etc.) was verified correct on disk - the wire was the
+only truncation. Verified live: the floating map now shows open sky + the
+genuine below-island clouds (CloudsHeight −16) instead of the dirt plane.
+Also fixed while there (client): `Server.SupportsSurvival` was never reset in
+`Server_ResetState` on reconnect (despite a comment claiming it was) - both
+it and the new `SurvivalExtVersion` now reset.
+
+**NEXT SESSION (user-requested): an in-depth bug & quality pass** over the
+whole survival stack - both repos, all phases landed so far. Known candidates
+to start from: buried-spawn death loops (grounding only fixes floating
+spawns), the round-2 gdb multi-call inventory anomaly from the block-set
+session (unreproduced), per-map skylight, container-click range checks, and
+a sweep for stale comments like the `Server_ResetState` one above.
 
 ### Reserved message ids (`SurvivalNet.cs`)
 

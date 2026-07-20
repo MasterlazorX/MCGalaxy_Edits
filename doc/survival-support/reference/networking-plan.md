@@ -1867,16 +1867,20 @@ refine*, not frozen; bump the `SurvivalTest` ext version when it changes (ยง20/ย
 ```
 SURV_HELLO      0x01  [1]mode(0 off/1 c030s/2 indev)
                       [2]flags(b0 enhanced, b1 creative, b2 pvp, b3 deathDrops)  [3]protoVer
-SURV_WORLDINFO  0x02  ** v1 AS IMPLEMENTED (client + MCGalaxy SurvivalNet.cs): **
+SURV_WORLDINFO  0x02  ** v2 AS IMPLEMENTED (SurvivalTest ext version 2 - the
+                      i16 promotion; floating maps genuinely use groundLevel
+                      -128 / waterLevel -127, which v1's u8 clamped to 0): **
+                      [1..2]groundLevel(i16) [3..4]waterLevel(i16) [5]fluidId
+                      [6]theme  [7]flags(b0 floating)  [8]sidesBlk  [9]edgeBlk
+                      (env colours ride the stock EnvColors CPE path meanwhile;
+                      both sides branch on the NEGOTIATED ext version - a v1
+                      peer still speaks/receives the old layout below)
+                      -- v1 layout (legacy):
                       [1]groundLevel(u8) [2]waterLevel(u8) [3]fluidId [4]theme
                       [5]flags(b0 floating) [6]sidesBlk [7]edgeBlk
-                      (env colours ride the stock EnvColors CPE path meanwhile)
-                      -- planned fuller revision (bump the ext version for it):
-                      [1..2]groundLevel(i16)  [3..4]waterLevel(i16)  [5]fluidId
-                      [6]theme  [7]flags(b0 floating)  [8]edgeBlk  [9]sidesBlk
-                      [10..11]sidesOffset(i16)  [12..14]skyRGB  [15..17]fogRGB
-                      [18..20]cloudRGB  [21..22]cloudHeight(i16)
-                      [23..24]worldTime(u16)  [25]skyBrightness
+                      -- still-deferred fuller revision (next ext bump):
+                      [+]sidesOffset(i16)  skyRGB  fogRGB  cloudRGB
+                      [+]cloudHeight(i16)  worldTime(u16)  skyBrightness
 SURV_HEALTH     0x03  [1]health(0..20)  [2..5]score(i32 BE - as shipped by the
                       MCGalaxy fork's SurvivalNet.cs; an early draft said i16)
 SURV_TIME       0x04  [1..2]worldTime(u16)  [3]easedSkyLight(0..15)
