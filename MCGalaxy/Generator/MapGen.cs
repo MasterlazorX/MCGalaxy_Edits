@@ -127,6 +127,7 @@ namespace MCGalaxy.Generator
             fCraftMapGen.RegisterGenerators();
             AdvNoiseGen.RegisterGenerators();
             ClassicGenerator.RegisterGenerators();
+            IndevGenerator.RegisterGenerators();
             Register("Heightmap", GenType.Advanced, HeightmapGen.Generate,
                      "&HSeed specifies the URL of the heightmap image");
         }        

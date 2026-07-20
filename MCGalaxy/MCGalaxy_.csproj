@@ -480,6 +480,7 @@
     <Compile Include="Generator\LibNoise\Perlin.cs" />
     <Compile Include="Generator\LibNoise\RidgedMultifractal.cs" />
     <Compile Include="Generator\LibNoise\Voronoi.cs" />
+    <Compile Include="Generator\IndevGenerator.cs" />
     <Compile Include="Generator\MapGen.cs" />
     <Compile Include="Generator\MapGenBiome.cs" />
     <Compile Include="Generator\Realistic\RealisticMapGenArgs.cs" />

@@ -60,7 +60,7 @@ Foundation, landed. See `session-notes.md`.
 
 ---
 
-## 🔶 Phase 1 — World generation & block metadata (block set landed)
+## 🔶 Phase 1 — World generation & block metadata (block set + generator landed)
 
 Server generates Indev/c0.30-s worlds and owns block metadata.
 
@@ -71,9 +71,14 @@ Server generates Indev/c0.30-s worlds and owns block metadata.
   extended to the set (`PickupFor`/`PlaceCost`); `/Survival give` debug
   command; the `ToIndev`/`FromIndev`/`DataMeta` view-id ⇄ (id, meta) bijection
   ported as the authoritative encoding for the steps below. Live-tested.
-- 🔜 Server-side Indev world generation (themes, floating maps, ground/water)
-  that fills the full `SURV_WORLDINFO` field set (promote heights to int16, add
-  the remaining `.mclevel` env fields). Port of the client's `IndevGen.c`.
+- ✅ **Server-side Indev world generation** (`IndevGenerator.cs`): port of the
+  client's oracle-verified `IndevGen.c` (LevelGenerator.java), registered as
+  the `/NewLvl ... indev [theme] [type] [seed]` map theme - themes
+  normal/hell/paradise/woods, types inland/island/floating/flat. Generated
+  maps come out survival-ready (mode Indev, hazards, block set, theme env,
+  spawn house with wall torches). `SURV_WORLDINFO` now carries genuine
+  per-map ground/water levels + edge fluid via the level env config.
+  Live-tested across all themes/types.
 - ⬜ `SURV_BLOCKMETA (0x40)` — push block metadata (facing, crop stage, farmland
   moisture, furnace/chest orientation) as authoritative updates; placement
   rotation (chest/furnace face the placer, wall torches) rides on it.

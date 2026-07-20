@@ -447,6 +447,58 @@ picked it back up (x3→x4); placing an unowned lit furnace reverted without
 consuming; a reach-rejected far place consumed nothing; classic dirt mining
 still yields its pickup.
 
+### Phase 1 (step 2) — the Indev world generator (`Generator/IndevGenerator.cs`)
+
+A C# port of the client fork's `src/IndevGen.c` - itself a
+statement-for-statement, oracle-verified port of in-20100223's
+`LevelGenerator.java`. The load-bearing details the client's parity work
+identified are preserved: java.util.Random's exact LCG with its **three
+streams** (the generator stream; `World.random` recreated at the end of
+Assembling with one burned `nextInt()`; findSpawn's own fresh Random),
+MathHelper's 65536-entry float sine table built from double `Math.Sin`,
+double-vs-float expression precision, and the `WR_*` World replica (clamped
+out-of-range reads, interior-only `setBlock`, falling sand, still-liquid
+wake-ups, flower pops that burn 4 `World.random` draws, the Assembling y-skip
+quirk). Same seed/theme/type/size should reproduce the client generator's
+output block-for-block (not re-verified against the Java oracle server-side -
+the C port it mirrors is the verified one).
+
+Usage: `/NewLvl <name> <w> <h> <l> indev [theme] [type] [seed]` - themes
+`normal/hell/paradise/woods`, types `inland/island/floating/flat`. Width and
+length must be powers of two, height ≥ 64 (the genuine size grid). Pipeline:
+raise/erode heightmap (distorted noise) → soil → surface grow → cave worms →
+coal/iron/gold/diamond ore worms → lava pockets → theme springs → edge-water
+flood → assemble floor/borders → light+heightmap snapshot → find spawn →
+generate the 7×5×7 spawn house (obsidian slab, doorway, **wall torches 94/95
+mounted like genuine BlockTorch.onBlockAdded**, stored as extended custom
+blocks) → grass → trees (woods ×51) → flowers/mushrooms (paradise ×10).
+
+Generated maps come out survival-ready: `SurvivalMode=Indev`,
+`SurvivalDeath=true`, the Indev block set applied, spawn inside the house
+(yaw 180), and the theme environment in the level config - sky/fog/cloud
+colours from the genuine constants, `EdgeLevel`=waterLevel,
+`SidesOffset`=groundLevel−waterLevel, `CloudsHeight` (−16 on floating),
+`HorizonBlock` water/lava + `EdgeBlock` grass/dirt as the OOB horizon-plane
+approximation - which is exactly what `SURV_WORLDINFO` reads, so the client
+now gets genuine per-map ground/water/fluid values.
+
+Verified live: six worlds (normal inland / island / floating / hell /
+paradise island / woods) generated in ~0.2-0.3 s each at 128×64×128;
+block-histogram signatures match each theme (island ~6% ocean + beaches,
+hell zero water + lava edge flood + the grass-on-beaches quirk, paradise ×10
+flowers + high beaches, woods ×10 logs, floating 96% air multi-layer islands,
+diamond ore present, exactly two extended-block wall torches at spawn±2);
+fork-client joins show genuine-looking terrain with the mob sim populating
+it, the spawn inside the house, and hell's dark red ambience.
+
+Deviations (documented): per-theme sky brightness (hell 7, woods 12,
+paradise 16 = always-day) only shapes the generation-time light snapshot and
+env colours - the live server light model still uses the shared day/night
+clock; `SurvivalTheme.Floating` folds the floating TYPE into the theme enum,
+so a floating hell map's config reads Floating (world content is still hell);
+findSpawn's 1M-attempt sky fallback drops to the sampled surface column
+instead (same graceful deviation as the client port).
+
 ### Reserved message ids (`SurvivalNet.cs`)
 
 Server → client: `HELLO 0x01`, `WORLDINFO 0x02`, `HEALTH 0x03`, `TIME 0x04`,
