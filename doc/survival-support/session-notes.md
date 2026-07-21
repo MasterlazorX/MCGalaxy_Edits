@@ -923,6 +923,13 @@ recorded here as the durable bridge.
 > if that branch's pull request has already been merged (then reuse the same
 > branch name from the latest default).
 
+> **TOOLCHAIN / RIG — reinstall on a fresh container.** A new session gets a clean
+> container, so the build/test toolchain (`.NET 8 SDK`, gcc/make + X11/GL dev libs,
+> Xvfb, gdb, ImageMagick, python3) must be reinstalled. Exact install + build +
+> rig-launch commands are in **`doc/survival-support/rig-setup.md`**, and the
+> headless synthetic protocol clients (server testing without the graphical
+> client) are committed under **`doc/survival-support/test-clients/`**.
+
 ### Pending LIVE verification (code committed + build-clean, rig was down)
 The test rig degraded mid-session (server boots but won't bind :25565 - an
 environment fault, not our code). Two landed changes still want a live check on
