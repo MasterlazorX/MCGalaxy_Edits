@@ -881,3 +881,30 @@ Verified live (server-authoritative, via `/Export` + `/SurvInv` since gdb-inject
 block placements desync the client's local view): tilling grass produced genuine
 farmland (60) and cost the hoe 1 durability; planting seeds produced a genuine
 crop (59) and consumed a seed (10→9); eating bread consumed the stack.
+
+### Read-only for Classic clients on survival "visitor" maps (BlockPermissions)
+
+User request: stop the flicker-then-revert when a non-survival (Classic) client
+right/left-clicks on a survival map they can't build on - while Indev survival
+clients keep full build/break.
+
+The survival block bridge already CANCELS a visitor's edit server-side, but the
+client shows the change locally first and only snaps it back when the revert
+arrives (the "weird look"). The fix pushes the CPE BlockPermissions state up
+front so the client never shows the edit:
+
+- `SurvivalNet.BlocksReadOnly(p)`: true for a non-survival client on a survival
+  map that isn't creative/Allow and isn't a referee - i.e. exactly the block
+  bridge's "visitor" case (mirrors OnBlockChanging so wire perms and server
+  enforcement agree). Indev survival clients, creative maps, Allow maps and
+  referees return false (build normally).
+- `Player.SendAllBlockPermissions` now forces place=delete=false for every block
+  when `BlocksReadOnly` is true, so a Classic visitor gets a genuinely read-only
+  map (no place, no delete) instead of the cancel-and-revert.
+- `SurvivalNet.RefreshLevel` re-sends block permissions to everyone on the level,
+  so toggling `/Survival off` / `visitors allow` flips the read-only state live.
+
+No new config: it enforces the existing `visitors visitor` policy (the default)
+more cleanly, client-side too. The block bridge stays the authoritative backstop.
+
+Build-clean; live confirmation pending (the test rig was unstable this session).

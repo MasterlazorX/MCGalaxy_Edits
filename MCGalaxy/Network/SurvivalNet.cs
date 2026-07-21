@@ -175,6 +175,9 @@ namespace MCGalaxy.Network
             foreach (Player p in players)
             {
                 if (p.level != lvl || p.Session == null) continue;
+                // a live mode/visitor change flips the read-only state (§16) - re-push
+                // block permissions so a Classic client's build access updates at once
+                p.SendCurrentBlockPermissions();
                 if (!p.Session.hasSurvival) {
                     // the map stopped being survival: give spectators their
                     // normal environment + entity view back
@@ -629,6 +632,21 @@ namespace MCGalaxy.Network
 
 
         // ==================== helpers ====================
+
+        /// <summary> Whether this player should see the map as read-only at the
+        /// CPE BlockPermissions layer: a non-survival (Classic) client on a
+        /// survival "visitor" map. Sending place=delete=false to those clients
+        /// stops the flicker-then-revert of an edit the block bridge would cancel
+        /// anyway. Mirrors OnBlockChanging's visitor policy exactly - Indev
+        /// survival clients, creative maps, Allow maps and referees build normally. </summary>
+        public static bool BlocksReadOnly(Player p) {
+            Level lvl = p.level;
+            if (lvl == null || lvl.Config.SurvivalMode == SurvivalMode.Off) return false;
+            if (lvl.Config.SurvivalCreative) return false;                 // creative: free build for all
+            if (p.Session != null && p.Session.hasSurvival) return false;  // survival clients build via the bridge
+            if (p.Game.Referee) return false;                             // staff keep build access
+            return lvl.Config.SurvivalVisitors != SurvivalVisitorPolicy.Allow;
+        }
 
         static HelloFlags HelloFlagsFor(LevelConfig cfg) {
             HelloFlags f = HelloFlags.None;
