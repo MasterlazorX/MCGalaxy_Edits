@@ -930,17 +930,15 @@ recorded here as the durable bridge.
 > headless synthetic protocol clients (server testing without the graphical
 > client) are committed under **`doc/survival-support/test-clients/`**.
 
-### Pending LIVE verification (code committed + build-clean, rig was down)
-The test rig degraded mid-session (server boots but won't bind :25565 - an
-environment fault, not our code). Two landed changes still want a live check on
-a healthy rig:
-- **Read-only visitor maps** (`SurvivalNet.BlocksReadOnly` + `SendAllBlockPermissions`):
-  connect a NON-survival CPE client to a survival `visitors visitor` map and
-  confirm it receives `SetBlockPermission` place=delete=0 for all blocks (the
-  `perm_client.py` synthetic in scratchpad checks exactly this), and that an
-  Indev survival client on the same map still builds/breaks.
-- **`/SurvivalGive [player] [item] <amount>`**: confirm arg order + default 1
-  in-game (`/survgive` alias still works).
+### Live verification — DONE (rig recovered later in the session)
+The rig briefly wedged (`ss` couldn't see :25565 - a sandbox network-namespace
+quirk, the server WAS listening), then recovered. Both changes verified live:
+- **Read-only visitor maps** ✅ — `test-clients/perm_client.py` (a non-survival
+  CPE client) on gt1 got all 50 blocks `place=0/delete=0`; the fork survival
+  client on the same map showed `Blocks.CanPlace/CanDelete = 1` (stone + Indev
+  range). Classic = read-only, Indev = builds. Exactly as intended.
+- **`/SurvivalGive [player] [item] <amount>`** ✅ — `diamond 3` gave 3, `coal`
+  gave 1 (default), and the `/SurvGive` alias resolved. Player-first + default 1.
 
 ### Command rework #2 — `/inventory <player>` GUI (APPROVED, ready to build)
 A GUI inventory viewer/editor, built on the existing container-GUI plumbing
