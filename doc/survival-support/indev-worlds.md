@@ -57,9 +57,9 @@ To make it the server's default map: `/Main <name>`.
 
 ## 3. The /Survival command
 
-`/Survival` with no arguments shows the current level's settings (including
-the "server build" tripwire line - if a feature seems missing, check that
-line matches the phases you expect).
+`/Survival` configures the per-map survival mode. With no arguments it shows
+the current level's settings (including the "server build" tripwire line - if
+a feature seems missing, check that line matches the phases you expect).
 
 | Command | What it does |
 |---|---|
@@ -67,16 +67,25 @@ line matches the phases you expect).
 | `/Survival theme [normal/hell/paradise/woods/floating]` | sets the WORLDINFO theme byte (generated maps set this themselves) |
 | `/Survival visitors [visitor/allow/deny]` | what non-survival clients may do: look-only (default) / build freely / not even join |
 | `/Survival [enhanced/creative/pvp/deathdrops] [on/off]` | gameplay flags; `creative` = free build, no consume/pickup (the fork client switches to the Indev creative palette inventory; the classic picker deposits stacks into it) |
-| `/Survival give [block] <count> <player>` | puts blocks in a survival player's server inventory (e.g. `torch`, `chest`, `workbench`, `diamondore`, or a raw id). Count defaults to a stack; console must name the player |
-| `/Survival spawn [zombie/skeleton/pig/creeper/spider/sheep]` | spawns a test mob at your feet |
-| `/Survival mobs` | lists the nearest live mobs |
-| `/Survival spawner` | natural-spawn statistics + clock state |
-| `/Survival time [day/noon/sunset/night/midnight/<ticks>]` | shows or sets the shared world clock |
-| `/Survival inv [player]` | dumps a player's server-side inventory |
-| `/Survival export <name> <level>` | saves a map as Indev's own `.mclevel` format (defaults: current map's name, current map) |
 
 Changes apply live — survival clients on the level get a fresh handshake
 without rejoining.
+
+### The survival tool commands
+
+The operational tools are standalone commands (they were once `/Survival`
+subcommands). Names that would collide with existing core commands
+(`/Spawn`, `/Time`, `/Give`, `/Inv`) take a `Surv` prefix:
+
+| Command | What it does |
+|---|---|
+| `/SurvGive [block/item] <count> <player>` | puts blocks/items in a survival player's server inventory (e.g. `torch`, `chest`, `coal`, `iron_pickaxe`, an id 256+, or a raw block id). Count defaults to a stack; console must name the player |
+| `/SurvSpawn [zombie/skeleton/pig/creeper/spider/sheep]` | spawns a test mob at your feet |
+| `/Mobs` | lists the nearest live mobs |
+| `/Spawner` | natural-spawn statistics + clock state |
+| `/SurvTime [day/noon/sunset/night/midnight/<ticks>]` | shows or sets the shared world clock |
+| `/SurvInv [player]` | dumps a player's server-side inventory |
+| `/Export <name> <level>` | saves a map as Indev's own `.mclevel` format (defaults: current map's name, current map) |
 
 ## 4. Turning an EXISTING map into a survival map
 
@@ -101,9 +110,9 @@ brought in — the block metadata (chest/furnace facings, crop stages,
 farmland moisture, wall-torch orientation) survives both directions:
 
 ```
-/Survival export myWorld        exports the current map to extra/import/myWorld.mclevel
-/Survival export myWorld gt1    same, for a named (loaded) level
-/Import myWorld                 loads a .mclevel from extra/import/ as a new map
+/Export myWorld        exports the current map to extra/import/myWorld.mclevel
+/Export myWorld gt1    same, for a named (loaded) level
+/Import myWorld        loads a .mclevel from extra/import/ as a new map
 ```
 
 - Exports land in `extra/import/` so they are immediately `/Import`-able;
@@ -116,7 +125,7 @@ farmland moisture, wall-torch orientation) survives both directions:
   persistence lands. Player inventories, mobs and the clock stay
   server-side state.
 - `/Import` refuses a name that already exists, so round trips need a fresh
-  name (e.g. `/Survival export gt1copy` then `/Import gt1copy`).
+  name (e.g. `/Export gt1copy` then `/Import gt1copy`).
 
 ## 6. Client-side notes
 

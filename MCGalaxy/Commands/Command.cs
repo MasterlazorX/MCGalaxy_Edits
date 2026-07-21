@@ -170,6 +170,10 @@ namespace MCGalaxy
                          new CmdSetspawn(),  new CmdSpawn(),      new CmdSurvival(),   new CmdUnflood(),    new CmdUnload(), 
                          new CmdPermissionBuild(),new CmdPermissionVisit());
 
+            // SurvivalTest tools split out of /Survival (config stays on /Survival)
+            RegisterCore(new CmdSurvSpawn(), new CmdMobs(),       new CmdSpawner(),    new CmdSurvTime(),
+                         new CmdSurvInv(),   new CmdSurvGive(),   new CmdExport());
+
             RegisterCore(new CmdAward(),     new CmdAwardMod(),   new CmdAwards());
         }
         

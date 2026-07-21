@@ -759,3 +759,34 @@ Note on build flavors: the local `Makefile` and the pre-commit hook use the fast
 packagings — the dotnet output additionally bundles MySql.Data 8.1.0's NuGet
 dependency tree (BouncyCastle, Protobuf, LZ4, Zstd, …), which the Framework build
 avoids by referencing the small bundled `MySql.Data.dll`.
+
+### Command refactor: /Survival tools split into standalone commands
+
+The operational tools were moved out of `/Survival` into their own commands
+(the per-map config - `off/classic/indev`, `theme`, `visitors`, the
+`enhanced/creative/pvp/deathdrops` flags - stays on `/Survival`, which is a
+config command like `/Map`). Names that collide with existing core commands
+(`/Spawn`, `/Time`, `/Give`, `/Inv`) take a `Surv` prefix; the rest are bare:
+
+| was | now |
+|---|---|
+| `/Survival spawn`   | `/SurvSpawn` |
+| `/Survival mobs`    | `/Mobs` |
+| `/Survival spawner` | `/Spawner` |
+| `/Survival time`    | `/SurvTime` |
+| `/Survival inv`     | `/SurvInv` |
+| `/Survival give`    | `/SurvGive` |
+| `/Survival export`  | `/Export` |
+
+Each is a self-contained `Command2` in `MCGalaxy/Commands/World/` (logic moved
+verbatim from `CmdSurvival`, arg indices shifted down one since the subcommand
+token is gone), registered in `Command.RegisterAllCore` and listed in
+`MCGalaxy_.csproj`. `/Survival` with an unknown/removed subcommand now falls
+through to its help, which points at the new tool commands. All Operator+,
+type World - permissions unchanged from the parent.
+
+Verified live: `/help` for all seven; `/SurvTime noon` sets the clock;
+`/Spawner`/`/Mobs`/`/SurvSpawn zombie`/`/Export roundtrip2 gt1` run against
+the console's main level; the console-arg guards fire; and the arg shift is
+correct - `/SurvGive iron_pickaxe 1 CCUser` + `/SurvGive coal 32 CCUser`
+landed id 257 x1 and id 263 x32 (confirmed via `/SurvInv CCUser`).
