@@ -98,6 +98,9 @@ namespace MCGalaxy.Network
             SendRange(p, inv, 0, MAIN_SLOTS + CRAFT_SLOTS);
             SendRange(p, inv, ARMOR_BASE, ARMOR_SLOTS);
             SendCursor(p, inv);
+            // SendRange doesn't route through SendSlot, so mirror the main slots
+            // into any open /Inventory view of this player - one scan, all cells.
+            EchoAllPlayerViews(p);
         }
 
         static void SendRange(Player p, PlayerInv inv, int base_, int count) {
@@ -129,6 +132,8 @@ namespace MCGalaxy.Network
             msg[4] = s.Count;
             msg[5] = (byte)(s.Damage >> 8); msg[6] = (byte)s.Damage;
             SurvivalNet.SendMessage(p, msg);
+            // mirror the change into any open /Inventory view of this player
+            if (idx < MAIN_SLOTS) EchoPlayerViews(p, idx);
         }
 
         static void SendCursor(Player p, PlayerInv inv) {
@@ -152,7 +157,23 @@ namespace MCGalaxy.Network
         // creative maps (the client inventory is a local palette there).
 
         public const byte CONT_NONE = 0, CONT_CHEST = 1, CONT_FURNACE = 2,
-                          CONT_LARGE = 3, CONT_WORKBENCH = 4;
+                          CONT_LARGE = 3, CONT_WORKBENCH = 4, CONT_PLAYERINV = 5;
+
+        // A CONT_PLAYERINV view (/Inventory) proxies another player's inventory as
+        // a chest-style container: 36 cells laid out like the genuine inventory
+        // grid - the top 3 rows are the target's main storage (their slots 9..35),
+        // the bottom row their hotbar (0..8). Armor is unimplemented in MP, so it
+        // is not shown yet (a clean 4-row / 36-cell chest).
+        const int PLAYERINV_SLOTS = 36;
+        // container cell -> target inventory slot: rows 0..2 (cells 0..26) are the
+        // main storage 9..35, row 3 (cells 27..35) the hotbar 0..8.
+        static int PlayerInvSlot(int ci) { return ci < 27 ? ci + 9 : ci - 27; }
+        // and back (target slot 0..35 -> container cell), for echoing the target's
+        // own edits into every open view. -1 for slots not shown (craft/armor).
+        static int PlayerInvCell(int pslot) {
+            if (pslot < 0 || pslot >= MAIN_SLOTS) return -1;
+            return pslot >= 9 ? pslot - 9 : pslot + 27;
+        }
 
         class Container
         {
@@ -162,7 +183,12 @@ namespace MCGalaxy.Network
             // furnace state (TileEntityFurnace): slots 0 input, 1 fuel, 2 output
             public int BurnTime, CookTime, CurrentBurn;
         }
-        class OpenRef { public byte Kind; public Container Upper, Lower; public Level Lvl; }
+        // Kind CONT_CHEST/FURNACE/LARGE/WORKBENCH use Upper/Lower (tile entities);
+        // CONT_PLAYERINV uses Target (the viewed player) + CanEdit (Admin can move
+        // items, Operator is view-only). Lvl is the VIEWER's level at open time -
+        // the per-click guard drops the ref if the viewer leaves it.
+        class OpenRef { public byte Kind; public Container Upper, Lower; public Level Lvl;
+                        public Player Target; public bool CanEdit; }
 
         const string OPEN_KEY = "survival.container";
         static readonly object contLock = new object();
@@ -213,18 +239,27 @@ namespace MCGalaxy.Network
         }
 
         static int OpenSlotCount(OpenRef open) {
-            if (open == null || open.Upper == null) return 0;
+            if (open == null) return 0;
+            if (open.Kind == CONT_PLAYERINV) return PLAYERINV_SLOTS;
+            if (open.Upper == null) return 0;
             int n = open.Upper.Slots.Length;
             if (open.Lower != null) n += open.Lower.Slots.Length;
             return n;
         }
-        // container-relative slot resolution (large chest: upper 0..26, lower 27..53)
+        // container-relative slot resolution (large chest: upper 0..26, lower 27..53;
+        // a player-inventory view proxies the target player's own slots).
         static Slot GetContSlot(OpenRef open, int ci) {
+            if (open.Kind == CONT_PLAYERINV)
+                return Get(open.Target).Slots[PlayerInvSlot(ci)];
             if (open.Lower != null && ci >= open.Upper.Slots.Length)
                 return open.Lower.Slots[ci - open.Upper.Slots.Length];
             return open.Upper.Slots[ci];
         }
         static void SetContSlot(OpenRef open, int ci, Slot s) {
+            if (open.Kind == CONT_PLAYERINV) {
+                Get(open.Target).Slots[PlayerInvSlot(ci)] = s;
+                return;
+            }
             if (open.Lower != null && ci >= open.Upper.Slots.Length)
                 open.Lower.Slots[ci - open.Upper.Slots.Length] = s;
             else
@@ -419,6 +454,13 @@ namespace MCGalaxy.Network
 
         // echo a changed container slot to every viewer of the same tile entity
         static void EchoContSlot(OpenRef open, int ci) {
+            // A player-inventory view is backed by the target's own slots: route
+            // through SendSlot so the target sees the change (INV_SLOT) AND every
+            // open view of them (this admin included) gets the CONT_SLOT echo.
+            if (open.Kind == CONT_PLAYERINV) {
+                SendSlot(open.Target, Get(open.Target), PlayerInvSlot(ci));
+                return;
+            }
             Slot s = GetContSlot(open, ci);
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player pl in players)
@@ -427,6 +469,44 @@ namespace MCGalaxy.Network
                 if (o == null || (o.Upper != open.Upper && o.Upper != open.Lower)) continue;
                 // same upper container = same view (large-chest halves share both)
                 SurvivalNet.SendContSlot(pl, ci, s.Id, s.Count, s.Damage);
+            }
+        }
+
+        // Fan a target's own inventory change out to every open /Inventory view of
+        // them, so an operator watching (or another admin editing) sees it live.
+        // O(online) but only for slots that appear in a player-inventory view, and
+        // player-inv views are rare - fine for the expected scale.
+        static void EchoPlayerViews(Player target, int pslot) {
+            int ci = PlayerInvCell(pslot);
+            if (ci < 0) return;
+            PlayerInv tinv = Get(target);
+            Slot s = tinv.Slots[pslot];
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player pl in players)
+            {
+                if (pl == target) continue;
+                OpenRef o = GetOpen(pl);
+                if (o == null || o.Kind != CONT_PLAYERINV || o.Target != target) continue;
+                SurvivalNet.SendContSlot(pl, ci, s.Id, s.Count, s.Damage);
+            }
+        }
+
+        // The full-resync fan-out: one scan for the viewers, then all 36 cells to
+        // each (a SendAll changed potentially every slot).
+        static void EchoAllPlayerViews(Player target) {
+            Player[] players = PlayerInfo.Online.Items;
+            PlayerInv tinv = null;
+            foreach (Player pl in players)
+            {
+                if (pl == target) continue;
+                OpenRef o = GetOpen(pl);
+                if (o == null || o.Kind != CONT_PLAYERINV || o.Target != target) continue;
+                if (tinv == null) tinv = Get(target);
+                for (int ci = 0; ci < PLAYERINV_SLOTS; ci++)
+                {
+                    Slot s = tinv.Slots[PlayerInvSlot(ci)];
+                    SurvivalNet.SendContSlot(pl, ci, s.Id, s.Count, s.Damage);
+                }
             }
         }
 
@@ -603,6 +683,48 @@ namespace MCGalaxy.Network
             p.Extras.Remove(OPEN_KEY);
         }
 
+        /// <summary> Opens a chest-style view of another player's inventory
+        /// (/Inventory). Operators view (canEdit false); admins may move items
+        /// between the target's slots and their own. The window renders on the
+        /// viewer as a 36-cell chest - genuine inventory layout (main storage on
+        /// top, hotbar on the bottom row). Returns false if the viewer isn't a
+        /// survival-test client that can show the GUI. </summary>
+        /// <remarks> An admin's edits run under contLock; the target's own click /
+        /// block-bridge mutations run on their receive thread without it, so a
+        /// simultaneous edit-and-self-click on the very same slot can lose one
+        /// update (self-heals on the next resync). This is the same accepted race
+        /// as /SurvivalGive, and vanishingly rare for a live admin tool. </remarks>
+        public static bool OpenPlayerInventory(Player viewer, Player target, bool canEdit) {
+            if (viewer == null || target == null) return false;
+            if (viewer.Session == null || !viewer.Session.hasSurvival) return false;
+            if (!SurvivalNet.Active(viewer, viewer.level)) return false;
+
+            OpenRef open = new OpenRef();
+            open.Kind = CONT_PLAYERINV;
+            open.Lvl = viewer.level;
+            open.Target = target;
+            open.CanEdit = canEdit;
+            viewer.Extras[OPEN_KEY] = open;
+            SurvivalNet.SendContOpen(viewer, CONT_CHEST, PLAYERINV_SLOTS);
+            StreamContainer(viewer, open);
+            return true;
+        }
+
+        /// <summary> A player disconnected: force-close every open /Inventory view
+        /// of them (the view holds a now-departed Player). Registered on
+        /// OnPlayerDisconnectEvent. </summary>
+        public static void OnPlayerDisconnect(Player target, string reason) {
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player pl in players)
+            {
+                if (pl == target) continue;
+                OpenRef o = GetOpen(pl);
+                if (o == null || o.Kind != CONT_PLAYERINV || o.Target != target) continue;
+                pl.Extras.Remove(OPEN_KEY);
+                SurvivalNet.SendContOpen(pl, CONT_NONE, 0); // force-close the screen
+            }
+        }
+
 
         // ==================== .mclevel export bridge ====================
 
@@ -670,6 +792,9 @@ namespace MCGalaxy.Network
                 // Stale ref from a level the player left (no CONT_CLOSE arrived):
                 // drop it so a container on another level can't be looted remotely.
                 if (open.Lvl != p.level) { p.Extras.Remove(OPEN_KEY); return; }
+                // an operator's /Inventory view is read-only - refuse every click
+                // on the target's slots (only an admin's CanEdit view may mutate)
+                if (open.Kind == CONT_PLAYERINV && !open.CanEdit) return;
                 ci = idx - CONT_BASE;
                 if (ci >= OpenSlotCount(open)) return;
             }

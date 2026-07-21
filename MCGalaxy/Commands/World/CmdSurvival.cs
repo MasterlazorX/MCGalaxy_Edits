@@ -62,7 +62,7 @@ namespace MCGalaxy.Commands.World
                 default:
                     // The former action subcommands are now standalone commands
                     // (spawn -> /SurvSpawn, mobs -> /Mobs, spawner -> /Spawner,
-                    // time -> /SurvTime, inv -> /SurvInv, give -> /SurvGive,
+                    // time -> /SurvTime, inv -> /Inventory, give -> /SurvivalGive,
                     // export -> /Export). /Survival configures the per-map mode.
                     Help(p); return;
             }
@@ -182,7 +182,7 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Survival [enhanced/creative/pvp/deathdrops] [on/off] &H- sets a flag");
             p.Message("&T/Survival visitors [visitor/allow/deny] &H- what stock clients may do here");
             p.Message("&HChanges apply live to survival-test clients on this level.");
-            p.Message("&HTools: &T/SurvSpawn /Mobs /Spawner /SurvTime /SurvInv /SurvivalGive /Export");
+            p.Message("&HTools: &T/SurvSpawn /Mobs /Spawner /SurvTime /Inventory /SurvivalGive /Export");
         }
     }
 }

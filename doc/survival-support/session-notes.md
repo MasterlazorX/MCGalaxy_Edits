@@ -986,3 +986,52 @@ big three). NEEDS the graphical rig (entity physics/rendering) to verify.
 ### The three big features, recommended order
 right-click intents ✅ done -> **block drops** -> **projectiles (arrows)**
 (projectiles reuse drops for the landed-arrow item). All need the graphical rig.
+
+## /Inventory GUI (#2) — DONE (server-only, no protocol change)
+
+`/inventory <player>` opens a live view of another player's survival inventory.
+Implemented entirely server-side by opening a **virtual chest** backed by the
+target's slots — the client already renders chests, so there is **no client
+change and no SurvivalTest ext-version bump** (reuses CONT_OPEN kind 1 / CONT_SLOT
+/ SLOT_CLICK / CONT_CLOSE / CURSOR).
+
+Design (SurvivalInventory.cs):
+ * `CONT_PLAYERINV = 5` open kind; `OpenRef` gains `Player Target; bool CanEdit`.
+ * A 36-cell chest view: cells 0..26 = target main storage (slots 9..35),
+   cells 27..35 = target hotbar (slots 0..8) — the genuine inventory layout
+   (storage on top, hotbar on the bottom row). `PlayerInvSlot`/`PlayerInvCell`
+   map both ways. Armor (unimplemented in MP) is not shown yet.
+ * `GetContSlot`/`SetContSlot`/`OpenSlotCount` proxy the target's own PlayerInv.
+ * Bidirectional live echo: `EchoContSlot` (admin edit) routes through the
+   target's `SendSlot`; `SendSlot`/`SendAll` fan the target's OWN changes out to
+   every open view via `EchoPlayerViews`/`EchoAllPlayerViews` (O(online), guarded
+   by cell mapping; player-inv views are rare).
+ * `HandleSlotClick` gates the container path on `CanEdit` — Operator view-only
+   (clicks rejected, no echo), Admin edits (items move to/from the admin's own
+   inventory via the normal cursor model).
+ * `OpenPlayerInventory(viewer, target, canEdit)` + `OnPlayerDisconnect`
+   force-closes viewers when their target leaves (registered in CorePlugin).
+
+Command: `CmdInventory` (name Inventory, alias SurvInv, defaultRank Operator,
+ExtraPerm[0]=Admin "can move/edit"). Replaced CmdSurvInv (removed). A non-survival
+viewer or the console falls back to the old text dump (`DebugDump`).
+
+Concurrency: admin edits run under contLock; the target's own click/block-bridge
+mutations don't — a simultaneous same-slot edit can lose one update (self-heals
+on resync). Same accepted race as /SurvivalGive; documented on OpenPlayerInventory.
+
+Live-verified (two synthetic survival clients, doc/survival-support/test-clients/inv_test.py):
+ * Owner viewer: CONT_OPEN(1,36); target's stone→cell 27, dirt→cell 28; "editable";
+   pickup cell 27 → cursor 30 + cell cleared + TARGET's slot 0 cleared live;
+   deposit into the admin's own slot 9; close resyncs.
+ * Operator viewer: same stream, "view-only", SLOT_CLICK rejected (no echo).
+
+FUTURE POLISH (not v1): a bespoke player-inventory panel/title on the client
+(currently it renders as a chest) + showing/editing the target's armor slots.
+
+Test rig notes: the server enforces `verify-admin-perm` (admin-verification) —
+elevated ranks must `/pass` before elevated commands; for headless synthetic
+tests set `verify-admin-perm = 127` in properties/server.properties (reverted
+after). The console FIFO must be a REGULAR file followed by `tail -n0 -f`
+(a named pipe blocks on open-for-write with no reader); guard every `pkill`
+with `|| true` (the rig shell has errexit).
