@@ -908,3 +908,70 @@ No new config: it enforces the existing `visitors visitor` policy (the default)
 more cleanly, client-side too. The block bridge stays the authoritative backstop.
 
 Build-clean; live confirmation pending (the test rig was unstable this session).
+
+---
+
+## HANDOFF — next session pickup (write-up of in-chat plans)
+
+Everything below was designed/decided in conversation but not yet built, so it's
+recorded here as the durable bridge. Branch (both repos):
+`claude/mock-survival-server-33jx1q`.
+
+### Pending LIVE verification (code committed + build-clean, rig was down)
+The test rig degraded mid-session (server boots but won't bind :25565 - an
+environment fault, not our code). Two landed changes still want a live check on
+a healthy rig:
+- **Read-only visitor maps** (`SurvivalNet.BlocksReadOnly` + `SendAllBlockPermissions`):
+  connect a NON-survival CPE client to a survival `visitors visitor` map and
+  confirm it receives `SetBlockPermission` place=delete=0 for all blocks (the
+  `perm_client.py` synthetic in scratchpad checks exactly this), and that an
+  Indev survival client on the same map still builds/breaks.
+- **`/SurvivalGive [player] [item] <amount>`**: confirm arg order + default 1
+  in-game (`/survgive` alias still works).
+
+### Command rework #2 — `/inventory <player>` GUI (APPROVED, ready to build)
+A GUI inventory viewer/editor, built on the existing container-GUI plumbing
+(CONT_OPEN/CONT_SLOT/SLOT_CLICK). Locked design:
+- New CONT_OPEN **kind = 5 (player inventory)**, slotCount 40 = **36 main + 4 armor**.
+- Server: a variant OpenRef that targets a `PlayerInv` (not a Container tile
+  entity). GetContSlot/SetContSlot/EchoContSlot branch on the kind so the view
+  reads/writes the TARGET's inventory; echo to every viewer of that target.
+- Permission tiers (MCGalaxy ranks): **Operator (80)+ = view** (SLOT_CLICK on the
+  view rejected); **Admin (100)+ = edit** via an Admin extra-perm - chest-style
+  drag model (items move between the target's inventory and the admin's own;
+  a leftover cursor refunds to the admin on close).
+- `/inventory <player>` becomes the command; supersede `/SurvInv` (keep as alias).
+  A non-survival (Classic) viewer can't render a GUI -> fall back to the text dump.
+- Client: handle CONT_OPEN kind 5 (title "<player>'s inventory", 40-slot layout).
+  This is the part that NEEDS the graphical rig to verify.
+- Risk note: this generalizes the tested container OpenRef system, so build it
+  with the rig UP and re-test chests/furnaces after.
+
+### Command rework #3 — `/spectate <player>` (design only)
+Passive follow (like `/possess` but view-only) + mirror the target's open GUI to
+the spectator read-only (reuses the #2 inventory/container streaming). Open
+questions to settle first: first-person vs third-person; spectator hidden/frozen
+to others; whether to mirror the target's HUD (health/hotbar). Do AFTER #2 since
+it reuses the inventory-view streaming. Usable by Operator+.
+
+### Block drops (phase 5) — design approach (researched, not built)
+Client already has the full SP system (`SurvivalTest.c`: `DropItem` array,
+`SpawnDropAtEx` with the genuine pop velocity, `DropPhysics`, `DropTryPickup`,
+5-min despawn, death/mob/TNT drops) - all SP-gated (`if (ServerDriven) return`),
+and there are NO MP handlers yet (SurvivalNet.c switch ends at CURSOR 0x25).
+Reserved wire (ClassiCube SurvivalNet.h): `SURV_DROP_SPAWN 0x30` (dropId, item,
+count, pos, vel, rot0), `SURV_DROP_PICKUP 0x31` (dropId, pickerEntity),
+`SURV_DROP_REMOVE 0x32` (dropId, reason), intent `SURV_DROP_ITEM 0x86`.
+Recommended design: **server owns drops** (spawn/pickup/despawn authoritative);
+send DROP_SPAWN with initial pos+velocity and let the CLIENT run its existing
+deterministic DropPhysics locally (drops settle to the same resting spot, so exact
+sync isn't needed) while the server sends PICKUP/REMOVE. Un-gate the client's drop
+render/physics for MP but make pickup/despawn server-driven; add MP appliers
+HandleDropSpawn/Pickup/Remove. Rewire the mine path (currently straight-to-
+inventory) + death drops + mob drops + TNT + the hoe-grass 1/8 seed to spawn drop
+entities instead. Then landed-arrow pickups reuse this for projectiles (#3 of the
+big three). NEEDS the graphical rig (entity physics/rendering) to verify.
+
+### The three big features, recommended order
+right-click intents ✅ done -> **block drops** -> **projectiles (arrows)**
+(projectiles reuse drops for the landed-arrow item). All need the graphical rig.
