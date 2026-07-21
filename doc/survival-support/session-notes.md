@@ -1086,3 +1086,39 @@ stacked textures) so at large inventory-scale settings the own hotbar row nears
 the window edge; the target paperdoll window is empty; a small seam sits between
 the two textures. Also a future nicety: send the target's name in CONT_OPEN so
 the panel can title itself.
+
+## /Inventory panels: rework to two side-by-side screens + target model
+
+Two follow-up refinements after the first panel cut:
+ 1. The stacked inventory.png-over-strip composite read as broken; replaced with
+    TWO inventory panels side by side (target left, viewer right). The real cause
+    of the "one combined panel" look was the NON-TEXTURED fallback path (the rig
+    and likely the client lack gui/inventory.png), which had no PLAYERINV case and
+    drew a single panel spanning both halves - Screens.c now draws two separate
+    flat panels there too. Both the textured and fallback paths render two panels.
+ 2. The target paperdoll (left panel) now shows the TARGET player's model.
+
+Server (mcgalaxy):
+ * EntityList.TryGetVisibleID(entity, out id) - new public getter for the id a
+   viewer currently sees an entity as.
+ * SurvivalNet.SendPlayerInvOpen(viewer, slots, targetEntityId) - CONT_OPEN kind 5
+   now carries [3]=target entity id.
+ * OpenPlayerInventory sends viewer.EntityList.TryGetVisibleID(target) (0xFF when
+   the target isn't visible to the viewer - a different level - so no model).
+
+Client (ClassiCube):
+ * IndevTest: indev_netContTargetId + NetContTarget()/NetContTargetId(), reset on
+   NetContOpen/CloseContainer. SurvivalNet_HandleContOpen kind 5 reads data[3].
+ * Screens.c: SurvivalInv_RenderDoll refactored into RenderDollAt(entity, box) +
+   a local-player wrapper. The doll gate renders the local player in the right
+   panel and, for PLAYERINV, the target entity (Entities.List[targetId]) in the
+   left panel when visible. Its two hardcoded panelX+51 model anchors became the
+   box-relative boxX+25 (identical for the single panel). The left doll box gets
+   its own recessed frame in the fallback path.
+
+Verified in the graphical rig with TWO real clients (Adm viewer + Tgt2 target, so
+Tgt2 spawns as a real entity - synthetic clients do NOT spawn as entities): the
+clean real flow `/inventory Tgt2` -> OpenKind=PLAYERINV, TargetId=0, two panels
+with BOTH player models in their doll windows. (Injection tests mislead here: a
+prior gdb-injected panel left over the real command confuses the screen state -
+always test the real flow from a fresh client.)

@@ -1918,12 +1918,15 @@ SURV_CONT_OPEN  0x22  ** AS IMPLEMENTED: ** [1]kind  [2]slotCount
                       4 workbench (no container slots - the client opens its 3x3
                       grid over the normal streamed craft slots 36..44),
                       5 player-inventory (SurvivalTest v3+; /Inventory viewer) -
-                      40 container cells proxy the TARGET player's own slots:
-                      cells 0..26 target main storage (their slots 9..35),
-                      27..35 target hotbar (0..8), 36..39 target armor (100..103).
-                      Rendered as a dedicated inventory panel with the VIEWER's
-                      own inventory strip below (dual-inventory drag). A v2 client
-                      (chest only) is sent kind 1 / 36 cells as a graceful fallback
+                      [3]targetEntityId (the id the VIEWER sees the target as, for
+                      the target paperdoll; 0xFF = not visible / no model). 40
+                      container cells proxy the TARGET player's own slots: cells
+                      0..26 target main storage (their slots 9..35), 27..35 target
+                      hotbar (0..8), 36..39 target armor (100..103). Rendered as
+                      TWO inventory panels side by side (target left with their
+                      model, the VIEWER's own right with theirs) for dual-inventory
+                      drag. A v2 client (chest only) is sent kind 1 / 36 cells as a
+                      graceful fallback
 SURV_CONT_SLOT  0x23  [1]slot(0..53 container-RELATIVE)  [2..3]id  [4]count  [5..6]dmg
                       (client zeroes its view on CONT_OPEN; only occupied slots
                       are streamed; clicks echo to every viewer of the entity)

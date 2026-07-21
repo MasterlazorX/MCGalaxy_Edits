@@ -718,8 +718,16 @@ namespace MCGalaxy.Network
             // 40 cells incl. armor); a v2 client only knows chest, so fall back to
             // a 36-cell chest view (armor cells hidden - graceful degradation).
             bool panel = SurvivalNet.SurvVer(viewer) >= 3;
-            SurvivalNet.SendContOpen(viewer, panel ? CONT_PLAYERINV : CONT_CHEST,
-                                     (byte)(panel ? PLAYERINV_SLOTS : 36));
+            if (panel) {
+                // the target's paperdoll: send the entity id the viewer sees the
+                // target as (0xFF = not visible to them - a different level - so
+                // the client shows no model)
+                byte eid;
+                if (viewer == target || !viewer.EntityList.TryGetVisibleID(target, out eid)) eid = 0xFF;
+                SurvivalNet.SendPlayerInvOpen(viewer, PLAYERINV_SLOTS, eid);
+            } else {
+                SurvivalNet.SendContOpen(viewer, CONT_CHEST, 36);
+            }
             StreamContainer(viewer, open);
             return true;
         }

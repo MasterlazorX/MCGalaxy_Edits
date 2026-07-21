@@ -271,6 +271,19 @@ namespace MCGalaxy.Network
             SendMessage(p, msg);
         }
 
+        /// <summary> CONT_OPEN for the player-inventory panel (kind 5, SurvivalTest
+        /// v3+): also carries the target's entity id AS THIS VIEWER SEES IT, so the
+        /// client can render the target's paperdoll in the left panel. 0xFF = the
+        /// target isn't visible to the viewer (different level) - no model. </summary>
+        public static void SendPlayerInvOpen(Player p, byte slots, byte targetEntityId) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = CONT_OPEN;
+            msg[1] = SurvivalInventory.CONT_PLAYERINV;
+            msg[2] = slots;
+            msg[3] = targetEntityId;
+            SendMessage(p, msg);
+        }
+
         /// <summary> SURV_CONT_SLOT: [slot(0..53 container-relative)][id:u16][count][dmg:i16]. </summary>
         public static void SendContSlot(Player p, int slot, ushort id, byte count, short dmg) {
             byte[] msg = new byte[Packet.PluginMessageDataLength];
