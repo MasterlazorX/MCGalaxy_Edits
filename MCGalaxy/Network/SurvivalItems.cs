@@ -143,6 +143,45 @@ namespace MCGalaxy.Network
         }
 
 
+        // ==================== right-click item use (IndevTest_UseHeldItem / TryEat) ====================
+
+        public const ushort SEEDS = 256 + 39;
+        public const ushort SOUP  = 256 + 26;
+        public const ushort BOWL  = 256 + 25;
+
+        /// <summary> Whether the id is a hoe (any tier). </summary>
+        public static bool IsHoe(ushort id) {
+            ItemDef? d = Find(id);
+            return d.HasValue && d.Value.Kind == K_HOE;
+        }
+
+        /// <summary> Whether the id is flint &amp; steel. </summary>
+        public static bool IsFlintSteel(ushort id) {
+            ItemDef? d = Find(id);
+            return d.HasValue && d.Value.Kind == K_FLINTSTEEL;
+        }
+
+        /// <summary> HP an edible item restores (ItemFood/ItemSoup param), else 0. </summary>
+        public static int FoodHeal(ushort id) {
+            ItemDef? d = Find(id);
+            if (!d.HasValue) return 0;
+            return (d.Value.Kind == K_FOOD || d.Value.Kind == K_SOUP) ? d.Value.Param : 0;
+        }
+
+        /// <summary> ItemTool.maxDamage: 32 &lt;&lt; tier for tools/hoes, 64 for
+        /// flint &amp; steel, 0 for anything that doesn't take durability. </summary>
+        public static int MaxDurability(ushort id) {
+            ItemDef? d = Find(id);
+            if (!d.HasValue) return 0;
+            switch (d.Value.Kind) {
+                case K_SWORD: case K_SHOVEL: case K_PICKAXE: case K_AXE: case K_HOE:
+                    return 32 << d.Value.Param;
+                case K_FLINTSTEEL: return 64;
+                default: return 0;
+            }
+        }
+
+
         // ==================== harvest gating (IndevTest_CanHarvest) ====================
 
         // blocks whose genuine material is rock/iron (client: dig sound stone/metal);

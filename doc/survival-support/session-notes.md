@@ -848,3 +848,36 @@ surfaced 19 real findings -> 13 distinct bugs, all fixed this pass:
 Six findings were adversarially REJECTED as not-real (e.g. a claimed nextMobId
 cross-level race - ids segregate by level; a WORLDINFO == vs >= version gate -
 no current desync at ext v2).
+
+### Right-click item intents: hoe / seeds / food (phase-4 tail)
+
+The `SURV_USE_ITEM` intent now carries held-ITEM uses, not just container opens:
+
+- **Client** (`SurvivalTest.c`): `TryUseBlock`'s MP branch sends `USE_ITEM` for a
+  held hoe or seeds (targeted at the clicked block), and `TryEat`'s MP branch
+  sends a TARGETLESS `USE_ITEM` (sentinel x=y=z=-1, face 0xFF) for a held food.
+  Both were previously no-ops in MP (deferred to the server).
+- **Server** (`SurvivalInventory.HandleUseItem`): restructured around a
+  `hasTarget` flag (a sentinel/out-of-reach coord = no target). With a target it
+  runs container opens (unchanged), then `UseHoe` / `UseSeeds`; targetless (or
+  after a non-matching target) it runs `EatFood`. New helpers, all matching the
+  client oracle:
+  - `UseHoe`: grass (no solid above) or dirt → farmland (`FromRaw(FARMLAND)`);
+    the hoe wears 1 via `DamageHeldTool`; tilling grass has a 1/8 chance to yield
+    a seed (v1: straight to inventory — the drop entity is phase 5).
+  - `UseSeeds`: seeds on farmland (air above) → stage-0 crop in the cell above;
+    one seed consumed.
+  - `EatFood`: heal the food's `param` value (`SetHealth(cur+heal)`), consume one;
+    an eaten soup leaves its empty bowl (soups don't stack).
+  - `DamageHeldTool`: `ItemStack.damageItem` — shatter (empty the slot) once
+    damage exceeds `32 << tier` (64 for flint&steel).
+- `SurvivalItems` gained `IsHoe` / `IsFlintSteel` / `FoodHeal` / `MaxDurability`
+  and the `SEEDS`/`SOUP`/`BOWL` id constants.
+
+Deferred: **flint&steel → fire** (fire needs the phase-5 spread/burnout tick
+system) and **mining-tool durability** (wear on block break, in the mine path).
+
+Verified live (server-authoritative, via `/Export` + `/SurvInv` since gdb-injected
+block placements desync the client's local view): tilling grass produced genuine
+farmland (60) and cost the hoe 1 durability; planting seeds produced a genuine
+crop (59) and consumed a seed (10→9); eating bread consumed the stack.

@@ -241,70 +241,165 @@ namespace MCGalaxy.Network
             return NormalCube(lvl, x, y + 1, z);
         }
 
-        /// <summary> SURV_USE_ITEM: right-click use of a block. V1 opens container
-        /// GUIs (workbench/chest/large chest/furnace); eating and tool use land
-        /// with the item definitions. </summary>
+        /// <summary> SURV_USE_ITEM: right-click use. With a valid target block it
+        /// opens container GUIs (workbench/chest/large chest/furnace) or applies an
+        /// item-on-block use (hoe tilling, seed planting); a targetless intent
+        /// (sentinel coords, sent for right-click-to-eat) eats a held food. Flint
+        /// &amp; steel / fire lands with the phase-5 fire tick system. </summary>
         public static void HandleUseItem(Player p, int held, int x, int y, int z, int face) {
             Level lvl = p.level;
             if (lvl == null || lvl.Config.SurvivalMode != SurvivalMode.Indev) return;
             if (!SurvivalNet.Active(p, lvl) || SurvivalNet.IsDead(p)) return;
-            if (lvl.Config.SurvivalCreative) return; // v1: no container sync in creative
-            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return;
+            if (lvl.Config.SurvivalCreative) return; // v1: no container/item-use sync in creative
 
-            // reach: same envelope as melee (Player.getEntitiesWithinAABB reach)
-            double dx = p.Pos.X / 32.0 - (x + 0.5), dy = p.Pos.Y / 32.0 - (y + 0.5),
-                   dz = p.Pos.Z / 32.0 - (z + 0.5);
-            if (dx * dx + dy * dy + dz * dz > 6.0 * 6.0) return;
+            if (held < 0 || held > 8) held = 0;
+            PlayerInv inv = Get(p);
+            ushort heldId = inv.Slots[held].Count > 0 ? inv.Slots[held].Id : (ushort)0;
 
-            ushort raw = RawAt(lvl, x, y, z);
-
-            if (raw == SurvivalBlocks.WORKBENCH) {
-                // no container slots - the client opens its 3x3 grid over the
-                // streamed craft slots 36..44. The open ref records the 3x3 dim
-                // for RESULT_CLICK's recipe matching.
-                OpenRef wb = new OpenRef();
-                wb.Kind = CONT_WORKBENCH; wb.Lvl = lvl;
-                p.Extras[OPEN_KEY] = wb;
-                SurvivalNet.SendContOpen(p, CONT_WORKBENCH, 0);
-                return;
+            // A targetless intent (x==-1 sentinel) is a right-click-to-eat; a
+            // targeted one goes through reach + the block/item-use dispatch.
+            bool hasTarget = x >= 0 && y >= 0 && z >= 0 &&
+                             x < lvl.Width && y < lvl.Height && z < lvl.Length;
+            if (hasTarget) {
+                // reach: same envelope as melee (Player.getEntitiesWithinAABB reach)
+                double dx = p.Pos.X / 32.0 - (x + 0.5), dy = p.Pos.Y / 32.0 - (y + 0.5),
+                       dz = p.Pos.Z / 32.0 - (z + 0.5);
+                if (dx * dx + dy * dy + dz * dz > 6.0 * 6.0) hasTarget = false;
             }
 
-            if (IsChestView(raw)) {
-                if (SolidAbove(lvl, x, y, z)) return; // lid blocked - click still consumed
-                // genuine neighbour scan order: -X, +X, -Z, +Z; at most one matches
-                int nx = x, nz = z; bool neighbourUpper = false, hasNeighbour = false;
-                if      (IsChestView(RawAt(lvl, x - 1, y, z))) { nx = x - 1; neighbourUpper = true;  hasNeighbour = true; }
-                else if (IsChestView(RawAt(lvl, x + 1, y, z))) { nx = x + 1; neighbourUpper = false; hasNeighbour = true; }
-                else if (IsChestView(RawAt(lvl, x, y, z - 1))) { nz = z - 1; neighbourUpper = true;  hasNeighbour = true; }
-                else if (IsChestView(RawAt(lvl, x, y, z + 1))) { nz = z + 1; neighbourUpper = false; hasNeighbour = true; }
-                if (hasNeighbour && SolidAbove(lvl, nx, y, nz)) return; // other half blocked
+            if (hasTarget) {
+                ushort raw = RawAt(lvl, x, y, z);
 
-                OpenRef open = new OpenRef();
-                open.Kind = CONT_CHEST; open.Lvl = lvl;
-                Container clicked = GetTE(lvl, x, y, z, CONT_CHEST);
-                if (!hasNeighbour) {
-                    open.Upper = clicked;
-                } else {
-                    Container other = GetTE(lvl, nx, y, nz, CONT_CHEST);
-                    open.Upper = neighbourUpper ? other : clicked;
-                    open.Lower = neighbourUpper ? clicked : other;
+                // blockActivated (containers) takes priority over item onItemUse
+                if (raw == SurvivalBlocks.WORKBENCH) {
+                    // no container slots - the client opens its 3x3 grid over the
+                    // streamed craft slots 36..44. The open ref records the 3x3 dim
+                    // for RESULT_CLICK's recipe matching.
+                    OpenRef wb = new OpenRef();
+                    wb.Kind = CONT_WORKBENCH; wb.Lvl = lvl;
+                    p.Extras[OPEN_KEY] = wb;
+                    SurvivalNet.SendContOpen(p, CONT_WORKBENCH, 0);
+                    return;
                 }
-                p.Extras[OPEN_KEY] = open;
-                SurvivalNet.SendContOpen(p, hasNeighbour ? CONT_LARGE : CONT_CHEST,
-                                         (byte)OpenSlotCount(open));
-                StreamContainer(p, open);
-                return;
+
+                if (IsChestView(raw)) {
+                    if (SolidAbove(lvl, x, y, z)) return; // lid blocked - click still consumed
+                    // genuine neighbour scan order: -X, +X, -Z, +Z; at most one matches
+                    int nx = x, nz = z; bool neighbourUpper = false, hasNeighbour = false;
+                    if      (IsChestView(RawAt(lvl, x - 1, y, z))) { nx = x - 1; neighbourUpper = true;  hasNeighbour = true; }
+                    else if (IsChestView(RawAt(lvl, x + 1, y, z))) { nx = x + 1; neighbourUpper = false; hasNeighbour = true; }
+                    else if (IsChestView(RawAt(lvl, x, y, z - 1))) { nz = z - 1; neighbourUpper = true;  hasNeighbour = true; }
+                    else if (IsChestView(RawAt(lvl, x, y, z + 1))) { nz = z + 1; neighbourUpper = false; hasNeighbour = true; }
+                    if (hasNeighbour && SolidAbove(lvl, nx, y, nz)) return; // other half blocked
+
+                    OpenRef open = new OpenRef();
+                    open.Kind = CONT_CHEST; open.Lvl = lvl;
+                    Container clicked = GetTE(lvl, x, y, z, CONT_CHEST);
+                    if (!hasNeighbour) {
+                        open.Upper = clicked;
+                    } else {
+                        Container other = GetTE(lvl, nx, y, nz, CONT_CHEST);
+                        open.Upper = neighbourUpper ? other : clicked;
+                        open.Lower = neighbourUpper ? clicked : other;
+                    }
+                    p.Extras[OPEN_KEY] = open;
+                    SurvivalNet.SendContOpen(p, hasNeighbour ? CONT_LARGE : CONT_CHEST,
+                                             (byte)OpenSlotCount(open));
+                    StreamContainer(p, open);
+                    return;
+                }
+
+                if (IsFurnaceView(raw)) {
+                    OpenRef open = new OpenRef();
+                    open.Kind  = CONT_FURNACE; open.Lvl = lvl;
+                    open.Upper = GetTE(lvl, x, y, z, CONT_FURNACE);
+                    p.Extras[OPEN_KEY] = open;
+                    SurvivalNet.SendContOpen(p, CONT_FURNACE, 3);
+                    StreamContainer(p, open);
+                    SurvivalNet.SendFurnProg(p, FurnBurnScaled(open.Upper), FurnCookScaled(open.Upper));
+                    return;
+                }
+
+                // Item.onItemUse: hoe tilling, seed planting (flint&steel deferred)
+                if (UseHoe(p, lvl, inv, held, heldId, x, y, z)) return;
+                if (UseSeeds(p, lvl, inv, held, heldId, x, y, z)) return;
             }
 
-            if (IsFurnaceView(raw)) {
-                OpenRef open = new OpenRef();
-                open.Kind  = CONT_FURNACE; open.Lvl = lvl;
-                open.Upper = GetTE(lvl, x, y, z, CONT_FURNACE);
-                p.Extras[OPEN_KEY] = open;
-                SurvivalNet.SendContOpen(p, CONT_FURNACE, 3);
-                StreamContainer(p, open);
-                SurvivalNet.SendFurnProg(p, FurnBurnScaled(open.Upper), FurnCookScaled(open.Upper));
-                return;
+            // TryEat: a held food is eaten with or without a target block
+            EatFood(p, inv, held, heldId);
+        }
+
+        // ItemHoe.onItemUse: grass (with no solid block above) or dirt becomes
+        // farmland; the hoe wears 1 durability, and tilling grass has a 1/8 chance
+        // to pop a seed (v1: straight to inventory - the drop entity is phase 5).
+        static bool UseHoe(Player p, Level lvl, PlayerInv inv, int held, ushort heldId, int x, int y, int z) {
+            if (!SurvivalItems.IsHoe(heldId)) return false;
+            ushort target = RawAt(lvl, x, y, z);
+            bool solidAbove = y + 1 < lvl.Height &&
+                CollideType.IsSolid(lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)(y + 1), (ushort)z)));
+            if ((target != Block.Grass || solidAbove) && target != Block.Dirt) return false;
+
+            lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.FromRaw(SurvivalBlocks.FARMLAND));
+            DamageHeldTool(p, inv, held, 1);
+            if (target == Block.Grass) {
+                int roll; lock (dropRng) roll = dropRng.Next(8);
+                if (roll == 0 && AddOne(p, inv, SurvivalItems.SEEDS, 0)) SendAll(p);
+            }
+            return true;
+        }
+
+        // ItemSeeds.onItemUse: seeds planted on farmland (with air above) become a
+        // stage-0 crop in the cell above; one seed is consumed.
+        static bool UseSeeds(Player p, Level lvl, PlayerInv inv, int held, ushort heldId, int x, int y, int z) {
+            if (heldId != SurvivalItems.SEEDS) return false;
+            ushort target = RawAt(lvl, x, y, z);
+            bool farmland = target == SurvivalBlocks.FARMLAND || target == SurvivalBlocks.FARMLAND_WET;
+            ushort above  = y + 1 < lvl.Height ? RawAt(lvl, x, y + 1, z) : Block.Air;
+            if (!farmland || above != Block.Air) return false;
+
+            lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)(y + 1), (ushort)z,
+                            Block.FromRaw(SurvivalBlocks.CROPS_0));
+            ConsumeHeld(inv, held, 1);
+            SendSlot(p, inv, held);
+            return true;
+        }
+
+        // ItemFood/ItemSoup.onItemRightClick: heal the food's value and consume one;
+        // an eaten soup leaves its empty bowl behind (soups don't stack).
+        static void EatFood(Player p, PlayerInv inv, int held, ushort heldId) {
+            int heal = SurvivalItems.FoodHeal(heldId);
+            if (heal <= 0) return;
+            SurvivalNet.SetHealth(p, SurvivalNet.GetHealth(p) + heal);
+
+            inv.Slots[held].Count--;
+            if (inv.Slots[held].Count == 0) {
+                if (heldId == SurvivalItems.SOUP) {
+                    inv.Slots[held].Id = SurvivalItems.BOWL; inv.Slots[held].Count = 1; inv.Slots[held].Damage = 0;
+                } else {
+                    inv.Slots[held].Id = 0; inv.Slots[held].Damage = 0;
+                }
+            }
+            SendSlot(p, inv, held);
+        }
+
+        // ItemStack.damageItem: wear a tool by `amount`; it shatters (empties the
+        // slot) once damage exceeds its maxDamage. No-op for non-damageable ids.
+        static void DamageHeldTool(Player p, PlayerInv inv, int held, int amount) {
+            int max = SurvivalItems.MaxDurability(inv.Slots[held].Id);
+            if (max == 0) return;
+            inv.Slots[held].Damage += (short)amount;
+            if (inv.Slots[held].Damage > max) { // damageItem: strictly greater = break
+                inv.Slots[held].Id = 0; inv.Slots[held].Count = 0; inv.Slots[held].Damage = 0;
+            }
+            SendSlot(p, inv, held);
+        }
+
+        // consume `amount` from the held slot (no send - the caller echoes)
+        static void ConsumeHeld(PlayerInv inv, int held, int amount) {
+            if (inv.Slots[held].Count <= 0) return;
+            inv.Slots[held].Count -= (byte)amount;
+            if (inv.Slots[held].Count <= 0) {
+                inv.Slots[held].Id = 0; inv.Slots[held].Count = 0; inv.Slots[held].Damage = 0;
             }
         }
 

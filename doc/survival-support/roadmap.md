@@ -163,8 +163,16 @@ Server owns inventory, containers, crafting, smelting.
   burn, lit-block flip, FURN_PROG + CONT_SLOT streaming). All identical to
   the client's tables (the client renders the craft preview locally).
   Live-tested. `/Survival give` accepts item names/ids.
-- ⬜ Remaining: eating/tool USE_ITEM handling (food, hoes, flint&steel, tool
-  durability), `SURV_PLAYER_EQUIP 0x50` + armor absorption.
+- 🔶 Right-click item USE_ITEM (`IndevTest_UseHeldItem` / `TryEat`): the client
+  now sends `SURV_USE_ITEM` for a held hoe/seeds (targeted) or food (targetless
+  sentinel), and the server applies it — hoe → farmland (+1 durability, grass's
+  1/8 seed to inventory pending drops), seeds → crop + consume, food → heal +
+  consume (soup → bowl), tool durability (`damageItem`, shatters past
+  `32 << tier`). Live-tested server-side (farmland 60 / crop 59 / seed consumed
+  / bread eaten / hoe dmg 1). Flint&steel → fire deferred with the phase-5 fire
+  ticks (spread/burnout).
+- ⬜ Remaining phase-4 tail: mining-tool durability (wear on block break),
+  `SURV_PLAYER_EQUIP 0x50` + armor absorption.
 
 ## ⬜ Phase 5 — Drops & advanced simulation
 
