@@ -37,7 +37,7 @@ class Client(threading.Thread):
         self.sock.sendall(bytes([0x00, 7]) + pad(name) + pad("x"*32) + bytes([0x42]))
 
     def send_exts(self):
-        exts = [("EnvColors",1), ("ChangeModel",1), ("SurvivalTest",2)]
+        exts = [("EnvColors",1), ("ChangeModel",1), ("SurvivalTest",3)]
         self.sock.sendall(bytes([0x10]) + pad("InvTest") + struct.pack(">h", len(exts)))
         for n,v in exts:
             self.sock.sendall(bytes([0x11]) + pad(n) + struct.pack(">i", v))
@@ -159,17 +159,18 @@ def main():
     open_frames = adm.drain_frames()
     for f in open_frames: print("   Adm", f)
 
-    # EDIT test (only meaningful if Adm has edit perm): pick up cell 27 (hotbar
-    # slot 0 -> should hold the first given stack), then place into own main slot 9.
-    print(">>> Adm SLOT_CLICK pickup cell 45+27=72 (container base 45)")
+    # EDIT test: pick up cell 27 (target hotbar slot 0 = the first given stack),
+    # then place it into armor cell 39 (helmet = target armor slot 3 / inv 102) -
+    # verifies the 40-slot mapping incl. the new armor cells.
+    print(">>> Adm SLOT_CLICK pickup cell 45+27=72 (stone)")
     adm.slot_click(45+27, 0)   # left click container cell 27
     time.sleep(1.5)
     for f in adm.drain_frames(): print("   Adm", f)
-    print(">>> Adm SLOT_CLICK place into own slot 9")
-    adm.slot_click(9, 0)
+    print(">>> Adm SLOT_CLICK place into ARMOR cell 45+39=84")
+    adm.slot_click(45+39, 0)   # left click container cell 39 (armor / helmet)
     time.sleep(1.5)
     for f in adm.drain_frames(): print("   Adm", f)
-    print("--- Tgt frames after admin edit (should mirror the pickup) ---")
+    print("--- Tgt frames after admin edit (slot 0 cleared, slot 102 armor set) ---")
     for f in tgt.drain_frames(): print("   Tgt", f)
 
     adm.cont_close()

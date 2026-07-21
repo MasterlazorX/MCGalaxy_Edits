@@ -161,7 +161,10 @@ namespace MCGalaxy
             new CpeExtension(CpeExt.NotifyAction,        "Allows server to be notified of certain client events"),
             // v2: SURV_WORLDINFO carries ground/water levels as i16 (floating maps
             // have genuinely negative levels which v1's u8 fields clamped away)
-            new CpeExtension(CpeExt.SurvivalTest,        "Allows survival-test clients to play server-driven survival maps", 2),
+            // v3: CONT_OPEN kind 5 (CONT_PLAYERINV) - the /Inventory viewer renders
+            // a dedicated 40-slot player-inventory panel (36 main + 4 armor) instead
+            // of the chest fallback
+            new CpeExtension(CpeExt.SurvivalTest,        "Allows survival-test clients to play server-driven survival maps", 3),
             #if TEN_BIT_BLOCKS
             new CpeExtension(CpeExt.ExtBlocks,           "Allows using block IDs over 255 in block definitions"),
             #endif

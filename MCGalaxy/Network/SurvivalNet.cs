@@ -140,6 +140,16 @@ namespace MCGalaxy.Network
                 && lvl != null && lvl.Config.SurvivalMode != SurvivalMode.Off;
         }
 
+        /// <summary> The negotiated SurvivalTest ext version (0 if none). Session.Supports
+        /// is an exact-version match, so probe high-to-low to get a "&gt;=" gate that keeps
+        /// working as the ext version climbs (v2 WORLDINFO layout, v3 player-inv panel). </summary>
+        public static int SurvVer(Player p) {
+            if (p == null || p.Session == null) return 0;
+            for (int v = 3; v >= 1; v--)
+                if (p.Session.Supports(CpeExt.SurvivalTest, v)) return v;
+            return 0;
+        }
+
 
         // ==================== server -> client ====================
 
@@ -219,7 +229,7 @@ namespace MCGalaxy.Network
 
             byte[] msg = new byte[Packet.PluginMessageDataLength];
             msg[0] = WORLDINFO;
-            if (p.Session.Supports(CpeExt.SurvivalTest, 2)) {
+            if (SurvVer(p) >= 2) {
                 // v2 layout: ground/water are SIGNED int16 BE - floating maps
                 // genuinely use groundLevel -128 / waterLevel -127 (or -16 hell),
                 // which v1's u8 fields clamped to 0 (visible as a spurious dirt

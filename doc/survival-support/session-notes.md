@@ -1035,3 +1035,54 @@ tests set `verify-admin-perm = 127` in properties/server.properties (reverted
 after). The console FIFO must be a REGULAR file followed by `tail -n0 -f`
 (a named pipe blocks on open-for-write with no reader); guard every `pkill`
 with `|| true` (the rig shell has errexit).
+
+## /Inventory GUI (#2) — UPGRADE: dedicated 40-slot panel + armor + dual-inventory (SurvivalTest v3)
+
+The chest-fallback view was replaced by a bespoke player-inventory panel. This is
+a WIRE change: SurvivalTest ext v2 -> v3, new CONT_OPEN kind 5 (CONT_PLAYERINV).
+
+Server (mcgalaxy):
+ * CPESupport.cs: SurvivalTest ext version 2 -> 3.
+ * SurvivalNet.cs: added `SurvVer(p)` (Session.Supports is EXACT-match, so probe
+   high->low for a `>=` gate) and migrated the WORLDINFO v2-layout check to
+   `SurvVer(p) >= 2` (a bare `Supports(_,2)` would go false for a v3 client and
+   regress floating-map levels).
+ * SurvivalInventory.cs: PLAYERINV_SLOTS 36 -> 40. Cell map now: 0..26 target
+   main storage (9..35), 27..35 hotbar (0..8), 36..39 armor (100..103, cell 36=
+   boots .. 39=helmet). PlayerInvCell handles armor; SendSlot fans armor changes
+   out too. OpenPlayerInventory sends kind 5/40 to v3 clients, kind 1/36 (chest
+   fallback) to v2.
+
+Client (ClassiCube):
+ * Protocol.c: SurvivalTest advertised v3 (client gate at SurvivalNet.c is already
+   a `>=` so no other change).
+ * IndevTest.h: new INDEV_CONTAINER_PLAYERINV = 3 (internal; wire kind 5 maps to
+   it in SurvivalNet_HandleContOpen). The rest of IndevTest.c already generalises
+   to a 40-cell net-container (NetContOpen/NetContSlot/ContainerSlot/SlotCount).
+ * Screens.c: ContainerCells returns 40; ContainerSlotXY lays the 40 cells onto
+   the genuine inventory.png pocket layout (storage (8,84), hotbar (8,142), armor
+   column (8, 8/26/44/62) helmet-on-top); guiTex -> InvGuiTex; a new panel branch
+   composites inventory.png (top, target's 40) + the container.png player strip
+   (bottom, viewer's own 36) = the dual-inventory window; Layout sizes panelH to
+   166+96 and puts the viewer's own strip at 166+14 / 166+72; a label branch puts
+   the "Inventory" caption above the own strip. The target paperdoll window is
+   left empty (the client isn't told whose inventory it is). A v2 client still
+   gets the chest fallback.
+
+Docs: networking-plan.md CONT_OPEN kind list (kind 5 = player-inv, 40 cells, v3);
+survival-handshake.md ext-version line -> v3.
+
+Verified:
+ * WIRE (test-clients/inv_test.py, viewer advertises SurvivalTest v3): CONT_OPEN
+   (5,40); target stone->cell 27, dirt->cell 28; edit path picks up cell 27 and
+   drops into ARMOR cell 39 -> target slot 102 (armor) set live + slot 0 cleared.
+ * RENDER (graphical rig, gdb-injected NetContOpen(3,40)+NetContSlot samples,
+   screenshot): armor column (helmet top / boots bottom), 3x9 storage grid, hotbar
+   row, and the viewer's own empty inventory strip below all render in the correct
+   positions - the two textures composite cleanly.
+
+Minor cosmetic follow-ups (not blocking): the composited panel is tall (two
+stacked textures) so at large inventory-scale settings the own hotbar row nears
+the window edge; the target paperdoll window is empty; a small seam sits between
+the two textures. Also a future nicety: send the target's name in CONT_OPEN so
+the panel can title itself.

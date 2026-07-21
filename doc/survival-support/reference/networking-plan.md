@@ -1916,7 +1916,14 @@ SURV_CONT_OPEN  0x22  ** AS IMPLEMENTED: ** [1]kind  [2]slotCount
                       kinds: 0 force-close (container destroyed under the open
                       screen), 1 chest(27), 2 furnace(3), 3 large chest(54),
                       4 workbench (no container slots - the client opens its 3x3
-                      grid over the normal streamed craft slots 36..44)
+                      grid over the normal streamed craft slots 36..44),
+                      5 player-inventory (SurvivalTest v3+; /Inventory viewer) -
+                      40 container cells proxy the TARGET player's own slots:
+                      cells 0..26 target main storage (their slots 9..35),
+                      27..35 target hotbar (0..8), 36..39 target armor (100..103).
+                      Rendered as a dedicated inventory panel with the VIEWER's
+                      own inventory strip below (dual-inventory drag). A v2 client
+                      (chest only) is sent kind 1 / 36 cells as a graceful fallback
 SURV_CONT_SLOT  0x23  [1]slot(0..53 container-RELATIVE)  [2..3]id  [4]count  [5..6]dmg
                       (client zeroes its view on CONT_OPEN; only occupied slots
                       are streamed; clicks echo to every viewer of the entity)

@@ -133,7 +133,9 @@ namespace MCGalaxy.Network
             msg[5] = (byte)(s.Damage >> 8); msg[6] = (byte)s.Damage;
             SurvivalNet.SendMessage(p, msg);
             // mirror the change into any open /Inventory view of this player
-            if (idx < MAIN_SLOTS) EchoPlayerViews(p, idx);
+            // (main + hotbar slots, and the 4 armor slots the panel also shows)
+            if (idx < MAIN_SLOTS || (idx >= ARMOR_BASE && idx < ARMOR_BASE + ARMOR_SLOTS))
+                EchoPlayerViews(p, idx);
         }
 
         static void SendCursor(Player p, PlayerInv inv) {
@@ -160,19 +162,26 @@ namespace MCGalaxy.Network
                           CONT_LARGE = 3, CONT_WORKBENCH = 4, CONT_PLAYERINV = 5;
 
         // A CONT_PLAYERINV view (/Inventory) proxies another player's inventory as
-        // a chest-style container: 36 cells laid out like the genuine inventory
-        // grid - the top 3 rows are the target's main storage (their slots 9..35),
-        // the bottom row their hotbar (0..8). Armor is unimplemented in MP, so it
-        // is not shown yet (a clean 4-row / 36-cell chest).
-        const int PLAYERINV_SLOTS = 36;
-        // container cell -> target inventory slot: rows 0..2 (cells 0..26) are the
-        // main storage 9..35, row 3 (cells 27..35) the hotbar 0..8.
-        static int PlayerInvSlot(int ci) { return ci < 27 ? ci + 9 : ci - 27; }
-        // and back (target slot 0..35 -> container cell), for echoing the target's
-        // own edits into every open view. -1 for slots not shown (craft/armor).
+        // a container: 40 cells laid out like the genuine pocket inventory - cells
+        // 0..26 are the target's main storage (their slots 9..35), 27..35 the hotbar
+        // (0..8), and 36..39 the 4 armor slots (ARMOR_BASE..+3, boots..helmet). The
+        // v3 client renders this as a dedicated inventory panel; a v2 client (which
+        // only knows chest) is sent a 36-cell chest fallback instead.
+        const int PLAYERINV_SLOTS = 40;
+        // container cell -> target inventory slot
+        static int PlayerInvSlot(int ci) {
+            if (ci < 27) return ci + 9;              // cells 0..26  -> main storage 9..35
+            if (ci < MAIN_SLOTS) return ci - 27;     // cells 27..35 -> hotbar 0..8
+            return ARMOR_BASE + (ci - MAIN_SLOTS);   // cells 36..39 -> armor 99..102
+        }
+        // and back (target inventory slot -> container cell), for echoing the
+        // target's own edits into every open view. -1 for slots not shown (craft).
         static int PlayerInvCell(int pslot) {
-            if (pslot < 0 || pslot >= MAIN_SLOTS) return -1;
-            return pslot >= 9 ? pslot - 9 : pslot + 27;
+            if (pslot >= 9 && pslot < MAIN_SLOTS) return pslot - 9;   // storage
+            if (pslot >= 0 && pslot < 9)          return pslot + 27;  // hotbar
+            if (pslot >= ARMOR_BASE && pslot < ARMOR_BASE + ARMOR_SLOTS)
+                return MAIN_SLOTS + (pslot - ARMOR_BASE);            // armor
+            return -1;
         }
 
         class Container
@@ -705,7 +714,12 @@ namespace MCGalaxy.Network
             open.Target = target;
             open.CanEdit = canEdit;
             viewer.Extras[OPEN_KEY] = open;
-            SurvivalNet.SendContOpen(viewer, CONT_CHEST, PLAYERINV_SLOTS);
+            // v3 clients render the dedicated player-inventory panel (kind 5, all
+            // 40 cells incl. armor); a v2 client only knows chest, so fall back to
+            // a 36-cell chest view (armor cells hidden - graceful degradation).
+            bool panel = SurvivalNet.SurvVer(viewer) >= 3;
+            SurvivalNet.SendContOpen(viewer, panel ? CONT_PLAYERINV : CONT_CHEST,
+                                     (byte)(panel ? PLAYERINV_SLOTS : 36));
             StreamContainer(viewer, open);
             return true;
         }

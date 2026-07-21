@@ -123,7 +123,7 @@ non-Classic world params.
 |---|---|
 | `src/SurvivalNet.h` | **New.** Wire contract: `SURVNET_CHANNEL 0xB0`, `enum SurvNetMsg` (server→client `0x01–0x50`, client→server `0x80–0x87`), `SurvivalNet_Component`, `SurvivalNet_Send`. |
 | `src/SurvivalNet.c` | **New.** `SurvivalNet_Active()` gate, receive dispatch, `SURV_HELLO`/`SURV_WORLDINFO` parse+chat-log stubs, `SurvivalNet_Send`, the `IGameComponent`. |
-| `src/Protocol.c` | `survival_Ext = { "SurvivalTest", 2 }` (v2 = WORLDINFO i16 levels); appended `&survival_Ext` to `cpe_clientExtensions[]`; ExtEntry handler sets `Server.SupportsSurvival = true` + `Server.SurvivalExtVersion` (the negotiated min - the authoritative wire version). |
+| `src/Protocol.c` | `survival_Ext = { "SurvivalTest", 3 }` (v2 = WORLDINFO i16 levels; v3 = CONT_OPEN kind 5 player-inventory panel); appended `&survival_Ext` to `cpe_clientExtensions[]`; ExtEntry handler sets `Server.SupportsSurvival = true` + `Server.SurvivalExtVersion` (the negotiated min - the authoritative wire version). Server-side `SurvivalNet.SurvVer(p)` reads it back as a `>=` gate (Session.Supports is exact-match). |
 | `src/Server.h` | `cc_bool SupportsSurvival;` on the `Server` struct. |
 | `src/Game.c` | `#include "SurvivalNet.h"` + `Game_AddComponent(&SurvivalNet_Component);` |
 
