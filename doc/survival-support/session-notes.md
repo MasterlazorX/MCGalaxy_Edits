@@ -790,3 +790,61 @@ Verified live: `/help` for all seven; `/SurvTime noon` sets the clock;
 the console's main level; the console-arg guards fire; and the arg shift is
 correct - `/SurvGive iron_pickaxe 1 CCUser` + `/SurvGive coal 32 CCUser`
 landed id 257 x1 and id 263 x32 (confirmed via `/SurvInv CCUser`).
+
+### Server-side review pass: 13 confirmed bugs fixed
+
+An adversarial multi-agent review of the whole server survival stack (each
+finding verified against the ClassiCube client oracle before it survived)
+surfaced 19 real findings -> 13 distinct bugs, all fixed this pass:
+
+**Concurrency / lifecycle**
+- **Container.Slots data race (item dup/loss).** `contLock` only guarded the
+  registry dictionary; the furnace tick (scheduler thread) and HandleSlotClick
+  (network threads, incl. two players sharing one chest) read-modify-wrote the
+  same `Container.Slots` array with no common lock. Now every container-slot
+  path locks `contLock`: TickFurnaces mutates + streams under it (block flips
+  collected and applied after release), HandleSlotClick's container branch does
+  its read/apply/write/echo under it (click math factored into `ApplyClick`),
+  StreamContainer snapshots under it. Deadlock-safe - nothing takes a send lock
+  then contLock. Live-verified: a furnace still smelts end-to-end (iron ore ->
+  ingot) with items loaded via the locked click path.
+- **contRegistry leaked unloaded levels.** The `Dictionary<Level,...>` was never
+  pruned, pinning every unloaded map's block array forever. New
+  `PruneRegistry(loaded)` called from the mob tick's prune sweep.
+- **Cross-level chest looting.** A player's open-container `OpenRef` survived a
+  `/goto`, so a SLOT_CLICK from another level looted the container they left.
+  Fixed both ways: HandleSlotClick/HandleResultClick refuse a ref whose
+  `open.Lvl != p.level`, and SurvivalNet.OnJoinedLevel clears it on level change.
+- **ClearMirror vs SyncMirror race.** `/Survival off` iterated a spectator's
+  mirror `Ids` on the command thread while the mob tick mutated it. Added a
+  per-MirrorState lock taken by both.
+
+**Fidelity to the client oracle**
+- **Chest lid used IsSolid, not the normal-cube rule** - glass/leaves/slabs
+  above a chest wrongly blocked it. Now uses the shared `NormalCube` predicate.
+  Live-verified: glass above -> opens, stone above -> blocked.
+- **Furnace output capped at 99, oracle caps at 64** (matters for block results
+  glass/stone). Now a fixed `FURNACE_OUTPUT_MAX = 64`.
+- **Lava cushioned fall damage** - only water should. Reset changed to `if (inWater)`.
+- **Void: -16 vs oracle -32, and applied on c0.30 maps.** VOID_Y -> -32 and the
+  void branch gated on `indev`.
+- **Liquid box missing the 0.4 vertical shrink** (ST_InLiquid). BoxTouches now
+  insets minY/maxY by 0.4.
+- **Creeper fuse latched** when it lost its target mid-swell (stayed swollen
+  forever, re-detonated instantly on re-aggro). AttackAI now winds the fuse down
+  every tick a creeper has no target.
+- **Mining TNT gave a free TNT block** (infinite-TNT dupe, TNT is craftable).
+  MiningDrops now drops nothing for TNT (the primed explosion is a phase-5 item).
+- **Runtime Indev block defs could persist to blockdefs.json** via a stray /lb,
+  then linger after the map went non-survival + a restart. Sync now strips any
+  Indev-template-matching def from a non-survival map on load.
+
+**Logic**
+- **EnableHazards grounded the spawn under water/lava** (drown/burn respawn
+  loop), and skipped the bottomless-column warning within FallHeight of the
+  void. The descent now stops at the first solid OR liquid surface, warns
+  (never grounds) over liquid/void, and checks that before the early return.
+
+Six findings were adversarially REJECTED as not-real (e.g. a claimed nextMobId
+cross-level race - ids segregate by level; a WORLDINFO == vs >= version gate -
+no current desync at ext v2).

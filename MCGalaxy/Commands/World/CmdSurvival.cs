@@ -87,13 +87,30 @@ namespace MCGalaxy.Commands.World
             }
 
             int x = lvl.spawnx, y = lvl.spawny, z = lvl.spawnz, ground = y;
-            while (ground > 0 && !CollideSolid(lvl, x, ground - 1, z)) ground--;
+            // descend to the first SOLID or LIQUID surface: a liquid stops the
+            // fall too (you don't sink through it), and grounding the spawn onto
+            // the submerged bed underneath would drop the player straight into a
+            // drown/burn respawn loop now that death detection is on.
+            while (ground > 0 && !CollideSolid(lvl, x, ground - 1, z) && !IsLiquidAt(lvl, x, ground - 1, z))
+                ground--;
 
-            if (y - ground <= lvl.Config.FallHeight) return; // close enough to survive
-            if (ground == 0 && !CollideSolid(lvl, x, 0, z)) {
+            // Bottomless column / liquid surface are checked BEFORE the
+            // "close enough to survive" return, so the warning still fires when
+            // the spawn is within FallHeight of a void or a lake.
+            bool bottomless = ground == 0 && !CollideSolid(lvl, x, 0, z) && !IsLiquidAt(lvl, x, 0, z);
+            if (bottomless) {
                 p.Message("&WThe map spawn hangs over a bottomless column - set a safe one with &T/SetSpawn&W.");
                 return;
             }
+            if (ground > 0 && IsLiquidAt(lvl, x, ground - 1, z)) {
+                bool lava = lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)(ground - 1), (ushort)z))
+                            == Blocks.CollideType.LiquidLava;
+                p.Message("&WThe map spawn sits over {0} - set a safe one with &T/SetSpawn&W.",
+                          lava ? "lava" : "water");
+                return;
+            }
+            if (y - ground <= lvl.Config.FallHeight) return; // close enough to survive
+
             lvl.spawny  = (ushort)ground;
             lvl.Changed = true;
             p.Message("&SGrounded the floating map spawn (y {0} &S-> &b{1}&S) so respawning is survivable.", y, ground);
@@ -103,6 +120,13 @@ namespace MCGalaxy.Commands.World
         static bool CollideSolid(Level lvl, int x, int y, int z) {
             if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return false;
             return Blocks.CollideType.IsSolid(lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z)));
+        }
+
+        static bool IsLiquidAt(Level lvl, int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return false;
+            byte c = lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z));
+            return c == Blocks.CollideType.LiquidWater || c == Blocks.CollideType.LiquidLava ||
+                   c == Blocks.CollideType.SwimThrough;
         }
 
         static bool SetVisitors(LevelConfig cfg, string val) {

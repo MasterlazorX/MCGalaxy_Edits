@@ -56,7 +56,7 @@ namespace MCGalaxy.Network
         const int LAVA_DAMAGE     = 10;
         const int DROWN_DAMAGE    = 2;
         const int VOID_DAMAGE     = 4;
-        const double VOID_Y       = -16;   // grace below the world before the void bites
+        const double VOID_Y       = -32;   // ST_VOID_KILL_Y - grace below the world before the void bites
         const double TELEPORT_DIST_SQ = 8 * 8; // a jump this large in one tick = teleport
 
         class HazardState
@@ -138,13 +138,19 @@ namespace MCGalaxy.Network
             }
 
             // ---- void (floating maps are bottomless) ----
-            if (y < VOID_Y) {
+            // Indev-only: the client applies void death only under IndevTest_Enabled
+            // (SurvivalTest.c:7826); c0.30 maps are solid and have no void.
+            if (indev && y < VOID_Y) {
                 Damage(p, VOID_DAMAGE, "@p &Sfell out of the world.", "the void");
             }
 
             // ---- fall damage (peak-Y tracking, client's SurvivalTest_UpdateFall) ----
-            if (inWater || inLava) {
-                st.Falling = false; // touching liquid cushions the landing
+            // Only WATER cushions a fall (Mob.tick resets fallDistance for isInWater
+            // only); landing in lava does NOT cushion - the fall accumulates through
+            // the non-solid lava and lands ceil(dist-3) damage on the solid pool bed,
+            // on top of the lava burn (SurvivalTest.c:7818).
+            if (inWater) {
+                st.Falling = false; // touching water cushions the landing
             } else if (onGround) {
                 if (st.Falling) {
                     double dist = st.FallPeakY - y;
@@ -202,12 +208,16 @@ namespace MCGalaxy.Network
             return IsLiquid(collide, lava);
         }
 
-        // any block the player's bounding box overlaps with the liquid type
+        // any block the player's bounding box overlaps with the liquid type.
+        // The box is shrunk 0.4 vertically on top and bottom before the touch
+        // test, exactly like the client's ST_InLiquid (SurvivalTest.c:249
+        // bb.Min.y += 0.4; bb.Max.y -= 0.4), so a shallow head-graze or a foot
+        // barely dipping in doesn't register as "in" the liquid.
         static bool BoxTouches(Level lvl, double x, double y, double z, bool lava) {
             double w = PLAYER_WIDTH / 2;
-            int minX = (int)Math.Floor(x - w), maxX = (int)Math.Floor(x + w - 0.001);
-            int minY = (int)Math.Floor(y),     maxY = (int)Math.Floor(y + PLAYER_HEIGHT - 0.001);
-            int minZ = (int)Math.Floor(z - w), maxZ = (int)Math.Floor(z + w - 0.001);
+            int minX = (int)Math.Floor(x - w),       maxX = (int)Math.Floor(x + w - 0.001);
+            int minY = (int)Math.Floor(y + 0.4),     maxY = (int)Math.Floor(y + PLAYER_HEIGHT - 0.4 - 0.001);
+            int minZ = (int)Math.Floor(z - w),       maxZ = (int)Math.Floor(z + w - 0.001);
 
             for (int by = minY; by <= maxY; by++)
                 for (int bz = minZ; bz <= maxZ; bz++)

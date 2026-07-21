@@ -273,6 +273,7 @@ namespace MCGalaxy.Network
             bool have = lvl.Extras.Contains(DEFS_KEY);
             if (want && !have)      Apply(lvl);
             else if (!want && have) Remove(lvl);
+            else if (!want)         StripPersistedDefs(lvl); // a stray /lb may have baked ours to disk
         }
 
         /// <summary> OnLevelLoadedEvent: re-apply on every load (the defs are
@@ -335,6 +336,44 @@ namespace MCGalaxy.Network
             lvl.Extras.Remove(DEFS_KEY);
             ReloadFallbackViewers(lvl);
             Logger.Log(LogType.Debug, "survival: removed the Indev block set from {0}", lvl.name);
+        }
+
+        // The Indev defs are meant to be runtime-only, but they live in
+        // lvl.CustomBlockDefs (they must, to reach the network layer), and any
+        // /lb command run while a map was Indev calls BlockDefinition.Save, which
+        // bakes them to blockdefs/<map>.json. If the map is later set non-Indev
+        // and the server restarts, those baked defs reload with no DEFS_KEY, so
+        // Sync's Remove path never touches them and the map keeps rendering Indev
+        // crops/chests/torches. On a non-survival load we therefore strip any def
+        // in the Indev id range that still matches our template exactly (a
+        // signature that an unrelated owner /lb def would not collide with).
+        static void StripPersistedDefs(Level lvl) {
+            BlockDefinition[] tmpl = Template();
+            bool changed = false;
+            for (int raw = 0; raw < tmpl.Length; raw++) {
+                if (tmpl[raw] == null) continue;
+                BlockID b = Block.FromRaw((BlockID)raw);
+                BlockDefinition def = lvl.CustomBlockDefs[b];
+                if (def == null || !MatchesTemplate(def, tmpl[raw])) continue;
+                BlockDefinition.Remove(def, lvl.CustomBlockDefs, lvl);
+                changed = true;
+            }
+            if (changed) {
+                Logger.Log(LogType.Warning,
+                    "survival: stripped persisted Indev block defs from non-survival map {0}", lvl.name);
+                ReloadFallbackViewers(lvl);
+                BlockDefinition.Save(false, lvl);
+            }
+        }
+
+        // strong render signature: an unrelated /lb def at the same id would have
+        // to reproduce our name, all six texture faces, shape and collide to match
+        static bool MatchesTemplate(BlockDefinition def, BlockDefinition t) {
+            return def.Name == t.Name
+                && def.TopTex == t.TopTex && def.BottomTex == t.BottomTex
+                && def.LeftTex == t.LeftTex && def.RightTex == t.RightTex
+                && def.FrontTex == t.FrontTex && def.BackTex == t.BackTex
+                && def.Shape == t.Shape && def.CollideType == t.CollideType;
         }
 
         // BlockDefinition.Add/Remove push live defs to BlockDefs-capable clients,

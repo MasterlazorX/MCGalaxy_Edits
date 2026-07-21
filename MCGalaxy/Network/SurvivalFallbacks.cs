@@ -94,6 +94,9 @@ namespace MCGalaxy.Network
             public Level Level; // reset when the viewer changes maps
             public Dictionary<ushort, byte> Ids = new Dictionary<ushort, byte>();
             public Stack<byte> Free = new Stack<byte>();
+            // guards Ids/Free: SyncMirror runs on the mob-tick thread, ClearMirror
+            // on the command thread (/Survival off) - both touch this dictionary
+            public readonly object Sync = new object();
 
             public MirrorState() {
                 for (int i = 0; i < MIRROR_LIMIT; i++) Free.Push((byte)(MIRROR_ID_MAX - i));
@@ -120,41 +123,43 @@ namespace MCGalaxy.Network
             MirrorState st = GetMirror(p, lvl);
             bool models = p.Supports(CpeExt.ChangeModel);
 
-            // remove mirrors whose mob is gone
-            List<ushort> dead = null;
-            foreach (KeyValuePair<ushort, byte> kvp in st.Ids)
-            {
-                bool alive = false;
+            lock (st.Sync) {
+                // remove mirrors whose mob is gone
+                List<ushort> dead = null;
+                foreach (KeyValuePair<ushort, byte> kvp in st.Ids)
+                {
+                    bool alive = false;
+                    foreach (SurvivalMobs.MirrorMob m in mobs)
+                    {
+                        if (m.Id == kvp.Key) { alive = true; break; }
+                    }
+                    if (alive) continue;
+                    if (dead == null) dead = new List<ushort>();
+                    dead.Add(kvp.Key);
+                }
+                if (dead != null) {
+                    foreach (ushort id in dead)
+                    {
+                        p.Session.SendRemoveEntity(st.Ids[id]);
+                        st.Free.Push(st.Ids[id]);
+                        st.Ids.Remove(id);
+                    }
+                }
+
                 foreach (SurvivalMobs.MirrorMob m in mobs)
                 {
-                    if (m.Id == kvp.Key) { alive = true; break; }
-                }
-                if (alive) continue;
-                if (dead == null) dead = new List<ushort>();
-                dead.Add(kvp.Key);
-            }
-            if (dead != null) {
-                foreach (ushort id in dead)
-                {
-                    p.Session.SendRemoveEntity(st.Ids[id]);
-                    st.Free.Push(st.Ids[id]);
-                    st.Ids.Remove(id);
-                }
-            }
-
-            foreach (SurvivalMobs.MirrorMob m in mobs)
-            {
-                Position pos = new Position((int)(m.X * 32), (int)(m.Y * 32) + Entities.CharacterHeight,
-                                            (int)(m.Z * 32));
-                Orientation rot = new Orientation(m.Yaw, 0);
-                byte id;
-                if (st.Ids.TryGetValue(m.Id, out id)) {
-                    p.Session.SendTeleport(id, pos, rot);
-                } else if (st.Free.Count > 0) {
-                    id = st.Free.Pop();
-                    st.Ids[m.Id] = id;
-                    p.Session.SendSpawnEntity(id, "", m.Model, pos, rot);
-                    if (models) p.Session.SendChangeModel(id, m.Model);
+                    Position pos = new Position((int)(m.X * 32), (int)(m.Y * 32) + Entities.CharacterHeight,
+                                                (int)(m.Z * 32));
+                    Orientation rot = new Orientation(m.Yaw, 0);
+                    byte id;
+                    if (st.Ids.TryGetValue(m.Id, out id)) {
+                        p.Session.SendTeleport(id, pos, rot);
+                    } else if (st.Free.Count > 0) {
+                        id = st.Free.Pop();
+                        st.Ids[m.Id] = id;
+                        p.Session.SendSpawnEntity(id, "", m.Model, pos, rot);
+                        if (models) p.Session.SendChangeModel(id, m.Model);
+                    }
                 }
             }
         }
@@ -165,9 +170,12 @@ namespace MCGalaxy.Network
             object o;
             if (!p.Extras.TryGet(MIRROR_KEY, out o) || o == null) return;
             MirrorState st = (MirrorState)o;
-            if (st.Level == p.level) {
-                foreach (KeyValuePair<ushort, byte> kvp in st.Ids)
-                    p.Session.SendRemoveEntity(kvp.Value);
+            lock (st.Sync) {
+                if (st.Level == p.level) {
+                    foreach (KeyValuePair<ushort, byte> kvp in st.Ids)
+                        p.Session.SendRemoveEntity(kvp.Value);
+                }
+                st.Ids.Clear();
             }
             p.Extras[MIRROR_KEY] = null;
         }

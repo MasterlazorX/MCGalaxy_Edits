@@ -535,6 +535,8 @@ namespace MCGalaxy.Network
         /// on the new map at 0 HP. Registered on OnJoinedLevelEvent. </summary>
         public static void OnJoinedLevel(Player p, Level prevLevel, Level level, ref bool announce) {
             if (p.Session == null || !p.Session.hasSurvival) return;
+            // any container the player had open belonged to the previous level
+            SurvivalInventory.OnLeftLevel(p);
             if (!IsDead(p)) return;
             p.Extras.Remove(DWELL_KEY);
             SetHealth(p, MAX_HEALTH);

@@ -620,7 +620,20 @@ namespace MCGalaxy.Network
                     if (distSq <= bestSq) { bestSq = distSq; m.Target = p; }
                 }
                 target = m.Target;
-                if (target == null) return;
+                if (target == null) {
+                    // A creeper that lost its target (player died / disconnected /
+                    // left the level / the >32-block give-up fired) must keep
+                    // winding its fuse back down every tick, exactly like the
+                    // client's unconditional Mob_IndevCreatureUpdate
+                    // (SurvivalTest.c:3942-3949). Without this the fuse latches
+                    // (FuseState=1, FuseTicks frozen high) and the creeper
+                    // detonates almost instantly when a player re-enters range.
+                    if (indev && info.IsCreeper && (m.FuseState > 0 || m.FuseTicks > 0)) {
+                        m.FuseState = -1;
+                        if (m.FuseTicks > 0) m.FuseTicks--;
+                    }
+                    return;
+                }
             }
 
             double tx = target.Pos.X / 32.0, ty = (target.Pos.Y - Entities.CharacterHeight) / 32.0,
@@ -879,6 +892,10 @@ namespace MCGalaxy.Network
                 }
                 if (dead != null) foreach (Level lvl in dead) registry.Remove(lvl);
             }
+            // the container registry is Level-keyed the same way and must be
+            // pruned on unload too, or unloaded Levels (and their block arrays)
+            // leak forever as dictionary keys
+            SurvivalInventory.PruneRegistry(loaded);
         }
 
         static void TickLevel(Level lvl, LevelMobs lm, Player[] watchers, Player[] viewers) {

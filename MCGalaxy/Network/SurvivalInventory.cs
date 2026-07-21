@@ -231,13 +231,14 @@ namespace MCGalaxy.Network
                 open.Upper.Slots[ci] = s;
         }
 
-        // BlockChest.blockActivated: a solid cube directly above a chest half
-        // keeps the lid shut (approximated with the collide model; furnaces
-        // have no such rule).
+        // BlockChest.blockActivated: a NORMAL CUBE directly above a chest half
+        // keeps the lid shut. The client uses isBlockNormalCube (Blocks.FullOpaque),
+        // which excludes glass/leaves/slabs/sprites - so those do NOT block the
+        // lid. Reuse the same NormalCube predicate the placement code uses, not a
+        // bare IsSolid (which wrongly treated glass/slabs as blocking).
         static bool SolidAbove(Level lvl, int x, int y, int z) {
             if (y + 1 >= lvl.Height) return false;
-            BlockID above = lvl.GetBlock((ushort)x, (ushort)(y + 1), (ushort)z);
-            return CollideType.IsSolid(lvl.CollideType(above));
+            return NormalCube(lvl, x, y + 1, z);
         }
 
         /// <summary> SURV_USE_ITEM: right-click use of a block. V1 opens container
@@ -307,14 +308,17 @@ namespace MCGalaxy.Network
             }
         }
 
-        // the client zeroes its container view on CONT_OPEN, so only send occupied slots
+        // the client zeroes its container view on CONT_OPEN, so only send occupied
+        // slots. Under contLock so the snapshot is consistent w.r.t. clicks/ticks.
         static void StreamContainer(Player p, OpenRef open) {
             int n = OpenSlotCount(open);
-            for (int i = 0; i < n; i++)
-            {
-                Slot s = GetContSlot(open, i);
-                if (s.Count == 0) continue;
-                SurvivalNet.SendContSlot(p, i, s.Id, s.Count, s.Damage);
+            lock (contLock) {
+                for (int i = 0; i < n; i++)
+                {
+                    Slot s = GetContSlot(open, i);
+                    if (s.Count == 0) continue;
+                    SurvivalNet.SendContSlot(p, i, s.Id, s.Count, s.Damage);
+                }
             }
         }
 
@@ -340,13 +344,19 @@ namespace MCGalaxy.Network
             return (byte)(te.CookTime * 24 / 200);
         }
 
+        // Furnace_CanSmelt hard-caps the OUTPUT at 64 for every result, not the
+        // per-id max stack (SurvivalTest.c:1398 return slots[2].count < 64). This
+        // matters for the block results (sand->glass, cobble->stone) whose
+        // MaxStack would otherwise be 99.
+        const int FURNACE_OUTPUT_MAX = 64;
+
         static bool CanSmelt(Container te) {
             if (te.Slots[0].Count == 0) return false;
             ushort result = SurvivalItems.SmeltResult(te.Slots[0].Id);
             if (result == 0) return false;
             if (te.Slots[2].Count == 0) return true;
             return te.Slots[2].Id == result &&
-                   te.Slots[2].Count < SurvivalItems.MaxStack(result);
+                   te.Slots[2].Count < FURNACE_OUTPUT_MAX;
         }
 
         /// <summary> One 20 TPS smelting pass over a level's furnaces - the genuine
@@ -356,66 +366,75 @@ namespace MCGalaxy.Network
         /// so furnaces run whenever anyone is on the map. </summary>
         public static void TickFurnaces(Level lvl) {
             if (lvl.Config.SurvivalMode != SurvivalMode.Indev) return;
-            List<Container> furnaces = null;
+
+            // The whole per-furnace read-modify-write of te.Slots/burn/cook runs
+            // under contLock, serialized against HandleSlotClick and the other
+            // container paths (which now lock the same object) - without this the
+            // tick thread and a click thread race the same slot array and
+            // duplicate/lose items. Block flips touch the level array + broadcast,
+            // so they're collected and applied AFTER the lock is released.
+            List<KeyValuePair<Container, bool>> flips = null;
             lock (contLock) {
                 Dictionary<long, Container> map;
                 if (!contRegistry.TryGetValue(lvl, out map)) return;
                 foreach (Container te in map.Values)
                 {
                     if (te.Kind != CONT_FURNACE) continue;
-                    if (furnaces == null) furnaces = new List<Container>();
-                    furnaces.Add(te);
+
+                    bool wasBurning = te.BurnTime > 0;
+                    bool slotsChanged = false;
+                    if (te.BurnTime > 0) te.BurnTime--;
+
+                    bool canSmelt = CanSmelt(te);
+                    if (te.BurnTime == 0 && canSmelt) {
+                        int fuel = SurvivalItems.FuelTime(te.Slots[1].Id);
+                        if (fuel > 0) {
+                            te.CurrentBurn = te.BurnTime = fuel;
+                            if (--te.Slots[1].Count == 0) { te.Slots[1].Id = 0; te.Slots[1].Damage = 0; }
+                            slotsChanged = true;
+                        }
+                    }
+
+                    if (te.BurnTime > 0 && canSmelt) {
+                        if (++te.CookTime >= 200) {
+                            te.CookTime = 0;
+                            ushort result = SurvivalItems.SmeltResult(te.Slots[0].Id);
+                            if (te.Slots[2].Count == 0) { te.Slots[2].Id = result; te.Slots[2].Damage = 0; }
+                            te.Slots[2].Count++;
+                            if (--te.Slots[0].Count == 0) { te.Slots[0].Id = 0; te.Slots[0].Damage = 0; }
+                            slotsChanged = true;
+                        }
+                    } else {
+                        te.CookTime = 0;
+                    }
+
+                    bool burning = te.BurnTime > 0;
+                    if (burning != wasBurning) {
+                        if (flips == null) flips = new List<KeyValuePair<Container, bool>>();
+                        flips.Add(new KeyValuePair<Container, bool>(te, burning));
+                    }
+
+                    // stream to viewers: slots on change, progress at 4 Hz while lit
+                    // (or once when it goes out so the flame/arrow zero out)
+                    bool tickProg = burning && (te.CookTime % 5) == 0;
+                    if (!slotsChanged && !tickProg && burning == wasBurning) continue;
+                    Player[] players = PlayerInfo.Online.Items;
+                    foreach (Player pl in players)
+                    {
+                        OpenRef o = GetOpen(pl);
+                        if (o == null || o.Upper != te) continue;
+                        if (slotsChanged) {
+                            for (int i = 0; i < 3; i++)
+                                SurvivalNet.SendContSlot(pl, i, te.Slots[i].Id, te.Slots[i].Count, te.Slots[i].Damage);
+                        }
+                        SurvivalNet.SendFurnProg(pl, FurnBurnScaled(te), FurnCookScaled(te));
+                    }
                 }
             }
-            if (furnaces == null) return;
 
-            foreach (Container te in furnaces)
-            {
-                bool wasBurning = te.BurnTime > 0;
-                bool slotsChanged = false;
-                if (te.BurnTime > 0) te.BurnTime--;
-
-                bool canSmelt = CanSmelt(te);
-                if (te.BurnTime == 0 && canSmelt) {
-                    int fuel = SurvivalItems.FuelTime(te.Slots[1].Id);
-                    if (fuel > 0) {
-                        te.CurrentBurn = te.BurnTime = fuel;
-                        if (--te.Slots[1].Count == 0) { te.Slots[1].Id = 0; te.Slots[1].Damage = 0; }
-                        slotsChanged = true;
-                    }
-                }
-
-                if (te.BurnTime > 0 && canSmelt) {
-                    if (++te.CookTime >= 200) {
-                        te.CookTime = 0;
-                        ushort result = SurvivalItems.SmeltResult(te.Slots[0].Id);
-                        if (te.Slots[2].Count == 0) { te.Slots[2].Id = result; te.Slots[2].Damage = 0; }
-                        te.Slots[2].Count++;
-                        if (--te.Slots[0].Count == 0) { te.Slots[0].Id = 0; te.Slots[0].Damage = 0; }
-                        slotsChanged = true;
-                    }
-                } else {
-                    te.CookTime = 0;
-                }
-
-                bool burning = te.BurnTime > 0;
-                if (burning != wasBurning) FlipFurnaceBlock(lvl, te, burning);
-
-                // stream to viewers: slots on change, progress at 4 Hz while lit
-                // (or once when it goes out so the flame/arrow zero out)
-                bool tickProg = burning && (te.CookTime % 5) == 0;
-                if (!slotsChanged && !tickProg && burning == wasBurning) continue;
-                Player[] players = PlayerInfo.Online.Items;
-                foreach (Player pl in players)
-                {
-                    OpenRef o = GetOpen(pl);
-                    if (o == null || o.Upper != te) continue;
-                    if (slotsChanged) {
-                        for (int i = 0; i < 3; i++)
-                            SurvivalNet.SendContSlot(pl, i, te.Slots[i].Id, te.Slots[i].Count, te.Slots[i].Damage);
-                    }
-                    SurvivalNet.SendFurnProg(pl, FurnBurnScaled(te), FurnCookScaled(te));
-                }
+            if (flips != null) {
+                foreach (KeyValuePair<Container, bool> f in flips)
+                    FlipFurnaceBlock(lvl, f.Key, f.Value);
             }
         }
 
@@ -461,6 +480,32 @@ namespace MCGalaxy.Network
                 pl.Extras.Remove(OPEN_KEY);
                 SurvivalNet.SendContOpen(pl, CONT_NONE, 0); // force-close the screen
             }
+        }
+
+        /// <summary> Removes contRegistry entries whose Level is no longer loaded.
+        /// The Level object is the dictionary key, so without this an unloaded map
+        /// (its whole block array + container state) leaks forever. Called from the
+        /// mob tick's prune sweep, mirroring SurvivalMobs' own registry prune. </summary>
+        public static void PruneRegistry(Level[] loaded) {
+            lock (contLock) {
+                List<Level> dead = null;
+                foreach (KeyValuePair<Level, Dictionary<long, Container>> kvp in contRegistry)
+                {
+                    if (Array.IndexOf(loaded, kvp.Key) < 0) {
+                        if (dead == null) dead = new List<Level>();
+                        dead.Add(kvp.Key);
+                    }
+                }
+                if (dead != null) foreach (Level lvl in dead) contRegistry.Remove(lvl);
+            }
+        }
+
+        /// <summary> The player changed level: drop any open-container ref, which
+        /// points at the level they just left (holding that Level + its Containers
+        /// alive, and - without the per-click level guard - lootable remotely).
+        /// Called from SurvivalNet.OnJoinedLevel. </summary>
+        public static void OnLeftLevel(Player p) {
+            p.Extras.Remove(OPEN_KEY);
         }
 
 
@@ -526,8 +571,12 @@ namespace MCGalaxy.Network
             int ci = 0;
             if (isCont) {
                 open = GetOpen(p);
-                ci   = idx - CONT_BASE;
-                if (open == null || ci >= OpenSlotCount(open)) return;
+                if (open == null) return;
+                // Stale ref from a level the player left (no CONT_CLOSE arrived):
+                // drop it so a container on another level can't be looted remotely.
+                if (open.Lvl != p.level) { p.Extras.Remove(OPEN_KEY); return; }
+                ci = idx - CONT_BASE;
+                if (ci >= OpenSlotCount(open)) return;
             }
 
             PlayerInv inv = Get(p);
@@ -541,46 +590,60 @@ namespace MCGalaxy.Network
             // like the genuine furnace GUI (user-reported).
             if (isCont && open.Kind == CONT_FURNACE && ci == 2 && inv.Cursor.Count > 0) return;
 
-            Slot slot = isCont ? GetContSlot(open, ci) : inv.Slots[idx];
-            Slot cur  = inv.Cursor;
+            Slot cur = inv.Cursor;
+            if (isCont) {
+                // read-modify-write + echo atomically under contLock, serialized
+                // against the furnace tick and other viewers clicking the same
+                // shared tile entity (all of which lock the same object)
+                lock (contLock) {
+                    Slot slot = GetContSlot(open, ci);
+                    if (!ApplyClick(p, ref slot, ref cur, right)) return;
+                    SetContSlot(open, ci, slot);
+                    inv.Cursor = cur;
+                    EchoContSlot(open, ci); // every viewer of this tile entity
+                }
+                SendCursor(p, inv);
+            } else {
+                // player inventory is per-player - only this receive thread mutates it
+                Slot slot = inv.Slots[idx];
+                if (!ApplyClick(p, ref slot, ref cur, right)) return;
+                inv.Slots[idx] = slot;
+                inv.Cursor = cur;
+                SendSlot(p, inv, idx);
+                SendCursor(p, inv);
+            }
+        }
 
+        // The GuiContainer click model applied to one slot + the cursor: pick up
+        // all (or ceil-half on right-click), merge onto a like stack to its max,
+        // right-click place one into an empty slot, else swap. Returns false when
+        // the click is a no-op (empty slot with empty cursor, or a full merge) so
+        // the caller skips the echo. Container callers hold contLock.
+        static bool ApplyClick(Player p, ref Slot slot, ref Slot cur, bool right) {
             if (cur.Count == 0) {
-                // pick up: all, or ceil(half) on right-click
-                if (slot.Count == 0) return;
+                if (slot.Count == 0) return false;
                 int moved = right ? (slot.Count + 1) / 2 : slot.Count;
                 cur = slot;
                 cur.Count   = (byte)moved;
                 slot.Count -= (byte)moved;
                 if (slot.Count == 0) { slot.Id = 0; slot.Damage = 0; }
             } else if (slot.Count > 0 && slot.Id == cur.Id) {
-                // merge into the slot, respecting the id's max stack
                 int space = MaxStack(p, slot.Id) - slot.Count;
-                if (space <= 0) return;
+                if (space <= 0) return false;
                 int moved = right ? 1 : cur.Count;
                 if (moved > space) moved = space;
                 slot.Count += (byte)moved;
                 cur.Count  -= (byte)moved;
                 if (cur.Count == 0) { cur.Id = 0; cur.Damage = 0; }
             } else if (slot.Count == 0 && right) {
-                // right-click into an empty slot: place exactly one
                 slot.Id     = cur.Id;
                 slot.Damage = cur.Damage;
                 slot.Count  = 1;
                 if (--cur.Count == 0) { cur.Id = 0; cur.Damage = 0; }
             } else {
-                // different contents (or left-click into empty): swap
                 Slot tmp = slot; slot = cur; cur = tmp;
             }
-
-            inv.Cursor = cur;
-            if (isCont) {
-                SetContSlot(open, ci, slot);
-                EchoContSlot(open, ci); // every viewer of this tile entity
-            } else {
-                inv.Slots[idx] = slot;
-                SendSlot(p, inv, idx);
-            }
-            SendCursor(p, inv);
+            return true;
         }
 
         /// <summary> SURV_RESULT_CLICK: SlotCrafting pickup. Matches the craft grid
@@ -595,6 +658,8 @@ namespace MCGalaxy.Network
             PlayerInv inv = Get(p);
 
             OpenRef open = GetOpen(p);
+            // ignore a workbench ref left over from a level the player left
+            if (open != null && open.Lvl != p.level) { p.Extras.Remove(OPEN_KEY); open = null; }
             int dim = open != null && open.Kind == CONT_WORKBENCH ? 3 : 2;
             ushort[] grid = new ushort[dim * dim];
             for (int i = 0; i < grid.Length; i++)

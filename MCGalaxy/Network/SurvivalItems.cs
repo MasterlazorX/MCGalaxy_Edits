@@ -220,6 +220,13 @@ namespace MCGalaxy.Network
                 case Block.Lava:  case Block.StillLava:
                 case SurvivalBlocks.FIRE:
                     return; // quantityDropped 0 / liquids / fire
+                case Block.TNT:
+                    // Genuine SpawnIndevDrops arms a primed TNT and drops NOTHING
+                    // (SurvivalTest.c:709). The primed-TNT explosion itself needs
+                    // the phase-5 entity sim; the important thing here is to NOT
+                    // hand back a free TNT block (that was an infinite-TNT dupe,
+                    // since TNT is craftable).
+                    return;
             }
             if (count > 0) drops.Add(new KeyValuePair<ushort, int>(dropId, count));
         }
