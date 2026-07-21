@@ -914,8 +914,14 @@ Build-clean; live confirmation pending (the test rig was unstable this session).
 ## HANDOFF — next session pickup (write-up of in-chat plans)
 
 Everything below was designed/decided in conversation but not yet built, so it's
-recorded here as the durable bridge. Branch (both repos):
-`claude/mock-survival-server-33jx1q`.
+recorded here as the durable bridge.
+
+> **BRANCH — do NOT create a new one.** Keep committing and pushing to the
+> existing feature branch **`claude/mock-survival-server-33jx1q`** on BOTH repos
+> (`UmbreoClaw/ClassiCube` and `UmbreoClaw/mcgalaxy`). All prior work lives there;
+> continue it, don't fork a fresh branch. Only start over from the default branch
+> if that branch's pull request has already been merged (then reuse the same
+> branch name from the latest default).
 
 ### Pending LIVE verification (code committed + build-clean, rig was down)
 The test rig degraded mid-session (server boots but won't bind :25565 - an
