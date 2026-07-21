@@ -182,7 +182,7 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Survival [enhanced/creative/pvp/deathdrops] [on/off] &H- sets a flag");
             p.Message("&T/Survival visitors [visitor/allow/deny] &H- what stock clients may do here");
             p.Message("&HChanges apply live to survival-test clients on this level.");
-            p.Message("&HTools: &T/SurvSpawn /Mobs /Spawner /SurvTime /SurvInv /SurvGive /Export");
+            p.Message("&HTools: &T/SurvSpawn /Mobs /Spawner /SurvTime /SurvInv /SurvivalGive /Export");
         }
     }
 }

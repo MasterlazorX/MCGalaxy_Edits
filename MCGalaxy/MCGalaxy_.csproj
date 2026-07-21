@@ -330,7 +330,7 @@
     <Compile Include="Commands\World\CmdSurvSpawn.cs" />
     <Compile Include="Commands\World\CmdSurvTime.cs" />
     <Compile Include="Commands\World\CmdSurvInv.cs" />
-    <Compile Include="Commands\World\CmdSurvGive.cs" />
+    <Compile Include="Commands\World\CmdSurvivalGive.cs" />
     <Compile Include="Commands\World\CmdMobs.cs" />
     <Compile Include="Commands\World\CmdExport.cs" />
     <Compile Include="Commands\World\CmdUnflood.cs" />

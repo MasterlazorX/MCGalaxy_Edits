@@ -20,33 +20,31 @@ using MCGalaxy.Network;
 namespace MCGalaxy.Commands.World
 {
     /// <summary> Puts blocks or items straight into a survival player's server
-    /// inventory (a test aid). Split out of /Survival (was "/Survival give").
-    /// Accepts item names ("iron_pickaxe", "coal") or ids 256+, block names /
-    /// ids for the Indev set; count defaults to one stack. </summary>
-    public sealed class CmdSurvGive : Command2
+    /// inventory (a test aid). Usage: /SurvivalGive [player] [block/item] &lt;amount&gt;.
+    /// Accepts item names ("iron_pickaxe", "coal") or ids 256+, block names / ids
+    /// for the Indev set; amount defaults to 1. (Aliased /SurvGive.) </summary>
+    public sealed class CmdSurvivalGive : Command2
     {
-        public override string name { get { return "SurvGive"; } }
+        public override string name { get { return "SurvivalGive"; } }
         public override string type { get { return CommandTypes.World; } }
         public override LevelPermission defaultRank { get { return LevelPermission.Operator; } }
+        public override CommandAlias[] Aliases {
+            get { return new[] { new CommandAlias("SurvGive") }; }
+        }
 
         public override void Use(Player p, string message, CommandData data) {
-            if (message.Length == 0) { Help(p); return; }
             string[] args = message.SplitSpaces();
+            if (args.Length < 2) { Help(p); return; } // need <player> <item>
 
-            Player target = p;
-            if (args.Length >= 3) {
-                target = PlayerInfo.FindMatches(p, args[2]);
-                if (target == null) return;
-            } else if (p == Player.Console) {
-                p.Message("From console, use: &T/SurvGive [block] [count] [player]"); return;
-            }
+            Player target = PlayerInfo.FindMatches(p, args[0]);
+            if (target == null) return;
 
             // items first (256+): by display name ("iron_pickaxe", "coal") or id
             ushort raw;
             string name;
             int numeric;
-            ushort item = SurvivalItems.FindByName(args[0]);
-            if (item == 0 && int.TryParse(args[0], out numeric) && numeric >= 256 && numeric <= 1023 &&
+            ushort item = SurvivalItems.FindByName(args[1]);
+            if (item == 0 && int.TryParse(args[1], out numeric) && numeric >= 256 && numeric <= 1023 &&
                 SurvivalItems.NameOf((ushort)numeric) != null) {
                 item = (ushort)numeric;
             }
@@ -55,15 +53,15 @@ namespace MCGalaxy.Commands.World
                 name = SurvivalItems.NameOf(item);
             } else {
                 ushort block;
-                if (!CommandParser.GetBlock(target, args[0], out block)) return;
+                if (!CommandParser.GetBlock(target, args[1], out block)) return;
                 raw = Block.ToRaw(block);
                 if (raw > 255) { p.Message("&WOnly blocks with ids 0-255 can be given."); return; }
                 name = Block.GetName(target, block);
             }
 
-            int count = 64;
-            if (args.Length >= 2 && (!int.TryParse(args[1], out count) || count < 1 || count > 576)) {
-                p.Message("&WCount must be 1-576."); return;
+            int count = 1; // default one
+            if (args.Length >= 3 && (!int.TryParse(args[2], out count) || count < 1 || count > 576)) {
+                p.Message("&WAmount must be 1-576."); return;
             }
 
             int given = SurvivalInventory.Give(target, raw, count);
@@ -77,10 +75,10 @@ namespace MCGalaxy.Commands.World
         }
 
         public override void Help(Player p) {
-            p.Message("&T/SurvGive [block/item] <count> <player>");
-            p.Message("&HPuts blocks/items in a survival player's inventory.");
+            p.Message("&T/SurvivalGive [player] [block/item] <amount>");
+            p.Message("&HPuts blocks/items into a survival player's inventory.");
             p.Message("&HAccepts item names (coal, iron_pickaxe), ids 256+, or Indev block names/ids.");
-            p.Message("&HCount defaults to one stack; console must name the player.");
+            p.Message("&HAmount defaults to 1.");
         }
     }
 }
