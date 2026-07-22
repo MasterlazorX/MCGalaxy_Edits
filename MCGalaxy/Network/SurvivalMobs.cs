@@ -707,17 +707,6 @@ namespace MCGalaxy.Network
             m.Yaw   = (float)(Math.Atan2(ddx, -ddz) * 180.0 / Math.PI);
             m.Pitch = (float)(Math.Atan2(-ddy, dist) * 180.0 / Math.PI);
 
-            // Skeleton ranged AI (Skeleton.onLivingUpdate: a targeted skeleton has a
-            // 1/30 per-tick chance to loose an arrow). Fired from the skeleton's eye
-            // with the genuine asymmetric spread (yaw +/-22.5, pitch biased upward).
-            if (m.Type == TYPE_SKELETON && dist < 24.0 && m.OnGround && rng.Next(30) == 0) {
-                double sy = m.Yaw   + (rng.NextDouble() * 45.0 - 22.5);
-                double sp = m.Pitch - (rng.NextDouble() * 45.0 - 10.0);
-                double eye = m.Y + Height(lvl, m) * 0.9;
-                SurvivalArrows.FireFromMob(lvl, m.Id, m.X, eye, m.Z, sy, sp);
-                m.AttackDelay = 10; // brief cooldown so it doesn't machine-gun
-            }
-
             // chase: stride toward the victim (the c0.30 target branch in WanderAI
             // pushes forward; Indev v1 reuses it pending the A* port)
             float speed = indev ? IndevMoveSpeed(m.Type) : info.RunSpeed;
@@ -729,6 +718,17 @@ namespace MCGalaxy.Network
         }
 
         static void ClassicAttack(Level lvl, LevelMobs lm, SurvMob m, Player target, double dSq, Random rng) {
+            // c0.30 SkeletonAI.tick: a targeted skeleton has a 1/30 per-tick chance to
+            // loose an arrow (Mob_ShootArrow), on top of - not instead of - the melee
+            // below, at any range. Fired from the eye with the genuine asymmetric
+            // spread (yaw +/-22.5, pitch biased upward).
+            if (m.Type == TYPE_SKELETON && rng.Next(30) == 0) {
+                double sy  = m.Yaw   + (rng.NextDouble() * 45.0 - 22.5);
+                double sp  = m.Pitch - (rng.NextDouble() * 45.0 - 10.0);
+                double eye = m.Y + Height(lvl, m) * 0.85;
+                SurvivalArrows.FireFromMobC030(lvl, m.Id, m.X, eye, m.Z, sy, sp);
+            }
+
             MobType info = Types[m.Type];
             if (dSq >= 4.0 || m.AttackDelay > 0) return;
 
@@ -787,8 +787,29 @@ namespace MCGalaxy.Network
                 }
             }
 
+            if (m.Type == TYPE_SKELETON) {
+                // Indev EntitySkeleton.attackEntity: bow fire within 10 blocks on a
+                // 30-tick cooldown, standing still - NO melee, and (unlike c0.30) NO
+                // death fire-burst (Indev skeletons drop 0-2 arrow ITEMS on death,
+                // handled in KillMob). Mob_IndevShootArrow: the raw unnormalized aim
+                // into setArrowHeading(0.6, 12.0), spawned from the offset eye.
+                if (dist < 10.0 && m.AttackDelay == 0) {
+                    double yawRad = m.Yaw * Math.PI / 180.0;
+                    double fromX  = m.X + Math.Cos(yawRad) * 0.16;
+                    double fromY  = m.Y + Height(lvl, m) * 0.85 - 0.1 + 1.0; // eye - 0.1 + shootArrow ++posY
+                    double fromZ  = m.Z + Math.Sin(yawRad) * 0.16;
+                    double aimX   = target.Pos.X / 32.0 - m.X;
+                    double aimZ   = target.Pos.Z / 32.0 - m.Z;
+                    double aimY   = (target.Pos.Y / 32.0 - 0.2) - fromY; // aim at the target's eye - 0.2
+                    double hor    = Math.Sqrt(aimX * aimX + aimZ * aimZ);
+                    aimY += hor * 0.2; // the lob that clears mid-range dips
+                    SurvivalArrows.FireFromMobIndev(lvl, m.Id, fromX, fromY, fromZ, aimX, aimY, aimZ);
+                    m.AttackDelay = 30;
+                }
+                return; // skeleton never melees in Indev
+            }
+
             // EntityMob.attackEntity: melee within 2.5 blocks (zombie 5, default 2).
-            // (Skeleton ranged AI needs arrow streaming - melee fallback for v1.)
             int strength = Types[m.Type].IndevMelee;
             if (strength == 0 || dist >= 2.5 || m.AttackDelay > 0) return;
             m.AttackDelay  = 10;

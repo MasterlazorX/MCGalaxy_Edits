@@ -1369,7 +1369,39 @@ level shots hit the wall until both players are lifted into open air. An early
 bug where a blanket 5-tick owner-grace skipped ALL entity collision (letting the
 arrow fly past a close target) was fixed to only ever exclude the shooter.
 
-Still pending in phase 5+: Indev arrow flight nuances (gaussian spread, water
-drag, bounce/re-loosen from mined blocks), the death-arrow burst, block-
-destroying explosions (+ their 0.3-chance drops), and the PLAYER_EQUIP (0x50)
-armor/held-item streaming for other players.
+Still pending in phase 5+: block-destroying explosions (+ their 0.3-chance
+drops), and the PLAYER_EQUIP (0x50) armor/held-item streaming for other players.
+
+
+## Phase 5c fix - Indev arrow behaviour (Indev is the primary target)
+
+The first arrow pass ran the c0.30 model in BOTH modes. Corrected so Indev is
+faithful (genuine EntityArrow / EntitySkeleton / ItemBow), keyed on the map mode
+on both sides:
+- **Flight model** now branches (`Arrow.Indev`, client `IndevTest_Enabled`):
+  c0.30 = drag 0.998 + speed-scaled gravity BEFORE the move; Indev = move FIRST,
+  then drag (0.99 air / 0.8 water) + a flat 0.03 gravity. Server `Tick` and client
+  `TickNetArrows` apply the identical order so the arc stays in lock-step.
+- **Player firing**: Indev has NO Tab-fire - the server rejects a kind 0 (Tab)
+  intent on an Indev map and only accepts the BOW (kind 1), consuming an arrow
+  item; the bow arrow is SpawnIndev(speed 1.5, spread 1.0, damage 4, type 0) from
+  the 0.16-sideways / 0.1-down offset eye. c0.30 keeps the counted-quiver Tab-fire
+  (force 1.2, damage 7). The client already gated Tab out of Indev.
+- **Skeleton firing** is now mode-split (was c0.30-params-in-both):
+  - Indev (`IndevAttack`, genuine EntitySkeleton.attackEntity): bow within 10
+    blocks on a 30-tick cooldown, stands still, NO melee. The RAW unnormalized aim
+    (target feet for x/z, target-eye-0.2 for y, + horizontal×0.2 lob) goes into
+    SpawnIndev(speed 0.6, spread 12.0, damage 4, type 0). NO death fire-burst -
+    Indev skeletons drop 0-2 arrow ITEMS on death (already in KillMob).
+  - c0.30 (`ClassicAttack`, Mob_ShootArrow): 1/30 per-tick arrow at any range on
+    top of melee, force 1.0, damage 3, type 1, asymmetric spread.
+- **Despawn**: Indev stuck arrows die at 1200t (any type); c0.30 keeps player
+  300t+1%/tick, mob 20t. Spawn spread uses a Box-Muller gaussian server-side (the
+  final velocity is streamed, so the client doesn't re-roll it).
+
+Verified live on Indev gt1: a skeleton camped within range loosed arrows - all
+type 0, grav 1.0 (Indev's unused field), speed 0.57-0.68 (=0.6 with the gaussian
+spread), on the ~30-tick cadence. Confirms the Indev skeleton path + SpawnIndev.
+The Indev player bow reuses the same verified SpawnIndev + Indev flight; it wasn't
+independently live-tested only because the console can't grant arrow items for a
+synthetic client (the c0.30 quiver path was fully tested earlier).

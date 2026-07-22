@@ -44,9 +44,10 @@ namespace MCGalaxy.Network
             public int    Id;
             public double X, Y, Z;      // box-centre position (Arrow.setPos centres on all axes)
             public double VX, VY, VZ;   // blocks per TICK (genuine Arrow velocity units)
-            public double Gravity;      // 1/force - scales the per-tick fall term
+            public double Gravity;      // c0.30: 1/force scales the fall term (Indev uses a flat 0.03)
             public byte   Type;         // 0 player-fired, 1 mob-fired (texture row + despawn rule)
             public int    Damage;
+            public bool   Indev;        // flight model: Indev (move->drag->flat g) vs c0.30 (drag+g->move)
             public Player OwnerPlayer;  // non-null for a player shot (owner-grace + pickup credit)
             public int    OwnerMobId;   // >0 for a skeleton shot, else 0
             public int    Age;          // ticks since spawn (owner-grace gate)
@@ -67,10 +68,10 @@ namespace MCGalaxy.Network
         // genuine c0.30 Arrow.tick constants (velocity in blocks/tick)
         const double DRAG = 0.998;
         const double SUBSTEP = 0.2;
-        const int    OWNER_GRACE = 5;      // ticks the shooter can't be hit by its own arrow
-        const int    STICK_MOB_TICKS = 20; // mob-fired arrows despawn 20t after sticking
+        const int    STICK_MOB_TICKS = 20; // c0.30 mob-fired arrows despawn 20t after sticking
         const int    STICK_PLAYER_MIN = 300;
         const double STICK_PLAYER_DESPAWN_CHANCE = 0.01;
+        const int    STICK_INDEV_TICKS = 1200; // Indev: any stuck arrow dies at ticksInGround 1200
         const int    MAX_ARROWS_PER_LEVEL = 256;
 
         // arrow bounding half-extents: Arrow.setSize(0.3, 0.5), centred on the position
@@ -157,33 +158,47 @@ namespace MCGalaxy.Network
             if (lvl.Config.SurvivalCreative) return;
             bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
 
-            double force, damage;
+            double dx, dy, dz;
+            AimVector(yawDeg, pitchDeg, out dx, out dy, out dz);
+
             if (indev) {
-                if (!SurvivalInventory.ConsumeArrow(p)) return; // no arrow item in the inventory
-                force = 1.5; damage = 4; // Indev bow: setArrowHeading speed 1.5, flat 4 damage
+                // Indev has NO Tab-fire - arrows come only from the BOW (kind 1),
+                // consuming an inventory arrow item. ItemBow: setArrowHeading speed
+                // 1.5, spread 1.0, flat 4 damage; spawn offset 0.16 sideways / 0.1
+                // down along the yaw (the genuine EntityArrow ctor hand offset).
+                if (kind != 1) return;                         // reject a stray Tab intent
+                if (!SurvivalInventory.ConsumeArrow(p)) return; // dry bow: nothing happens
+                double yawRad = yawDeg * Math.PI / 180.0;
+                double ox = p.Pos.X / 32.0 + Math.Cos(yawRad) * 0.16;
+                double oy = p.Pos.Y / 32.0 - 0.1;
+                double oz = p.Pos.Z / 32.0 + Math.Sin(yawRad) * 0.16;
+                SpawnIndev(lvl, ox, oy, oz, dx, dy, dz, 1.5, 1.0, 4, 0, p, 0);
             } else {
+                // c0.30 Tab-fire: counted quiver, force 1.2, damage 7
                 int ammo = Ammo(p);
                 if (ammo <= 0) return;
                 SetAmmo(p, ammo - 1);
-                force = 1.2; damage = 7; // c0.30 Tab-fire: force 1.2, damage 7
+                SpawnC030(lvl, p.Pos.X / 32.0, p.Pos.Y / 32.0, p.Pos.Z / 32.0,
+                          dx, dy, dz, 1.2, 7, 0, p, 0);
             }
-
-            // eye position (feet + character height) along the aim vector
-            double ex = p.Pos.X / 32.0;
-            double ey = p.Pos.Y / 32.0; // p.Pos.Y already carries the eye offset
-            double ez = p.Pos.Z / 32.0;
-            double dx, dy, dz;
-            AimVector(yawDeg, pitchDeg, out dx, out dy, out dz);
-            Spawn(lvl, ex, ey, ez, dx, dy, dz, force, (int)damage, 0, p, 0);
         }
 
-        /// <summary> A skeleton looses an arrow at its current aim (mob-fired: type 1,
-        /// damage 3, force 1.0). Called from the mob AI. </summary>
-        public static void FireFromMob(Level lvl, int mobId, double eyeX, double eyeY, double eyeZ,
-                                       double yawDeg, double pitchDeg) {
+        /// <summary> A c0.30 skeleton looses an arrow (Mob_ShootArrow: type 1, damage
+        /// 3, force 1.0) along yaw/pitch. Called from the c0.30 mob AI. </summary>
+        public static void FireFromMobC030(Level lvl, int mobId, double eyeX, double eyeY, double eyeZ,
+                                           double yawDeg, double pitchDeg) {
             double dx, dy, dz;
             AimVector(yawDeg, pitchDeg, out dx, out dy, out dz);
-            Spawn(lvl, eyeX, eyeY, eyeZ, dx, dy, dz, 1.0, 3, 1, null, mobId);
+            SpawnC030(lvl, eyeX, eyeY, eyeZ, dx, dy, dz, 1.0, 3, 1, null, mobId);
+        }
+
+        /// <summary> An Indev skeleton looses an arrow (Mob_IndevShootArrow: the RAW
+        /// unnormalized aim vector into setArrowHeading speed 0.6 / spread 12, flat 4
+        /// damage, type 0). aim is target-relative (with the lob already applied by the
+        /// AI). Spawn point is the skeleton's offset eye. </summary>
+        public static void FireFromMobIndev(Level lvl, int mobId, double eyeX, double eyeY, double eyeZ,
+                                            double aimX, double aimY, double aimZ) {
+            SpawnIndev(lvl, eyeX, eyeY, eyeZ, aimX, aimY, aimZ, 0.6, 12.0, 4, 0, null, mobId);
         }
 
         // ClassiCube Vec3_GetDirVector: x=cos(pitch)*sin(yaw), y=-sin(pitch), z=-cos(pitch)*cos(yaw)
@@ -194,15 +209,48 @@ namespace MCGalaxy.Network
             dz = -Math.Cos(pitch) * Math.Cos(yaw);
         }
 
-        static void Spawn(Level lvl, double px, double py, double pz,
-                          double dx, double dy, double dz, double force, int damage,
-                          byte type, Player owner, int ownerMobId) {
+        // c0.30 Arrow ctor: spawn along a UNIT aim scaled by force, backed off 0.2 so
+        // the tip clears the shooter; gravity = 1/force scales the fall term.
+        static void SpawnC030(Level lvl, double px, double py, double pz,
+                              double dx, double dy, double dz, double force, int damage,
+                              byte type, Player owner, int ownerMobId) {
+            Add(lvl, px - dx * 0.2, py - dy * 0.2, pz - dz * 0.2,
+                dx * force, dy * force, dz * force, 1.0 / force, damage, type, false, owner, ownerMobId);
+        }
+
+        // Indev EntityArrow.setArrowHeading: normalize the raw aim, nudge each axis by
+        // an independent gaussian * 0.0075 * spread, then scale by speed WITHOUT
+        // re-normalizing. Flat Indev gravity (0.03) is applied per tick, so the stored
+        // Gravity field is unused (kept 1.0). No 0.2 back-off (callers offset the eye).
+        static void SpawnIndev(Level lvl, double px, double py, double pz,
+                               double aimX, double aimY, double aimZ, double speed, double spread,
+                               int damage, byte type, Player owner, int ownerMobId) {
+            double len = Math.Sqrt(aimX * aimX + aimY * aimY + aimZ * aimZ);
+            if (len < 0.0001) { aimX = 0; aimY = 1; aimZ = 0; len = 1; }
+            aimX /= len; aimY /= len; aimZ /= len;
+            lock (rng) {
+                aimX += NextGaussian() * 0.0075 * spread;
+                aimY += NextGaussian() * 0.0075 * spread;
+                aimZ += NextGaussian() * 0.0075 * spread;
+            }
+            Add(lvl, px, py, pz, aimX * speed, aimY * speed, aimZ * speed,
+                1.0, damage, type, true, owner, ownerMobId);
+        }
+
+        // Box-Muller standard-normal sample (distribution-shape parity with genuine
+        // java.util.Random.nextGaussian; the time-seeded RNG can't be sequence-matched).
+        static double NextGaussian() {
+            double u1 = 1.0 - rng.NextDouble(), u2 = rng.NextDouble();
+            return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
+        }
+
+        static void Add(Level lvl, double px, double py, double pz,
+                        double vx, double vy, double vz, double gravity, int damage,
+                        byte type, bool indev, Player owner, int ownerMobId) {
             LevelArrows la = GetLevel(lvl, true);
             Arrow a = new Arrow {
-                // Arrow ctor backs the spawn off 0.2 opposite the aim so the tip clears the shooter
-                X = px - dx * 0.2, Y = py - dy * 0.2, Z = pz - dz * 0.2,
-                VX = dx * force, VY = dy * force, VZ = dz * force,
-                Gravity = 1.0 / force, Type = type, Damage = damage,
+                X = px, Y = py, Z = pz, VX = vx, VY = vy, VZ = vz,
+                Gravity = gravity, Type = type, Damage = damage, Indev = indev,
                 OwnerPlayer = owner, OwnerMobId = ownerMobId
             };
             lock (la.Arrows) {
@@ -237,9 +285,13 @@ namespace MCGalaxy.Network
                             la.Arrows.RemoveAt(i);
                             continue;
                         }
-                        bool despawn = a.Type == 0
-                            ? (a.StuckTicks >= STICK_PLAYER_MIN && rng.NextDouble() < STICK_PLAYER_DESPAWN_CHANCE)
-                            : (a.StuckTicks >= STICK_MOB_TICKS);
+                        // despawn: Indev EntityArrow dies at exactly 1200 ticks stuck
+                        // (any type); c0.30 - player 300t+1%/tick, mob 20t.
+                        bool despawn = a.Indev
+                            ? (a.StuckTicks >= STICK_INDEV_TICKS)
+                            : a.Type == 0
+                                ? (a.StuckTicks >= STICK_PLAYER_MIN && rng.NextDouble() < STICK_PLAYER_DESPAWN_CHANCE)
+                                : (a.StuckTicks >= STICK_MOB_TICKS);
                         if (despawn) {
                             Broadcast(watchers, a.Id, remove: true, reason: 0);
                             la.Arrows.RemoveAt(i);
@@ -247,9 +299,13 @@ namespace MCGalaxy.Network
                         continue;
                     }
 
-                    // c0.30 Arrow.tick: drag + speed-scaled gravity BEFORE the move
-                    a.VX *= DRAG; a.VY *= DRAG; a.VZ *= DRAG;
-                    a.VY -= 0.02 * a.Gravity;
+                    // c0.30 Arrow.tick applies drag + speed-scaled gravity BEFORE the
+                    // move; Indev EntityArrow.onEntityUpdate moves FIRST, then drag
+                    // (0.99 air / 0.8 water) + a flat 0.03 gravity AFTER.
+                    if (!a.Indev) {
+                        a.VX *= DRAG; a.VY *= DRAG; a.VZ *= DRAG;
+                        a.VY -= 0.02 * a.Gravity;
+                    }
 
                     double len = Math.Sqrt(a.VX * a.VX + a.VY * a.VY + a.VZ * a.VZ);
                     int steps = (int)(len / SUBSTEP + 1.0);
@@ -276,11 +332,28 @@ namespace MCGalaxy.Network
                         a.Stuck = true; a.StuckTicks = 0;
                         a.VX = a.VY = a.VZ = 0;
                         foreach (Player p in watchers) SurvivalNet.SendArrowStick(p, a.Id, a.X, a.Y, a.Z);
+                        continue;
+                    }
+
+                    // Indev: drag + flat gravity AFTER the move (water slows to 0.8)
+                    if (a.Indev) {
+                        double drag = InWater(lvl, a.X, a.Y, a.Z) ? 0.8 : 0.99;
+                        a.VX *= drag; a.VY *= drag; a.VZ *= drag;
+                        a.VY -= 0.03;
                     }
                     // in-flight arrows are client-simulated from the spawn state (identical
                     // physics), so no per-tick position stream is needed.
                 }
             }
+        }
+
+        // Whether the arrow's centre cell is water (Indev water-drag test - the
+        // genuine handleWaterMovement band degenerates to ~the centre block).
+        static bool InWater(Level lvl, double x, double y, double z) {
+            int bx = (int)Math.Floor(x), by = (int)Math.Floor(y), bz = (int)Math.Floor(z);
+            if (bx < 0 || by < 0 || bz < 0 || bx >= lvl.Width || by >= lvl.Height || bz >= lvl.Length) return false;
+            BlockID b = Block.Convert(lvl.GetBlock((ushort)bx, (ushort)by, (ushort)bz));
+            return b == Block.Water || b == Block.StillWater;
         }
 
         // Whether the arrow's box (centred on the given point) overlaps any solid block.
