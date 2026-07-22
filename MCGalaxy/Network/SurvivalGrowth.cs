@@ -180,6 +180,13 @@ namespace MCGalaxy.Network
             return y < lvl.Height && LightLevel(lvl, g, x, y, z) >= 9;
         }
 
+        /// <summary> The combined light level (0-15) at a cell - sky-if-lit vs the
+        /// block-light flood - for callers outside growth (the mob AI's Indev
+        /// wander weighting and spider light-flee). Uses the same cached flood. </summary>
+        internal static int LightAt(Level lvl, int x, int y, int z) {
+            return LightLevel(lvl, GetLevel(lvl, true), x, y, z);
+        }
+
 
         // ==================== block-light flood ====================
         //

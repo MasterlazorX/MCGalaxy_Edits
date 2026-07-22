@@ -109,6 +109,12 @@ namespace MCGalaxy.Network
             public int FuseTicks;
             public bool Falling; public double FallPeakY;
 
+            // Indev A* navigation (Pathfinder): the current waypoint list the
+            // creature AI steers along, and the mob it targets (mob-vs-mob aggro).
+            public short[] PathX, PathY, PathZ;
+            public int PathCount, PathIndex;
+            public SurvMob TargetMob;
+
             // last-streamed snapshot, so MOVE/STATE only go out on change
             public short SentX = short.MinValue, SentY, SentZ;
             public byte SentYaw, SentPitch;
@@ -799,7 +805,10 @@ namespace MCGalaxy.Network
             }
         }
 
-        static void IndevAttack(Level lvl, LevelMobs lm, SurvMob m, Player target, double dist, Random rng) {
+        // Returns hasAttacked: true only when a shooting skeleton or a swelling
+        // creeper stands its ground this tick (the client's Mob_IndevAttackEntity
+        // return). Melee mobs keep striding at the victim mid-swing (false).
+        static bool IndevAttack(Level lvl, LevelMobs lm, SurvMob m, Player target, double dist, Random rng) {
             if (Types[m.Type].IsCreeper) {
                 // EntityCreeper.attackEntity: fuse starts within 3 blocks, keeps
                 // burning within 7 once lit, blows at 30 ticks.
@@ -813,17 +822,18 @@ namespace MCGalaxy.Network
                         KillMob(lvl, lm, m, null);
                         m.DeathTicks = 20; // blast leaves no corpse window
                     }
+                    return true; // swelling: stands its ground
                 } else {
                     m.FuseState = -1;
                     if (m.FuseTicks > 0) m.FuseTicks--;
                 }
-                return;
+                return false;
             }
 
             if (m.Type == TYPE_SPIDER) {
                 // EntitySpider.attackEntity: light makes it lose interest; a 2-6
                 // block pounce roll; otherwise the shared melee below.
-                if (IsBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; return; }
+                if (IsBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; m.TargetMob = null; m.PathCount = 0; return false; }
                 if (dist > 2.0 && dist < 6.0 && rng.Next(10) == 0) {
                     if (m.OnGround) {
                         double dx = target.Pos.X / 32.0 - m.X, dz = target.Pos.Z / 32.0 - m.Z;
@@ -832,7 +842,7 @@ namespace MCGalaxy.Network
                         m.VZ = dz / hor * 0.5 * 0.8 + m.VZ * 0.2;
                         m.VY = 0.4;
                     }
-                    return;
+                    return false;
                 }
             }
 
@@ -842,7 +852,8 @@ namespace MCGalaxy.Network
                 // death fire-burst (Indev skeletons drop 0-2 arrow ITEMS on death,
                 // handled in KillMob). Mob_IndevShootArrow: the raw unnormalized aim
                 // into setArrowHeading(0.6, 12.0), spawned from the offset eye.
-                if (dist < 10.0 && m.AttackDelay == 0) {
+                if (dist >= 10.0) return false;    // out of bow range: keeps chasing
+                if (m.AttackDelay == 0) {
                     double yawRad = m.Yaw * Math.PI / 180.0;
                     double fromX  = m.X + Math.Cos(yawRad) * 0.16;
                     double fromY  = m.Y + Height(lvl, m) * 0.85 - 0.1 + 1.0; // eye - 0.1 + shootArrow ++posY
@@ -855,15 +866,323 @@ namespace MCGalaxy.Network
                     SurvivalArrows.FireFromMobIndev(lvl, m.Id, fromX, fromY, fromZ, aimX, aimY, aimZ);
                     m.AttackDelay = 30;
                 }
-                return; // skeleton never melees in Indev
+                return true; // in bow range: stands its ground (never melees in Indev)
             }
 
             // EntityMob.attackEntity: melee within 2.5 blocks (zombie 5, default 2).
             int strength = Types[m.Type].IndevMelee;
-            if (strength == 0 || dist >= 2.5 || m.AttackDelay > 0) return;
+            if (strength == 0 || dist >= 2.5 || m.AttackDelay > 0) return false;
             m.AttackDelay  = 10;
             m.NoActionTime = 0;
             SurvivalNet.DamagePlayer(target, strength, "@p was slain by a " + Types[m.Type].Name);
+            return false; // melee mobs keep striding at the victim mid-swing
+        }
+
+
+        // ==================== Indev pathfinding + creature AI ====================
+        //
+        // Port of the client's Pathfinder (level/path/Pathfinder.java) + Indev
+        // EntityCreature.updatePlayerActionState. Genuine Indev mobs A* toward the
+        // player over walkable columns and steer along the waypoints, instead of
+        // the c0.30 stride-forward chase - so they path around walls and off
+        // ledges. Runs on Indev maps only; c0.30 keeps WanderAI + AttackAI.
+        //
+        // The tick is single-threaded (one scheduler, under lock(lm.Mobs)), so the
+        // A* scratch is shared static state reused per FindPath call.
+
+        const int PF_MAX_NODES = 900, PF_HASH_SIZE = 2048, PF_PATH_MAX = 64;
+
+        struct PathNode { public short X, Y, Z; public float G, H, F; public int Prev, HeapIdx; public bool Visited, Assigned; }
+        static readonly PathNode[] pfNodes = new PathNode[PF_MAX_NODES];
+        static int pfNodeCount;
+        static readonly int[] pfHeap = new int[PF_MAX_NODES];
+        static int pfHeapCount;
+        static readonly int[] pfHashKey = new int[PF_HASH_SIZE];
+        static readonly int[] pfHashVal = new int[PF_HASH_SIZE];
+
+        static float PF_Dist(int a, int b) {
+            float dx = pfNodes[b].X - pfNodes[a].X, dy = pfNodes[b].Y - pfNodes[a].Y, dz = pfNodes[b].Z - pfNodes[a].Z;
+            return (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        static int PF_OpenPoint(int x, int y, int z) {
+            int key = x | (y << 10) | (z << 20);
+            int slot = (int)(((uint)key * 2654435761u) & (PF_HASH_SIZE - 1));
+            for (;;) {
+                int idx0 = pfHashVal[slot];
+                if (idx0 < 0) break;
+                if (pfHashKey[slot] == key) return idx0;
+                slot = (slot + 1) & (PF_HASH_SIZE - 1);
+            }
+            if (pfNodeCount >= PF_MAX_NODES) return -1;
+            int idx = pfNodeCount++;
+            pfNodes[idx] = new PathNode { X = (short)x, Y = (short)y, Z = (short)z, Prev = -1, HeapIdx = -1 };
+            pfHashKey[slot] = key; pfHashVal[slot] = idx;
+            return idx;
+        }
+
+        static void PF_SiftUp(int i) {
+            int n = pfHeap[i];
+            while (i > 0) {
+                int parent = (i - 1) >> 1;
+                if (pfNodes[pfHeap[parent]].F <= pfNodes[n].F) break;
+                pfHeap[i] = pfHeap[parent]; pfNodes[pfHeap[i]].HeapIdx = i;
+                i = parent;
+            }
+            pfHeap[i] = n; pfNodes[n].HeapIdx = i;
+        }
+        static void PF_SiftDown(int i) {
+            int n = pfHeap[i];
+            for (;;) {
+                int child = i * 2 + 1;
+                if (child >= pfHeapCount) break;
+                if (child + 1 < pfHeapCount && pfNodes[pfHeap[child + 1]].F < pfNodes[pfHeap[child]].F) child++;
+                if (pfNodes[pfHeap[child]].F >= pfNodes[n].F) break;
+                pfHeap[i] = pfHeap[child]; pfNodes[pfHeap[i]].HeapIdx = i;
+                i = child;
+            }
+            pfHeap[i] = n; pfNodes[n].HeapIdx = i;
+        }
+        static void PF_Push(int idx) { pfHeap[pfHeapCount] = idx; pfNodes[idx].HeapIdx = pfHeapCount; pfHeapCount++; PF_SiftUp(pfHeapCount - 1); }
+        static int PF_Pop() {
+            int top = pfHeap[0]; pfNodes[top].HeapIdx = -1; pfHeapCount--;
+            if (pfHeapCount > 0) { pfHeap[0] = pfHeap[pfHeapCount]; pfNodes[pfHeap[0]].HeapIdx = 0; PF_SiftDown(0); }
+            return top;
+        }
+
+        // getVerticalOffset: 1 passable, 0 solid/OOB, -1 liquid.
+        static int PF_Vert(Level lvl, int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return 0;
+            byte c = lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z));
+            if (CollideType.IsSolid(c)) return 0;
+            if (c == CollideType.SwimThrough || c == CollideType.LiquidWater || c == CollideType.LiquidLava) return -1;
+            return 1;
+        }
+
+        // getSafePoint: passable here (or one step up), then drop onto solid ground
+        // (<=3 blocks; landing next to liquid is rejected).
+        static int PF_SafePoint(Level lvl, int x, int y, int z, bool stepUp) {
+            int idx = -1, fall = 0;
+            if (PF_Vert(lvl, x, y, z) > 0) idx = PF_OpenPoint(x, y, z);
+            else if (stepUp && PF_Vert(lvl, x, y + 1, z) > 0) { y++; idx = PF_OpenPoint(x, y, z); }
+            if (idx < 0) return -1;
+
+            while (y > 0) {
+                int off = PF_Vert(lvl, x, y - 1, z);
+                if (off <= 0) break;
+                fall++;
+                if (fall >= 4) return -1;
+                y--; idx = PF_OpenPoint(x, y, z);
+                if (idx < 0) return -1;
+            }
+            byte below = (y > 0) ? lvl.CollideType(BlockAt(lvl, x, y - 1, z)) : (byte)0;
+            if (below == CollideType.SwimThrough || below == CollideType.LiquidWater || below == CollideType.LiquidLava) return -1;
+            return idx;
+        }
+
+        // Pathfinder.addToPath: A* from the mob to (tx,ty,tz), 16-block cap, storing
+        // the waypoints into the mob (best-effort nearest node when unreachable).
+        static bool FindPath(Level lvl, SurvMob m, double tx, double ty, double tz) {
+            for (int i = 0; i < PF_HASH_SIZE; i++) pfHashVal[i] = -1;
+            pfNodeCount = 0; pfHeapCount = 0;
+            m.PathCount = 0; m.PathIndex = 0;
+
+            float w = Width(lvl, m) / 2f;
+            int start  = PF_OpenPoint((int)Math.Floor(m.X - w), (int)Math.Floor(m.Y), (int)Math.Floor(m.Z - w));
+            int target = PF_OpenPoint((int)Math.Floor(tx - w), (int)Math.Floor(ty), (int)Math.Floor(tz - w));
+            if (start < 0 || target < 0) return false;
+
+            pfNodes[start].G = 0; pfNodes[start].H = PF_Dist(start, target); pfNodes[start].F = pfNodes[start].H;
+            pfNodes[start].Assigned = true;
+            PF_Push(start);
+            int best = start;
+
+            while (pfHeapCount > 0) {
+                int node = PF_Pop();
+                if (node == target) { best = target; break; }
+                if (PF_Dist(node, target) < PF_Dist(best, target)) best = node;
+                pfNodes[node].Visited = true;
+
+                int nx = pfNodes[node].X, ny = pfNodes[node].Y, nz = pfNodes[node].Z;
+                bool stepUp = PF_Vert(lvl, nx, ny + 1, nz) > 0;
+                int n0 = PF_SafePoint(lvl, nx, ny, nz + 1, stepUp);
+                int n1 = PF_SafePoint(lvl, nx - 1, ny, nz, stepUp);
+                int n2 = PF_SafePoint(lvl, nx + 1, ny, nz, stepUp);
+                int n3 = PF_SafePoint(lvl, nx, ny, nz - 1, stepUp);
+
+                PF_Relax(node, n0, target); PF_Relax(node, n1, target);
+                PF_Relax(node, n2, target); PF_Relax(node, n3, target);
+            }
+
+            if (best == start) return false;
+
+            int count = 0;
+            for (int node = best; node >= 0; node = pfNodes[node].Prev) count++;
+            if (count > PF_PATH_MAX) return false;
+
+            if (m.PathX == null) { m.PathX = new short[PF_PATH_MAX]; m.PathY = new short[PF_PATH_MAX]; m.PathZ = new short[PF_PATH_MAX]; }
+            m.PathCount = count;
+            int idx = count - 1;
+            for (int node = best; node >= 0; node = pfNodes[node].Prev, idx--) {
+                m.PathX[idx] = pfNodes[node].X; m.PathY[idx] = pfNodes[node].Y; m.PathZ[idx] = pfNodes[node].Z;
+            }
+            return true;
+        }
+
+        static void PF_Relax(int node, int n2, int target) {
+            if (n2 < 0 || pfNodes[n2].Visited) return;
+            if (PF_Dist(n2, target) >= 16.0f) return; // range cap
+            float ng = pfNodes[node].G + PF_Dist(node, n2);
+            if (pfNodes[n2].Assigned && ng >= pfNodes[n2].G) return;
+            pfNodes[n2].Prev = node;
+            pfNodes[n2].G = ng;
+            pfNodes[n2].H = PF_Dist(n2, target);
+            pfNodes[n2].F = ng + pfNodes[n2].H;
+            if (pfNodes[n2].Assigned) { if (pfNodes[n2].HeapIdx >= 0) PF_SiftUp(pfNodes[n2].HeapIdx); }
+            else { pfNodes[n2].Assigned = true; PF_Push(n2); }
+        }
+
+        // Indev light brightness (0..1) at a cell - the wander weighting + spider
+        // light-flee input. Reuses the growth light model (sky-if-lit vs flood).
+        static double Brightness(Level lvl, int x, int y, int z) {
+            return SurvivalGrowth.LightAt(lvl, x, y, z) / 15.0;
+        }
+
+        // World.rayTrace (Mob_SightBlocked): true if a solid block sits between the
+        // two eye points. DDA over cell boundaries, capped at 20 steps.
+        static bool SightBlocked(Level lvl, double fx, double fy, double fz, double tx, double ty, double tz) {
+            int x1 = (int)Math.Floor(tx), y1 = (int)Math.Floor(ty), z1 = (int)Math.Floor(tz);
+            int x0 = (int)Math.Floor(fx), y0 = (int)Math.Floor(fy), z0 = (int)Math.Floor(fz);
+            int steps = 20;
+            while (steps-- >= 0) {
+                if (x0 == x1 && y0 == y1 && z0 == z1) return false; // reached target cell: clear
+                double xb = 999, yb = 999, zb = 999;
+                if (x1 > x0) xb = x0 + 1; if (x1 < x0) xb = x0;
+                if (y1 > y0) yb = y0 + 1; if (y1 < y0) yb = y0;
+                if (z1 > z0) zb = z0 + 1; if (z1 < z0) zb = z0;
+
+                double dx = tx - fx, dy = ty - fy, dz = tz - fz;
+                double stx = 999, sty = 999, stz = 999;
+                if (xb != 999) stx = (xb - fx) / dx;
+                if (yb != 999) sty = (yb - fy) / dy;
+                if (zb != 999) stz = (zb - fz) / dz;
+
+                int face;
+                if (stx < sty && stx < stz) { face = x1 > x0 ? 4 : 5; fx = xb; fy += dy * stx; fz += dz * stx; }
+                else if (sty < stz)         { face = y1 > y0 ? 0 : 1; fx += dx * sty; fy = yb; fz += dz * sty; }
+                else                        { face = z1 > z0 ? 2 : 3; fx += dx * stz; fy += dy * stz; fz = zb; }
+
+                x0 = (int)Math.Floor(fx); if (face == 5) x0--;
+                y0 = (int)Math.Floor(fy); if (face == 1) y0--;
+                z0 = (int)Math.Floor(fz); if (face == 3) z0--;
+                if (IsSolidAt(lvl, x0, y0, z0)) return true;
+            }
+            return false;
+        }
+
+        // EntityCreature.updatePlayerActionState: resolve/acquire a target, attack
+        // it in sight, then A* toward it (re-path 1-in-20) or wander to the best of
+        // 200 weighted points (monsters prefer dark, animals grass), steering the
+        // waypoints. The Indev replacement for WanderAI + AttackAI.
+        static void IndevCreatureAI(Level lvl, LevelMobs lm, SurvMob m, Player[] watchers, bool inWater, bool inLava) {
+            MobType info = Types[m.Type];
+            Random rng = lm.Rng;
+
+            // sheep grazing overlay holds the sheep still
+            if (m.Type == TYPE_SHEEP && SheepGrazeStep(lvl, lm, m)) { m.Jumping = false; return; }
+
+            // creeper fuse winds down while idle; falls back to -1 unless re-armed
+            if (info.IsCreeper) { if (m.FuseTicks > 0 && m.FuseState < 0) m.FuseTicks--; if (m.FuseState >= 0) m.FuseState = 2; }
+
+            Player target = m.Target;
+            if (target != null && (target.level != lvl || target.Session == null ||
+                                   !target.Session.hasSurvival || SurvivalNet.IsDead(target))) {
+                m.Target = null; target = null; m.PathCount = 0;
+            }
+
+            bool hasAttacked = false;
+            if (target == null) {
+                // findPlayerToAttack: non-passive aggro within 16; spider only while
+                // its own spot is dark.
+                bool canHunt = !info.Passive &&
+                    !(m.Type == TYPE_SPIDER && Brightness(lvl, (int)Math.Floor(m.X), (int)Math.Floor(m.Y), (int)Math.Floor(m.Z)) >= 0.5);
+                if (canHunt) {
+                    double bestSq = 256.0;
+                    foreach (Player p in watchers) {
+                        if (SurvivalNet.IsDead(p)) continue;
+                        double dx = p.Pos.X / 32.0 - m.X, dy = (p.Pos.Y - Entities.CharacterHeight) / 32.0 - m.Y, dz = p.Pos.Z / 32.0 - m.Z;
+                        double d2 = dx * dx + dy * dy + dz * dz;
+                        if (d2 < bestSq) { bestSq = d2; m.Target = p; }
+                    }
+                    target = m.Target;
+                    if (target != null)
+                        FindPath(lvl, m, target.Pos.X / 32.0, (target.Pos.Y - Entities.CharacterHeight) / 32.0, target.Pos.Z / 32.0);
+                }
+            } else {
+                double tfx = target.Pos.X / 32.0, tfy = (target.Pos.Y - Entities.CharacterHeight) / 32.0, tfz = target.Pos.Z / 32.0;
+                double ddx = tfx - m.X, ddy = tfy - m.Y, ddz = tfz - m.Z;
+                double dist = Math.Sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+                if (ddx * ddx + ddy * ddy + ddz * ddz > 1024.0 && rng.Next(100) == 0) { m.Target = null; m.PathCount = 0; return; }
+                // face the victim so the bow/melee aim is correct (server yaw basis)
+                m.Yaw = (float)(Math.Atan2(ddx, -ddz) * 180.0 / Math.PI);
+                m.Pitch = (float)(Math.Atan2(-ddy, dist) * 180.0 / Math.PI);
+
+                double meY = m.Y + Height(lvl, m) * 0.85, peY = target.Pos.Y / 32.0;
+                if (!SightBlocked(lvl, m.X, meY, m.Z, tfx, peY, tfz))
+                    hasAttacked = IndevAttack(lvl, lm, m, target, dist, rng);
+            }
+
+            if (hasAttacked) { m.MoveStrafe = 0; m.MoveForward = 0; m.Jumping = false; return; }
+
+            bool wantWander = target == null || (m.PathCount > 0 && rng.Next(20) != 0);
+            if (wantWander) {
+                if (m.PathCount == 0 || rng.Next(100) == 0) {
+                    int bx = -1, by = -1, bz = -1; double bestW = -99999.0;
+                    for (int t = 0; t < 200; t++) {
+                        int cx = (int)(m.X + rng.Next(21) - 10), cy = (int)(m.Y + rng.Next(9) - 4), cz = (int)(m.Z + rng.Next(21) - 10);
+                        double wgt;
+                        if (info.Passive)
+                            wgt = (cy - 1 >= 0 && cx >= 0 && cz >= 0 && cx < lvl.Width && cy - 1 < lvl.Height && cz < lvl.Length &&
+                                   lvl.GetBlock((ushort)cx, (ushort)(cy - 1), (ushort)cz) == Block.Grass)
+                                  ? 10.0 : Brightness(lvl, cx, cy, cz) - 0.5;
+                        else
+                            wgt = 0.5 - Brightness(lvl, cx, cy, cz);
+                        if (wgt > bestW) { bestW = wgt; bx = cx; by = cy; bz = cz; }
+                    }
+                    if (bx > 0) FindPath(lvl, m, bx + 0.5, by + 0.5, bz + 0.5);
+                }
+            } else if (target != null) {
+                FindPath(lvl, m, target.Pos.X / 32.0, (target.Pos.Y - Entities.CharacterHeight) / 32.0, target.Pos.Z / 32.0);
+            }
+
+            if (m.PathCount > 0 && rng.Next(100) != 0) {
+                double half = Width(lvl, m) + 1.0;
+                double W2 = Width(lvl, m) * 2.0;
+                bool hasPoint = true; double wx = 0, wy = 0, wz = 0;
+                for (;;) {
+                    if (m.PathIndex >= m.PathCount) { hasPoint = false; m.PathCount = 0; break; }
+                    wx = m.PathX[m.PathIndex] + (int)half * 0.5;
+                    wy = m.PathY[m.PathIndex];
+                    wz = m.PathZ[m.PathIndex] + (int)half * 0.5;
+                    double dx = m.X - wx, dy = m.Y - wy, dz = m.Z - wz;
+                    if (dx * dx + dy * dy + dz * dz >= W2 * W2 || wy > m.Y) break;
+                    m.PathIndex++;
+                }
+                m.Jumping = false;
+                if (hasPoint) {
+                    double dx = wx - m.X, dz = wz - m.Z, dy = wy - m.Y;
+                    m.Yaw = (float)(Math.Atan2(dx, -dz) * 180.0 / Math.PI); // server yaw basis
+                    m.MoveForward = IndevMoveSpeed(m.Type);
+                    if (dy > 0) m.Jumping = true;
+                }
+                if ((inWater || inLava) && rng.NextDouble() < 0.8) m.Jumping = true;
+                m.MoveStrafe = 0;
+            } else {
+                m.PathCount = 0;
+                WanderAI(lm, m, true, inWater, inLava); // pathless fallback
+            }
+
+            if (info.IsCreeper && m.FuseState != 1) m.FuseState = -1;
         }
 
 
@@ -1211,9 +1530,16 @@ namespace MCGalaxy.Network
             }
 
             // ---- AI ----
-            if (m.Type == TYPE_SHEEP) SheepAI(lvl, lm, m, indev, inWater, inLava);
-            else                      WanderAI(lm, m, indev, inWater, inLava);
-            if (!Types[m.Type].Passive) AttackAI(lvl, lm, m, indev, watchers);
+            // Indev: the genuine A* creature AI (target -> path -> steer, or a
+            // weighted wander) drives every mob. c0.30 keeps the simpler
+            // wander + proximity-chase.
+            if (indev) {
+                IndevCreatureAI(lvl, lm, m, watchers, inWater, inLava);
+            } else {
+                if (m.Type == TYPE_SHEEP) SheepAI(lvl, lm, m, indev, inWater, inLava);
+                else                      WanderAI(lm, m, indev, inWater, inLava);
+                if (!Types[m.Type].Passive) AttackAI(lvl, lm, m, indev, watchers);
+            }
 
             // ---- physics ----
             bool spiderLunge = m.Type == TYPE_SPIDER && m.Target != null;
@@ -1247,8 +1573,14 @@ namespace MCGalaxy.Network
         }
 
         static void SheepAI(Level lvl, LevelMobs lm, SurvMob m, bool indev, bool inWater, bool inLava) {
-            // Sheep.SheepAI: over grass it stops to graze; after 60 ticks the grass
-            // becomes dirt and there's a 1/5 chance the fur regrows.
+            // c0.30 path: graze overlay, then the shared random wander if not held.
+            if (!SheepGrazeStep(lvl, lm, m)) WanderAI(lm, m, indev, inWater, inLava);
+        }
+
+        // Sheep.SheepAI: over grass it stops to graze; after 60 ticks the grass
+        // becomes dirt and there's a 1/5 chance the fur regrows. Returns true while
+        // the sheep is holding still to graze (so the caller skips its own steering).
+        static bool SheepGrazeStep(Level lvl, LevelMobs lm, SurvMob m) {
             double sinYaw = Math.Sin(m.Yaw * Math.PI / 180.0);
             double cosYaw = Math.Cos(m.Yaw * Math.PI / 180.0);
             int x = (int)Math.Floor(m.X + 0.7 * sinYaw);
@@ -1258,19 +1590,16 @@ namespace MCGalaxy.Network
                              lvl.GetBlock((ushort)x, (ushort)y, (ushort)z) == Block.Grass;
 
             if (m.Grazing) {
-                if (!overGrass) {
-                    m.Grazing = false;
-                } else {
-                    if (m.GrazeTime++ == 60) {
-                        lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.Dirt);
-                        if (lm.Rng.Next(5) == 0) m.HasFur = true;
-                    }
-                    m.MoveStrafe = 0; m.MoveForward = 0;
+                if (!overGrass) { m.Grazing = false; return false; }
+                if (m.GrazeTime++ == 60) {
+                    lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.Dirt);
+                    if (lm.Rng.Next(5) == 0) m.HasFur = true;
                 }
-            } else {
-                if (overGrass) { m.Grazing = true; m.GrazeTime = 0; }
-                WanderAI(lm, m, indev, inWater, inLava);
+                m.MoveStrafe = 0; m.MoveForward = 0;
+                return true; // grazing: holds still
             }
+            if (overGrass) { m.Grazing = true; m.GrazeTime = 0; }
+            return false; // wanders this tick
         }
 
 

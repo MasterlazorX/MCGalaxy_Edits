@@ -1594,3 +1594,41 @@ after.
 
 DEFERRED (backlog): third-person held-item render; block-destroying explosions
 (TNT detonation, creeper block damage).
+
+## Mob AI: Indev A* pathfinding + creature AI (SurvivalMobs.cs)
+
+The last mob-AI gap - Indev mobs used the c0.30 stride-forward chase (the
+"pending the A* port" TODO). Now the server runs the genuine Indev navigation:
+a port of level/path/Pathfinder.java (A* over walkable columns, step-up 1 /
+drop-down 3, 16-block cap, single-block getVerticalOffset quirk preserved) plus
+EntityCreature.updatePlayerActionState (Mob_IndevCreatureAI): resolve/acquire a
+player target within 16 (spider only while its own cell is dark), attack it when
+line-of-sight is clear (rayTrace port), then A* toward it (re-path 1-in-20) or
+wander to the best of 200 getBlockPathWeight-weighted points (monsters prefer
+dark, animals prefer grass), steering along the waypoints. Pathless -> the
+existing BasicAI random wander. c0.30 keeps WanderAI + AttackAI unchanged.
+
+ * SurvMob gains PathX/Y/Z + PathCount/PathIndex; the A* scratch (900 nodes,
+   binary heap, 2048-slot hash) is shared static, safe under the single-threaded
+   lock(lm.Mobs) tick.
+ * IndevAttack now returns hasAttacked (skeleton bow-shot / creeper swell stand
+   their ground; melee mobs keep striding) so the creature AI can hold position.
+ * SheepAI split so SheepGrazeStep is an overlay both paths reuse.
+ * Yaw uses the SERVER basis (atan2(dx,-dz)), not the client's atan2(-dz,dx) -
+   the two conventions differ and mixing them would face mobs 90 degrees off.
+ * Brightness reuses the growth light model via new SurvivalGrowth.LightAt.
+ * Player hurt-aggro was already in HurtMob (a hit sets Target = attacker). Mob-
+   vs-mob aggro from stray arrows is still a minor gap (arrows would need to
+   carry the owner mob into HurtMob) - noted, not blocking.
+
+Verified live (test-clients/mob_ai_test.py, /SurvSpawn at a synthetic Owner
+client's feet on a flat lane): a creeper pathed 7.1 -> 2.7 blocks and detonated
+on reaching the player; a zombie pathed 7.2 -> 2.9 into melee range (then
+drifted off after killing the non-respawning synthetic target); a pig roamed the
+terrain up to 22 blocks (grass-weighted passive wander). Clean mob-tick log
+throughout. (Test-rig note: /SurvSpawn drops the mob at the caller's FEET, which
+the classic position packet reports as eye-level - send the client's Y ~2 blocks
+high so the mob lands on the surface instead of embedded in terrain.)
+
+DEFERRED (backlog): mob-vs-mob aggro from arrows; block-destroying explosions;
+third-person held-item render.
