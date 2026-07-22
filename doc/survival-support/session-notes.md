@@ -1468,3 +1468,65 @@ render does not exist in the engine yet (HeldBlockRenderer is first-person only)
 SurvivalTest_RenderHeldItem is currently a documented no-op. The held id is
 streamed + stored; drawing it (block mini-cube / items.png billboard at the
 entity's right-hand transform) is the next piece.
+
+## World growth + lighting (server-authoritative) — SurvivalGrowth.cs
+
+Indev worlds now grow on the SERVER, streamed to every viewer as ordinary
+SetBlock (0x06) — no new wire. New file MCGalaxy/Network/SurvivalGrowth.cs, a
+C# port of the client's src/IndevTest.c growth handlers, ticked from the 20 TPS
+survival mob loop (SurvivalMobs.TickLevel, Indev-only, under lock(lm.Mobs)) and
+pruned on level unload alongside the drop/arrow registries.
+
+Random-tick engine: the genuine World.tick payout (volume/200 random block
+updates per tick, remainder carried) with the genuine `randId*3 + 1013904223`
+LCG picker and power-of-two coordinate masks (biased picks on odd-sized maps are
+skipped, as the client does). Handlers, all faithful ports:
+ * TickGrass    — covered grass decays to dirt (1-in-4); lit grass seeds a
+                  random nearby lit dirt block (whole-volume: any grass cell the
+                  loop lands on can spread).
+ * TickCrops    — the canBlockStay pop check (drops 1 wheat via SurvivalDrops if
+                  a mature crop pops), then farmland-weighted / crowding-halved
+                  growth advancing the CROPS_0..7 view ids.
+ * TickFarmland — 1-in-5: solid cover reverts to dirt; water within x/z +-4 at
+                  y..y+1 hydrates (FARMLAND->FARMLAND_WET); else moisture decays
+                  and dry-with-nothing-planted reverts to dirt.
+ * TickSapling  — the flower stay check, then light(x,y+1,z) >= 9 and the genuine
+                  1-in-5 cadence; the 16-step metadata counter (no per-cell meta
+                  server-side) is collapsed into one 1-in-16 roll — same mean
+                  time-to-grow — then World.growTrees (trunk rand(3)+4, clearance
+                  envelope, diamond canopy with corner trim, trunk logs).
+
+Lighting model (what every growth light-gate reads):
+ * Sky light — a top-down column scan finds the highest sky blocker; IsLit(x,y,z)
+   == y > heightmap. Normal opaque cubes shade-from-below (heightmap parks one
+   cell under them, so the surface block itself reads lit — grass must count as
+   lit to spread); leaves and water clear that offset (shadow their own cell),
+   matching IndevTest.c. Sprites/crops/torch/glass/air pass the sky. No stored
+   heightmap or invalidation — growth queries are sparse enough to rescan.
+ * Block light — a stored per-level flood cache (1 byte/cell), BFS from emitters
+   (torch/wall-torch 14, fire/lava/lava-source 15, lit furnace 13) attenuating 1
+   per cell into light-passing cells only. Re-flooded lazily (first tick, then
+   once a second) so a placed torch lights crops within ~1s without hooking
+   every block change. Eased sky value (day 15 / night 4) from SurvivalNet.
+ * light(x,y,z) = max(IsLit ? easedSky : 0, blockLight) — the genuine
+   getBlockLightValue, so crops/saplings grow at night beside a torch/lava.
+
+Client gate (no double-growth): IndevTest_TickRandomBlocks now computes
+`serverGrowth = SurvivalNet_ServerDriven()` once and skips grass/crops/farmland/
+sapling locally in MP (Indev_ServerOwnsGrowth) — the server owns those. The
+deferred client-only systems (leaf decay, fire, flowers/mushrooms, fluid
+sources) still tick locally; the server doesn't handle them yet.
+
+Verified (test-clients/growth_test.py, synthetic client on gt1, SurvivalCreative
+temporarily on to plant): a dense sapling patch grew into trees — 123 Log/Leaves
+blocks streamed as SetBlock — and grass spread onto exposed dirt (700+ dirt->grass)
+and decayed under the new canopies (grass->dirt), all with a clean server log.
+A placed farmland+crop+water bed ticked its handlers with no exceptions (crop
+stage / farmland-moisture changes are custom view ids, invisible as fallbacks to
+a client without BlockDefinitions, so they aren't distinguishable on the wire in
+that test — but the shared light gate is the same one the observed sapling growth
+proves working).
+
+DEFERRED (backlog, unchanged): third-person held-item render; leaf decay, fire
+and finite-fluid ticks server-side (still client-local); block-destroying
+explosions.

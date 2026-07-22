@@ -1037,6 +1037,7 @@ namespace MCGalaxy.Network
             SurvivalInventory.PruneRegistry(loaded);
             SurvivalDrops.Prune(loaded); // drop registries are Level-keyed the same way
             SurvivalArrows.Prune(loaded);
+            SurvivalGrowth.Prune(loaded); // growth/light caches are Level-keyed too
             SurvivalInventory.FlushEquip(); // send equipment for entities that became visible this tick
         }
 
@@ -1094,6 +1095,11 @@ namespace MCGalaxy.Network
 
             // arrows fly, stick, hit and despawn on the same cadence
             SurvivalArrows.Tick(lvl);
+
+            // Indev world growth: crops ripen, farmland hydrates, saplings grow
+            // into trees and grass spreads on the genuine random-block-tick rate
+            // (server-authoritative; the client's own growth loop is gated off).
+            if (indev) SurvivalGrowth.Tick(lvl);
 
             // non-survival clients on this map see the mobs as plain Classic
             // entities with ChangeModel (SurvivalFallbacks) - synced at 10 Hz,
