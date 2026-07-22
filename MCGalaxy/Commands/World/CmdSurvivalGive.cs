@@ -25,11 +25,13 @@ namespace MCGalaxy.Commands.World
     /// for the Indev set; amount defaults to 1. (Aliased /SurvGive.) </summary>
     public sealed class CmdSurvivalGive : Command2
     {
-        public override string name { get { return "SurvivalGive"; } }
+        public override string name { get { return "Give"; } }
         public override string type { get { return CommandTypes.World; } }
         public override LevelPermission defaultRank { get { return LevelPermission.Operator; } }
+        // Was /SurvivalGive; now the primary /Give (the economy give became /Payout).
+        // Old names kept as aliases so existing usage/scripts keep working.
         public override CommandAlias[] Aliases {
-            get { return new[] { new CommandAlias("SurvGive") }; }
+            get { return new[] { new CommandAlias("SurvivalGive"), new CommandAlias("SurvGive") }; }
         }
 
         public override void Use(Player p, string message, CommandData data) {
@@ -78,7 +80,7 @@ namespace MCGalaxy.Commands.World
         }
 
         public override void Help(Player p) {
-            p.Message("&T/SurvivalGive [player] [block/item] <amount>");
+            p.Message("&T/Give [player] [block/item] <amount> &H(aka /SurvivalGive)");
             p.Message("&HPuts blocks/items into a survival player's inventory.");
             p.Message("&HAccepts item names (coal, iron_pickaxe), ids 256+, or Indev block names/ids.");
             p.Message("&HAmount defaults to 1.");

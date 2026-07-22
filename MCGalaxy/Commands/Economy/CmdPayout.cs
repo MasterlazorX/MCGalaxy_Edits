@@ -20,8 +20,10 @@ using MCGalaxy.Eco;
 using MCGalaxy.Events.EconomyEvents;
 
 namespace MCGalaxy.Commands.Eco {
-    public sealed class CmdGive : MoneyCmd {
-        public override string name { get { return "Give"; } }
+    // Renamed from "Give" to "Payout" so the short /Give can be the survival
+    // item-give command (CmdSurvivalGive). This still awards the server currency.
+    public sealed class CmdPayout : MoneyCmd {
+        public override string name { get { return "Payout"; } }
         public override string shortcut { get { return "Gib"; } }
         public override LevelPermission defaultRank { get { return LevelPermission.Admin; } }
         public override bool MessageBlockRestricted { get { return true; } }
@@ -29,7 +31,7 @@ namespace MCGalaxy.Commands.Eco {
         public override void Use(Player p, string message, CommandData data) {
             EcoTransaction trans;
             bool all = false;
-            if (!ParseArgs(p, message, ref all, "give", out trans)) return;
+            if (!ParseArgs(p, message, ref all, "payout", out trans)) return;
             
             int matches = 1;
             Player who = PlayerInfo.FindMatches(p, trans.TargetName, out matches);
@@ -64,7 +66,7 @@ namespace MCGalaxy.Commands.Eco {
         }
         
         public override void Help(Player p) {
-            p.Message("&T/Give [player] [amount] <reason>");
+            p.Message("&T/Payout [player] [amount] <reason>");
             p.Message("&HGives [player] [amount] &3" + Server.Config.Currency);
         }
     }

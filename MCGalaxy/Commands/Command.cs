@@ -125,7 +125,7 @@ namespace MCGalaxy
                          new CmdModel(),     new CmdModelScale(), new CmdPing(),       new CmdReachDistance(), 
                          new CmdSkin(),      new CmdTexture(),    new CmdGlobalBlock(),new CmdLevelBlock());
 
-            RegisterCore(new CmdBuy(),       new CmdEconomy(),    new CmdGive(),       new CmdBalance(), 
+            RegisterCore(new CmdBuy(),       new CmdEconomy(),    new CmdPayout(),     new CmdBalance(),
                          new CmdPay(),       new CmdStore(),      new CmdTake());
 
             RegisterCore(new CmdExplode(),   new CmdFlipHead(),   new CmdFlipHeads(),  new CmdGun(), 

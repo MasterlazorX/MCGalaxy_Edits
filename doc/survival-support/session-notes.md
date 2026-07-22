@@ -1142,3 +1142,18 @@ isn't spawned to a viewer on another map - server already sends 0xFF then).
 Verified live (Op viewer on gt1, Bob /goto'd to map2): operator cross-map ->
 denied (no CONT_OPEN); Owner cross-map -> CONT_OPEN(5,40) + editable; operator
 same-map -> allowed.
+
+## Command rename: economy /Give -> /Payout, survival give -> /Give
+
+Freed the short /Give for the survival item-give command (the one people reach
+for most on a survival server):
+ * Economy give (Commands/Economy/CmdGive.cs) -> renamed class+file CmdPayout,
+   name "Payout", shortcut "Gib" kept. Registration (Command.cs) + csproj updated.
+ * CmdSurvivalGive: name "SurvivalGive" -> "Give"; old names kept as aliases
+   (SurvivalGive, SurvGive) so existing usage/scripts still work. defaultRank
+   stays Operator. /Survival tools help updated to list /Give.
+
+No collision: economy give's old name is vacated before the survival command
+claims it. Economy transaction logic is unchanged (EcoTransactionType.Give enum).
+Verified live: server boots with no registration errors; /help give -> survival
+give, /help payout -> economy give.

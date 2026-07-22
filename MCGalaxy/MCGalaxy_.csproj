@@ -188,7 +188,7 @@
     <Compile Include="Commands\CPE\CustomBlockCommand.cs" />
     <Compile Include="Commands\Economy\CmdBuy.cs" />
     <Compile Include="Commands\Economy\CmdEconomy.cs" />
-    <Compile Include="Commands\Economy\CmdGive.cs" />
+    <Compile Include="Commands\Economy\CmdPayout.cs" />
     <Compile Include="Commands\Economy\CmdBalance.cs" />
     <Compile Include="Commands\Economy\CmdPay.cs" />
     <Compile Include="Commands\Economy\CmdStore.cs" />
