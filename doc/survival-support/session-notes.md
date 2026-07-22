@@ -1427,3 +1427,44 @@ streamed positions):
   used by every spawner gate (InitialSpawnerRun / TopUpSpawnerRun / TrySpawnCluster)
   instead of the raw pool ceiling. `/Survival spawn` (DebugSpawn) still bypasses to
   the 256 pool. Verified: gt1 population climbed to 16 and held (was ~80).
+
+
+## Other players' equipment (SURV_PLAYER_EQUIP 0x50) - armor + wire done, held render pending
+
+Streams a remote player's worn armor + held item so their body renders it. Answer
+to "do we need models on the server?": NO - the wire is pure item ids
+([entityId][heldId:u16][armor[4]:u16 boots..helmet]); the CLIENT owns every armor
+model (Armor1/2Model built in-code), texture (armor_*.png) and the render path,
+keyed by item id. The server just reads 5 ushorts from the inventory it already
+owns and fans them to viewers.
+
+SERVER (done): SurvivalNet.SendPlayerEquip; SurvivalInventory.BroadcastEquip
+(ComputeEquip = held from the selected hotbar slot + 4 armor ids; deduped on the
+visible set via Extras[EQUIP_KEY] so it can ride the central SendAll echo without
+spamming; per-viewer entity id via EntityList.TryGetVisibleID). Change triggers:
+SendAll (pickup/give/craft/death), HandleHeldSlot, HandleSlotClick (self armor +
+admin /Inventory edit of a target), place-consume, DeathScatter. NEW-viewer case:
+the handshake CAN'T send equip (entity ids aren't resolvable yet - Entities.Spawn
+fires OnEntitySpawnedEvent BEFORE SpawnRaw registers the id), so
+SurvivalInventory.OnEntitySpawned queues the (viewer, equipped) pair and
+SurvivalMobs.TickCore flushes it next tick (id now resolvable). This covers both
+join directions (each side is spawned to the other).
+
+CLIENT (armor done): SurvivalNet_HandlePlayerEquip -> SurvivalTest_NetPlayerEquip
+stores held + armor[4] in st_netEquip[] per Classic entity id (cleared on map
+change). IndevArmor_Render refactored to IndevArmor_RenderIds(e, ids) (id-driven,
+non-zero = worn since counts aren't streamed); the local wrapper feeds it from
+st_armor. The render pass (SurvivalTest_RenderMobs) loops Entities.List[0..SELF-1]
+and draws armor on each entity we've been sent equip for.
+
+Verified (synthetic two-client wire test, both join orderings): Bob sees Alice's
+held id become 3 (dirt) when she picks a block up mid-session, AND on join when she
+was already holding it (the OnEntitySpawned->flush path) - each with Alice's
+per-viewer entity id. Armor rendering reuses the proven local-player IndevArmor
+path (only parameterized by ids).
+
+PENDING: the third-person HELD-ITEM renderer. A genuine third-person held-item
+render does not exist in the engine yet (HeldBlockRenderer is first-person only);
+SurvivalTest_RenderHeldItem is currently a documented no-op. The held id is
+streamed + stored; drawing it (block mini-cube / items.png billboard at the
+entity's right-hand transform) is the next piece.

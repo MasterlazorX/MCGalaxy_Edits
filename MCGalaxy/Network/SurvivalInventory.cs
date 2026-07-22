@@ -101,6 +101,9 @@ namespace MCGalaxy.Network
             // SendRange doesn't route through SendSlot, so mirror the main slots
             // into any open /Inventory view of this player - one scan, all cells.
             EchoAllPlayerViews(p);
+            // any full resync may have changed the visible held/armor (pickup, give,
+            // craft, death); the dedup makes this a no-op unless it actually did.
+            BroadcastEquip(p);
         }
 
         static void SendRange(Player p, PlayerInv inv, int base_, int count) {
@@ -807,11 +810,106 @@ namespace MCGalaxy.Network
         }
 
 
+        // ==================== other players' equipment (SURV_PLAYER_EQUIP) ====================
+
+        // A player's currently-visible equipment as item ids: held (selected hotbar
+        // slot) + the 4 armor pieces (boots..helmet, matching the client's order),
+        // 0 = empty. Counts aren't streamed - the client treats non-zero as worn.
+        static void ComputeEquip(PlayerInv inv, out ushort held, out ushort[] armor) {
+            held = inv.HeldSlot >= 0 && inv.HeldSlot < 9 && inv.Slots[inv.HeldSlot].Count > 0
+                 ? inv.Slots[inv.HeldSlot].Id : (ushort)0;
+            armor = new ushort[ARMOR_SLOTS];
+            for (int i = 0; i < ARMOR_SLOTS; i++)
+                armor[i] = inv.Slots[ARMOR_BASE + i].Count > 0 ? inv.Slots[ARMOR_BASE + i].Id : (ushort)0;
+        }
+
+        const string EQUIP_KEY = "survival.equip"; // last-broadcast {held,a0,a1,a2,a3}
+
+        // Resolves the equipped player's entity id as the viewer sees it and streams
+        // their current worn armor + held item. No-op if the viewer can't see them.
+        static void SendEquipTo(Player viewer, Player equipped) {
+            Level lvl = equipped.level;
+            if (viewer.level != lvl || !SurvivalNet.Active(viewer, lvl) || !SurvivalNet.Active(equipped, lvl)) return;
+            byte eid;
+            if (!viewer.EntityList.TryGetVisibleID(equipped, out eid)) return;
+            ushort held; ushort[] armor;
+            ComputeEquip(Get(equipped), out held, out armor);
+            SurvivalNet.SendPlayerEquip(viewer, eid, held, armor);
+        }
+
+        /// <summary> Streams a player's worn armor + held item to every OTHER survival
+        /// viewer on their level (each with the equipped player's per-viewer entity id).
+        /// The equipped player renders their own equipment locally, so they're skipped.
+        /// Deduped on the visible equipment so it can be called from the central echo
+        /// path (SendAll) without spamming - only a real change fans out. NEW viewers
+        /// are handled by OnEntitySpawned, not this. </summary>
+        public static void BroadcastEquip(Player equipped) {
+            Level lvl = equipped.level;
+            if (lvl == null || !SurvivalNet.Active(equipped, lvl)) return;
+            ushort held; ushort[] armor;
+            ComputeEquip(Get(equipped), out held, out armor);
+            ushort[] cur = { held, armor[0], armor[1], armor[2], armor[3] };
+
+            object o;
+            if (equipped.Extras.TryGet(EQUIP_KEY, out o) && SameEquip((ushort[])o, cur)) return;
+            equipped.Extras[EQUIP_KEY] = cur;
+
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player viewer in players)
+                if (viewer != equipped) SendEquipTo(viewer, equipped);
+        }
+
+        static bool SameEquip(ushort[] a, ushort[] b) {
+            for (int i = 0; i < 5; i++) if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        // A player entity became visible to another. The entity id isn't registered
+        // until just after this event fires (Spawn() calls it before SpawnRaw), so we
+        // queue the (viewer, equipped) pair and flush it on the next survival tick,
+        // by when TryGetVisibleID resolves. Handles both join directions (each side is
+        // spawned to the other), which is why the handshake doesn't send equip itself.
+        static readonly object equipQueueLock = new object();
+        static readonly List<KeyValuePair<Player, Player>> equipQueue = new List<KeyValuePair<Player, Player>>();
+
+        public static void OnEntitySpawned(Entity e, ref string name, ref string skin, ref string model, Player dst) {
+            Player equipped = e as Player;
+            if (equipped == null || dst == null || equipped == dst) return;
+            if (!SurvivalNet.Active(equipped, equipped.level) || !SurvivalNet.Active(dst, dst.level)) return;
+            lock (equipQueueLock) equipQueue.Add(new KeyValuePair<Player, Player>(dst, equipped));
+        }
+
+        /// <summary> Flushes queued "entity became visible" equip sends (called once per
+        /// survival tick from SurvivalMobs). </summary>
+        public static void FlushEquip() {
+            KeyValuePair<Player, Player>[] pending;
+            lock (equipQueueLock) {
+                if (equipQueue.Count == 0) return;
+                pending = equipQueue.ToArray();
+                equipQueue.Clear();
+            }
+            foreach (KeyValuePair<Player, Player> kv in pending)
+                SendEquipTo(kv.Key, kv.Value); // key = viewer, value = equipped
+        }
+
+        // Re-broadcast a player's equipment if a mutated slot could have changed what
+        // shows on their body (the held hotbar slot or an armor slot).
+        static void EquipIfVisibleChange(Player p, int slot) {
+            if (slot < 0) return;
+            PlayerInv inv = Get(p);
+            if (slot == inv.HeldSlot || (slot >= ARMOR_BASE && slot < ARMOR_BASE + ARMOR_SLOTS))
+                BroadcastEquip(p);
+        }
+
+
         // ==================== intents ====================
 
         public static void HandleHeldSlot(Player p, int slot) {
             if (slot < 0 || slot > 8) return;
-            Get(p).HeldSlot = slot;
+            PlayerInv inv = Get(p);
+            bool changed = inv.HeldSlot != slot;
+            inv.HeldSlot = slot;
+            if (changed) BroadcastEquip(p); // the held item on the body follows the hotbar selection
         }
 
         /// <summary> SURV_SLOT_CLICK: the GuiContainer click model, run on the server's
@@ -864,6 +962,9 @@ namespace MCGalaxy.Network
                     EchoContSlot(open, ci); // every viewer of this tile entity
                 }
                 SendCursor(p, inv);
+                // an admin editing a viewed player's inventory (/Inventory CanEdit)
+                // may have changed that TARGET's worn armor or held hotbar item
+                if (open.Kind == CONT_PLAYERINV && open.Target != null) BroadcastEquip(open.Target);
             } else {
                 // player inventory is per-player - only this receive thread mutates it
                 Slot slot = inv.Slots[idx];
@@ -872,6 +973,7 @@ namespace MCGalaxy.Network
                 inv.Cursor = cur;
                 SendSlot(p, inv, idx);
                 SendCursor(p, inv);
+                EquipIfVisibleChange(p, idx); // took off armor / rearranged the held slot
             }
         }
 
@@ -1036,7 +1138,7 @@ namespace MCGalaxy.Network
                 inv.Cursor = new Slot();
                 any = true;
             }
-            if (any) SendAll(p); // the emptied inventory is now authoritative
+            if (any) { SendAll(p); BroadcastEquip(p); } // held + armor cleared - update the body
         }
 
         /// <summary> Indev bow fire: consumes one arrow item (id 256+6) from the first
@@ -1199,6 +1301,7 @@ namespace MCGalaxy.Network
                         return;
                     }
                     SendSlot(p, inv, idx);
+                    EquipIfVisibleChange(p, idx); // placing may have emptied the held stack
                 } else if (!indev) {
                     return; // not survival content - pass through unconsumed
                 }

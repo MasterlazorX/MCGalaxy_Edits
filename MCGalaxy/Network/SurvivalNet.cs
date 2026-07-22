@@ -172,6 +172,9 @@ namespace MCGalaxy.Network
             SurvivalDrops.SendLevelDrops(p, lvl); // phase 5: the level's dropped items (at rest)
             SurvivalArrows.SendLevelArrows(p, lvl); // phase 5: in-flight + stuck arrows
             SurvivalArrows.SendInitialAmmo(p, lvl); // c0.30 quiver count for the HUD
+            // other players' equipment (SURV_PLAYER_EQUIP) is sent per entity as it
+            // becomes visible (SurvivalInventory.OnEntitySpawned), not here - the
+            // entity ids aren't resolvable yet at handshake time.
             // phase 4: the server-owned inventory + cursor. NOT on creative maps -
             // there the client keeps the genuine local palette inventory (the
             // server tracks no inventory in creative: free build, no consume),
@@ -437,6 +440,26 @@ namespace MCGalaxy.Network
             msg[0] = ARROW_AMMO;
             msg[1] = (byte)(count >> 8); msg[2] = (byte)count;
             SendMessage(p, msg);
+        }
+
+
+        // ==================== other players' equipment (SURV_PLAYER_EQUIP) ====================
+
+        /// <summary> SURV_PLAYER_EQUIP: [entityId][heldId:u16][armor[4]:u16 each, boots..helmet].
+        /// A remote player's worn armor + held item, all as item ids - the client owns every
+        /// model/texture and renders them onto the entity. </summary>
+        public static void SendPlayerEquip(Player viewer, byte entityId, ushort heldId, ushort[] armor) {
+            if (!Active(viewer, viewer.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = PLAYER_EQUIP;
+            msg[1] = entityId;
+            msg[2] = (byte)(heldId >> 8); msg[3] = (byte)heldId;
+            for (int i = 0; i < 4; i++)
+            {
+                ushort a = i < armor.Length ? armor[i] : (ushort)0;
+                msg[4 + i * 2] = (byte)(a >> 8); msg[5 + i * 2] = (byte)a;
+            }
+            SendMessage(viewer, msg);
         }
 
 

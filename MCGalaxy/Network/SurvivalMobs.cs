@@ -1037,6 +1037,7 @@ namespace MCGalaxy.Network
             SurvivalInventory.PruneRegistry(loaded);
             SurvivalDrops.Prune(loaded); // drop registries are Level-keyed the same way
             SurvivalArrows.Prune(loaded);
+            SurvivalInventory.FlushEquip(); // send equipment for entities that became visible this tick
         }
 
         static void TickLevel(Level lvl, LevelMobs lm, Player[] watchers, Player[] viewers) {
