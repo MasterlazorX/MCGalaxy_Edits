@@ -34,21 +34,45 @@ namespace MCGalaxy.Commands.World
             get { return new[] { new CommandAlias("SurvInv") }; }
         }
         public override CommandPerm[] ExtraPerms {
-            get { return new[] { new CommandPerm(LevelPermission.Admin, "can move/edit the inventory") }; }
+            get { return new[] {
+                new CommandPerm(LevelPermission.Admin, "can move/edit the inventory"),
+                new CommandPerm(LevelPermission.Admin, "can view players on other maps"),
+                new CommandPerm(LevelPermission.Admin, "can view offline players (needs inventory saving)"),
+            }; }
         }
 
         public override void Use(Player p, string message, CommandData data) {
             if (message.Length == 0) {
                 p.Message("Use: &T/Inventory [player]"); return;
             }
+
             Player target = PlayerInfo.FindMatches(p, message);
-            if (target == null) return;
+            if (target == null) {
+                // (future) offline inventory viewing is an admin capability (extra
+                // perm 3) that hooks in here once survival inventories persist across
+                // sessions - there is no saved inventory to read yet, so for now an
+                // offline name simply falls through the "not found" that FindMatches
+                // already messaged.
+                return;
+            }
+
+            // Cross-map gate: an Operator may only view a player on their OWN map
+            // (live + in-map). Viewing a player on another map is an admin
+            // capability (extra perm 2). The console (no map) is exempt.
+            if (p != Player.Console && target.level != p.level && !HasExtraPerm(p, data.Rank, 2)) {
+                p.Message("&W{0} &Wis on {1}&W - operators can only view inventories on their own map.",
+                          target.ColoredName,
+                          target.level == null ? "another map" : target.level.ColoredName);
+                return;
+            }
 
             // Admins (extra perm 1) get an editable window; Operators view-only.
             bool canEdit = HasExtraPerm(p, data.Rank, 1);
 
             // A survival-test client on a survival map gets the GUI; anyone else
             // (a stock client, another mode, or the console) gets the text dump.
+            // A cross-map target isn't spawned to the viewer, so the panel shows the
+            // target's items with no live paperdoll (handled server-side).
             if (p != Player.Console && SurvivalInventory.OpenPlayerInventory(p, target, canEdit)) {
                 p.Message("Opened {0}&S's inventory ({1}).", target.ColoredName,
                           canEdit ? "&aeditable&S" : "&7view-only&S");
@@ -61,6 +85,8 @@ namespace MCGalaxy.Commands.World
             p.Message("&T/Inventory [player]");
             p.Message("&HOpens a live view of a player's survival inventory.");
             p.Message("&HOperators view; admins may move/edit items (drag to/from your own).");
+            p.Message("&HOperators can only view players on their own map; admins can");
+            p.Message("&Hview across maps (and offline players once inventory saving lands).");
             p.Message("&HNon-survival clients see a text dump instead.");
         }
     }

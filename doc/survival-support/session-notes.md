@@ -1122,3 +1122,23 @@ clean real flow `/inventory Tgt2` -> OpenKind=PLAYERINV, TargetId=0, two panels
 with BOTH player models in their doll windows. (Injection tests mislead here: a
 prior gdb-injected panel left over the real command confuses the screen state -
 always test the real flow from a fresh client.)
+
+## /Inventory: cross-map + offline gates
+
+CmdInventory now gates by locality/rank (all via ExtraPerms, so configurable):
+ * perm 1 = edit (Admin) - existing.
+ * perm 2 = view players on OTHER maps (Admin). Operators may only view a target
+   on their OWN map: `if (target.level != p.level && !HasExtraPerm(p, rank, 2))`
+   -> denied with "operators can only view inventories on their own map". Console
+   (no map) is exempt.
+ * perm 3 = view OFFLINE players (Admin) - forward declaration for when survival
+   inventories persist; FindMatches is online-only today, so an offline name still
+   falls through its "not found". Documented in Help + a hook comment.
+
+Cross-map admin views work because the panel is the viewer's; the target's items
+stream regardless of map, and the target paperdoll is simply absent (the target
+isn't spawned to a viewer on another map - server already sends 0xFF then).
+
+Verified live (Op viewer on gt1, Bob /goto'd to map2): operator cross-map ->
+denied (no CONT_OPEN); Owner cross-map -> CONT_OPEN(5,40) + editable; operator
+same-map -> allowed.
