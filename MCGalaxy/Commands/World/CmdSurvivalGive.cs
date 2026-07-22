@@ -53,10 +53,13 @@ namespace MCGalaxy.Commands.World
                 name = SurvivalItems.NameOf(item);
             } else {
                 ushort block;
-                if (!CommandParser.GetBlock(target, args[1], out block)) return;
+                // parse + name in the COMMAND RUNNER's context, not the target's -
+                // an "unknown block" error (and the confirmation name) belongs to p,
+                // who typed the command, not to the player receiving the item
+                if (!CommandParser.GetBlock(p, args[1], out block)) return;
                 raw = Block.ToRaw(block);
                 if (raw > 255) { p.Message("&WOnly blocks with ids 0-255 can be given."); return; }
-                name = Block.GetName(target, block);
+                name = Block.GetName(p, block);
             }
 
             int count = 1; // default one
