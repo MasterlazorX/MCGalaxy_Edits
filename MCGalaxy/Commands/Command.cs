@@ -172,7 +172,8 @@ namespace MCGalaxy
 
             // SurvivalTest tools split out of /Survival (config stays on /Survival)
             RegisterCore(new CmdSurvSpawn(), new CmdMobs(),       new CmdSpawner(),    new CmdSurvTime(),
-                         new CmdInventory(), new CmdSurvivalGive(),new CmdExport());
+                         new CmdInventory(), new CmdSurvivalGive(),new CmdExport(),
+                         new CmdSpectate());
 
             RegisterCore(new CmdAward(),     new CmdAwardMod(),   new CmdAwards());
         }

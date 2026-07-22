@@ -732,6 +732,15 @@ namespace MCGalaxy.Network
             return true;
         }
 
+        /// <summary> Closes whatever container/inventory view the player currently
+        /// has open (clears the ref and force-closes the client screen). Used by
+        /// /Spectate stop to dismiss the mirrored inventory panel. </summary>
+        public static void ForceCloseView(Player p) {
+            if (GetOpen(p) == null) return;
+            p.Extras.Remove(OPEN_KEY);
+            SurvivalNet.SendContOpen(p, CONT_NONE, 0);
+        }
+
         /// <summary> A player disconnected: force-close every open /Inventory view
         /// of them (the view holds a now-departed Player). Registered on
         /// OnPlayerDisconnectEvent. </summary>

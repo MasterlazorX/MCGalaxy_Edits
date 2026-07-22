@@ -333,6 +333,7 @@
     <Compile Include="Commands\World\CmdSurvivalGive.cs" />
     <Compile Include="Commands\World\CmdMobs.cs" />
     <Compile Include="Commands\World\CmdExport.cs" />
+    <Compile Include="Commands\World\CmdSpectate.cs" />
     <Compile Include="Commands\World\CmdUnflood.cs" />
     <Compile Include="Commands\World\CmdUnload.cs" />
     <Compile Include="Commands\World\PermissionCmds.cs" />

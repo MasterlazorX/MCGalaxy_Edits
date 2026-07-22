@@ -1157,3 +1157,34 @@ No collision: economy give's old name is vacated before the survival command
 claims it. Economy transaction logic is unchanged (EcoTransactionType.Give enum).
 Verified live: server boots with no registration errors; /help give -> survival
 give, /help payout -> economy give.
+
+## /Spectate (#3) - follow + live read-only inventory mirror
+
+CmdSpectate (Commands/World/CmdSpectate.cs, name "Spectate" / shortcut "Spec",
+World type, Operator, SuperUseable=false). Thin orchestrator over two tested
+pieces:
+ * Movement = /Follow (Command.Find("Follow").Use) - it hides the spectator,
+   rank-checks (can't follow a higher rank), and TPs cross-map to the target.
+ * Live inventory = OpenPlayerInventory(p, target, canEdit:false) - the read-only
+   /Inventory panel, live via EchoPlayerViews.
+
+Gating (matches /Inventory): survival-map only (SurvivalMode != Off) so it reads
+as a survival tool; operators spectate on their own map, admins cross-map (extra
+perm 1). Classic clients are allowed - OpenPlayerInventory returns false for a
+non-survival client so they just follow ("follow only" in the message).
+
+Flow: `/spectate <player>` follows + opens the mirror; `/spectate` or
+`/spectate stop` unfollows (Follow toggles off) + ForceCloseView closes the panel
+(new SurvivalInventory.ForceCloseView -> CONT_OPEN kind 0). Re-running on the same
+target keeps the follow and just re-opens the panel (SPEC_KEY guards the toggle).
+
+Verified (synthetic v3 Op, test-clients/spectate_test.py): /spectate Bob ->
+CONT_OPEN(5,40) + "Now spectating Bob (inventory mirrored)" (the panel opening
+proves p.following was set, i.e. follow engaged); /spectate stop -> CONT_OPEN(0,0)
++ "Stopped spectating". The panel render + follow are the already-verified
+/Inventory panel and stock /Follow.
+
+FUTURE: a dedicated single-panel spectate view (today it reuses the two-panel
+/Inventory layout, so the spectator's own empty inventory shows on the right);
+optionally mirror the target's OPEN containers/crafting in sync (the "full GUI
+mirror" option), and a per-map-owner /os spectate for owners who aren't operators.
