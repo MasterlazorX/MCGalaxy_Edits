@@ -1588,9 +1588,15 @@ gt1, SurvivalCreative+verify-admin-perm=127 for headless building):
 
 Test rig gotcha (re-confirmed): promoting the synthetic account to build restricted
 blocks (water/lava/fire) trips verify-admin-perm - the client gets "verify with
-/Pass before you can modify blocks" and every edit reverts. Set verify-admin-perm
-= 127 (and SurvivalCreative = true on the map) for headless physics tests; revert
-after.
+/Pass before you can modify blocks" and every edit reverts. The RIGHT fix is to
+give the op account a password, not to weaken the server: once (from console or
+the client) `/SetPass <pw>`, then each session the synthetic client sends
+`/SetPass <pw>` (idempotent, or `/Pass <pw>` if already set) as its first chat
+line before any edit. (Globally lowering verify-admin-perm = 127 also works for a
+throwaway box but leaves the box unverified - prefer the password.) SurvivalCreative
+= true on the map is still needed so the client may place freely. Any op-ranked test
+account left in the DB needs its password set (or demote it back to Guest) before it
+can touch blocks again.
 
 DEFERRED (backlog): third-person held-item render; block-destroying explosions
 (TNT detonation, creeper block damage).
