@@ -70,7 +70,7 @@ namespace MCGalaxy.Commands.World
             // Live inventory mirror (read-only). Returns false for a non-survival
             // client, or if /Follow just TP'd us onto a non-survival map - then it's
             // follow-only.
-            bool gui = SurvivalInventory.OpenPlayerInventory(p, target, false);
+            bool gui = SurvivalInventory.OpenPlayerInventory(p, target, false, solo: true);
             p.Extras[SPEC_KEY] = target.name;
             p.Message("Now spectating {0}&S{1}. &T/Spectate stop &Sto end.",
                       target.ColoredName, gui ? " &S(inventory mirrored)" : " &S(follow only)");

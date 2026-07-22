@@ -703,7 +703,7 @@ namespace MCGalaxy.Network
         /// simultaneous edit-and-self-click on the very same slot can lose one
         /// update (self-heals on the next resync). This is the same accepted race
         /// as /SurvivalGive, and vanishingly rare for a live admin tool. </remarks>
-        public static bool OpenPlayerInventory(Player viewer, Player target, bool canEdit) {
+        public static bool OpenPlayerInventory(Player viewer, Player target, bool canEdit, bool solo = false) {
             if (viewer == null || target == null) return false;
             if (viewer.Session == null || !viewer.Session.hasSurvival) return false;
             if (!SurvivalNet.Active(viewer, viewer.level)) return false;
@@ -721,10 +721,10 @@ namespace MCGalaxy.Network
             if (panel) {
                 // the target's paperdoll: send the entity id the viewer sees the
                 // target as (0xFF = not visible to them - a different level - so
-                // the client shows no model)
+                // the client shows no model). solo = single-panel spectate view.
                 byte eid;
                 if (viewer == target || !viewer.EntityList.TryGetVisibleID(target, out eid)) eid = 0xFF;
-                SurvivalNet.SendPlayerInvOpen(viewer, PLAYERINV_SLOTS, eid);
+                SurvivalNet.SendPlayerInvOpen(viewer, PLAYERINV_SLOTS, eid, solo);
             } else {
                 SurvivalNet.SendContOpen(viewer, CONT_CHEST, 36);
             }

@@ -273,14 +273,16 @@ namespace MCGalaxy.Network
 
         /// <summary> CONT_OPEN for the player-inventory panel (kind 5, SurvivalTest
         /// v3+): also carries the target's entity id AS THIS VIEWER SEES IT, so the
-        /// client can render the target's paperdoll in the left panel. 0xFF = the
-        /// target isn't visible to the viewer (different level) - no model. </summary>
-        public static void SendPlayerInvOpen(Player p, byte slots, byte targetEntityId) {
+        /// client can render the target's paperdoll (0xFF = target not visible to
+        /// the viewer - no model), and a solo flag - 1 = a single panel showing just
+        /// the target (/Spectate), 0 = the two-panel drag view (/Inventory). </summary>
+        public static void SendPlayerInvOpen(Player p, byte slots, byte targetEntityId, bool solo) {
             byte[] msg = new byte[Packet.PluginMessageDataLength];
             msg[0] = CONT_OPEN;
             msg[1] = SurvivalInventory.CONT_PLAYERINV;
             msg[2] = slots;
             msg[3] = targetEntityId;
+            msg[4] = (byte)(solo ? 1 : 0);
             SendMessage(p, msg);
         }
 

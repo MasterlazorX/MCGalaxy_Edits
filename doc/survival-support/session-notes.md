@@ -1188,3 +1188,21 @@ FUTURE: a dedicated single-panel spectate view (today it reuses the two-panel
 /Inventory layout, so the spectator's own empty inventory shows on the right);
 optionally mirror the target's OPEN containers/crafting in sync (the "full GUI
 mirror" option), and a per-map-owner /os spectate for owners who aren't operators.
+
+## /Spectate single-panel polish (solo flag)
+
+/Spectate now opens a single-panel view (just the target) instead of the two-panel
+/Inventory layout. Implemented as a `solo` flag on the existing CONT_OPEN kind 5
+(no new kind): SendPlayerInvOpen gained msg[4]=solo; OpenPlayerInventory gained a
+`solo` param (default false); CmdSpectate passes solo:true, /Inventory stays false.
+
+Client (all branch on IndevTest_NetContIsSolo(), set from data[4]): layout draws
+one 176-wide panel (not 176+16+176); render draws one inventory.png panel (or one
+flat panel in the fallback) with only the TARGET's doll box; DisplayCount/
+DisplaySlot/HitSlot show ONLY the target's 40 container cells (no viewer's-own
+slots); the doll gate skips the viewer doll and keeps the target's. /Inventory
+(solo=0) is untouched.
+
+Verified (graphical rig, gdb-injected NetContOpen(3,40)+NetContTarget+NetContSolo(1)
++samples): a single centered panel with the target's model, armor/storage/hotbar,
+and no viewer inventory.
