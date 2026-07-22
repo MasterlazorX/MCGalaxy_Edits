@@ -1405,3 +1405,25 @@ spread), on the ~30-tick cadence. Confirms the Indev skeleton path + SpawnIndev.
 The Indev player bow reuses the same verified SpawnIndev + Indev flight; it wasn't
 independently live-tested only because the console can't grant arrow items for a
 synthetic client (the c0.30 quiver path was fully tested earlier).
+
+
+## Mob pushback + per-map spawn cap
+
+Two mob-sim fixes (both server-side in SurvivalMobs; the client just renders the
+streamed positions):
+
+- **Pushback (Entity.push / applyEntityCollision)**: after Travel, every mob is
+  shoved apart from overlapping PLAYERS (skipping `p.hidden` staff/spectators) and
+  from other mobs, using the genuine formula (absMax->sqrt normalize, 1/dist boost
+  clamped to 1, ×0.05, added to velocity so it lands next tick). Only the mob is
+  pushed - players own their movement in Classic - which reads as "walk into a mob
+  and it gets nudged aside". Fixes mobs stacking into one column and clipping into
+  the player. `PushApart` + `HorizOverlap` (bb.grow(0.2)) + `PushVec` helpers.
+  Verified: a pig I stood on was shoved 0.41 -> 1.15 blocks and settled right at
+  the collision radius (no push once clear).
+- **Spawn cap**: the old cap was `min(area*20, 256)` = ~80 on a 128^2 map, which
+  swarmed. New per-map `SurvivalMobCap` LevelConfig (0 = auto = clamp(area*4, 8,
+  40)); gt1 (area 4) -> 16. Stored on `LevelMobs.Cap`, recomputed each tick, and
+  used by every spawner gate (InitialSpawnerRun / TopUpSpawnerRun / TrySpawnCluster)
+  instead of the raw pool ceiling. `/Survival spawn` (DebugSpawn) still bypasses to
+  the 256 pool. Verified: gt1 population climbed to 16 and held (was ~80).

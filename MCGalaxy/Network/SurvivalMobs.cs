@@ -138,6 +138,7 @@ namespace MCGalaxy.Network
             public Level Level;
             public List<SurvMob> Mobs = new List<SurvMob>();
             public bool InitialSpawned;
+            public int  Cap = MAX_MOBS_PER_LEVEL; // effective standing-population cap (recomputed each tick)
             public Random Rng = new Random();
             public SpawnStats Stats = new SpawnStats();
         }
@@ -446,6 +447,54 @@ namespace MCGalaxy.Network
                 m.VY -= 0.08;
                 if (m.OnGround) { m.VX *= 0.6; m.VZ *= 0.6; }
             }
+        }
+
+        // Entity.push(Entity): overlapping entities shove each other apart along the
+        // horizontal centre-to-centre vector (genuine c0.30/Indev applyEntityCollision).
+        // Only the MOB is pushed here (players own their own movement in Classic), which
+        // reads as the mob being nudged aside when a player walks into it.
+        static void PushApart(Level lvl, LevelMobs lm, SurvMob m, Player[] viewers) {
+            double mw = Width(lvl, m), mh = Height(lvl, m);
+
+            // ...away from players (skip hidden staff / spectators - a mob shoved by
+            // an invisible body looks like a ghost pushing it)
+            foreach (Player p in viewers)
+            {
+                if (p.hidden) continue;
+                double px = p.Pos.X / 32.0, pz = p.Pos.Z / 32.0;
+                double py = (p.Pos.Y - Entities.CharacterHeight) / 32.0;
+                if (py >= m.Y + mh || py + 1.8 <= m.Y) continue;         // no vertical overlap
+                if (!HorizOverlap(m.X, m.Z, px, pz, mw, 0.6)) continue;
+                PushVec(m, m.X - px, m.Z - pz);
+            }
+
+            // ...apart from other mobs (so a cluster doesn't pile into one column)
+            foreach (SurvMob o in lm.Mobs)
+            {
+                if (o == m || o.Dead) continue;
+                if (o.Y >= m.Y + mh || o.Y + Height(lvl, o) <= m.Y) continue;
+                if (!HorizOverlap(m.X, m.Z, o.X, o.Z, mw, Width(lvl, o))) continue;
+                PushVec(m, m.X - o.X, m.Z - o.Z);
+            }
+        }
+
+        // AABB overlap of two entity boxes (feet-centred widths) grown 0.2 horizontally,
+        // matching findEntities(this, bb.grow(0.2, 0, 0.2)).
+        static bool HorizOverlap(double ax, double az, double bx, double bz, double aw, double bw) {
+            double r = aw / 2 + bw / 2 + 0.2;
+            return Math.Abs(ax - bx) < r && Math.Abs(az - bz) < r;
+        }
+
+        // Entity.push(x, z): normalise the (already centre-relative) offset, clamp the
+        // 1/dist boost to 1, scale by 0.05, and add to the mob's velocity.
+        static void PushVec(SurvMob m, double xd, double zd) {
+            double dist = Math.Max(Math.Abs(xd), Math.Abs(zd));
+            if (dist < 0.01) return;
+            dist = Math.Sqrt(dist);
+            xd /= dist; zd /= dist;
+            double f = 1.0 / dist; if (f > 1.0) f = 1.0;
+            xd *= f * 0.05; zd *= f * 0.05;
+            m.VX += xd; m.VZ += zd;
         }
 
         static void DoJump(SurvMob m, bool inWater, bool inLava, bool spiderLunge) {
@@ -826,7 +875,7 @@ namespace MCGalaxy.Network
             Random rng = lm.Rng;
             for (int attempt = 0; attempt < attempts; attempt++)
             {
-                if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) return;
+                if (lm.Mobs.Count >= lm.Cap) return;
                 int x = rng.Next(lvl.Width);
                 int z = rng.Next(lvl.Length);
                 double sx = lvl.spawnx - (x + 0.5), sz = lvl.spawnz - (z + 0.5);
@@ -845,7 +894,7 @@ namespace MCGalaxy.Network
             Random rng = lm.Rng;
             for (int attempt = 0; attempt < attempts; attempt++)
             {
-                if (lm.Mobs.Count >= MAX_MOBS_PER_LEVEL) { lm.Stats.RejCap++; return; }
+                if (lm.Mobs.Count >= lm.Cap) { lm.Stats.RejCap++; return; }
                 lm.Stats.Attempts++;
                 Player near = viewers[rng.Next(viewers.Length)];
                 double ang  = rng.NextDouble() * 2 * Math.PI;
@@ -893,7 +942,7 @@ namespace MCGalaxy.Network
             // v1 - the genuine 9-roll cluster with jitter walks is trimmed to
             // keep server populations tame)
             int cluster = 1 + rng.Next(3);
-            for (int i = 0; i < cluster && lm.Mobs.Count < MAX_MOBS_PER_LEVEL; i++)
+            for (int i = 0; i < cluster && lm.Mobs.Count < lm.Cap; i++)
             {
                 int cx = x + rng.Next(7) - 3, cy = y, cz = z + rng.Next(7) - 3;
                 if (!SpawnValid(lvl, cx, cy, cz)) continue;
@@ -1008,11 +1057,17 @@ namespace MCGalaxy.Network
             lm.Stats.Ticks++;
             long volume = (long)lvl.Width * lvl.Height * lvl.Length;
             int area = Math.Max(1, (int)(volume / 64 / 64 / 64));
+            // Per-map standing-population cap. SurvivalMobCap overrides; 0 = auto
+            // (scaled from the map volume, deliberately much lower than c0.30's
+            // area*20 which swarmed small maps). Always <= the client's 256 pool.
+            int cap = lvl.Config.SurvivalMobCap;
+            if (cap <= 0) cap = Math.Max(8, Math.Min(area * 4, 40));
+            lm.Cap = Math.Min(cap, MAX_MOBS_PER_LEVEL);
             if (!lm.InitialSpawned) {
                 lm.InitialSpawned = true;
                 if (!indev) InitialSpawnerRun(lvl, lm, (int)(volume / 6400));
             }
-            if (rng.Next(100) < Math.Min(area, 25) && lm.Mobs.Count < Math.Min(area * 20, MAX_MOBS_PER_LEVEL)) {
+            if (rng.Next(100) < Math.Min(area, 25) && lm.Mobs.Count < lm.Cap) {
                 lm.Stats.Rolls++;
                 // ring centres come from ANY player, so a classic-only map still
                 // feels alive; hostile targeting stays survival-clients-only
@@ -1154,6 +1209,13 @@ namespace MCGalaxy.Network
             m.MoveStrafe *= 0.98f; m.MoveForward *= 0.98f; m.TurnRate *= 0.9f;
             double oldY = m.Y;
             Travel(lvl, m, inWater, inLava);
+
+            // entity collision (Entity.push / applyEntityCollision): shove the mob
+            // away from any overlapping player (the "pushback from players" - walk
+            // into a mob and it gets nudged aside) and from other mobs so they don't
+            // stack. Adds to velocity, so it takes effect next tick, exactly like the
+            // client's Mob_PushApart.
+            PushApart(lvl, lm, m, viewers);
 
             // ---- fall damage (Mob.causeFallDamage) ----
             if (inWater || inLava) m.Falling = false;

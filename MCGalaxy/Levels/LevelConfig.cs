@@ -336,6 +336,10 @@ namespace MCGalaxy
         public bool SurvivalPvP;
         [ConfigBool("SurvivalDeathDrops", "Survival", true)]
         public bool SurvivalDeathDrops = true;
+        // Max mobs the survival spawner keeps alive on this map. 0 = auto (scaled
+        // from the map volume). Lower it to thin out a crowded map.
+        [ConfigInt("SurvivalMobCap", "Survival", 0, 0, 256)]
+        public int SurvivalMobCap;
 
         // Games settings
         [ConfigInt("Likes", "Game", 0)]
