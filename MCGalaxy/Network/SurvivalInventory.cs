@@ -1039,6 +1039,23 @@ namespace MCGalaxy.Network
             if (any) SendAll(p); // the emptied inventory is now authoritative
         }
 
+        /// <summary> Indev bow fire: consumes one arrow item (id 256+6) from the first
+        /// main slot holding it and echoes that slot. Returns false if the player has
+        /// no arrows (a dry bow does nothing). </summary>
+        public static bool ConsumeArrow(Player p) {
+            const ushort ARROW = 256 + 6;
+            PlayerInv inv = Get(p);
+            for (int i = 0; i < MAIN_SLOTS; i++)
+            {
+                if (inv.Slots[i].Count == 0 || inv.Slots[i].Id != ARROW) continue;
+                inv.Slots[i].Count--;
+                if (inv.Slots[i].Count == 0) { inv.Slots[i].Id = 0; inv.Slots[i].Damage = 0; }
+                SendSlot(p, inv, i);
+                return true;
+            }
+            return false;
+        }
+
         /// <summary> Q-toss path: takes item(s) off a hotbar slot for SurvivalDrops
         /// to fling out as a drop entity. `whole` empties the stack, otherwise one
         /// is taken. Echoes the slot; returns false (nothing taken) for an empty or

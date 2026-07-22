@@ -1289,3 +1289,87 @@ it), which is why the earlier static tests never desynced.
 Still pending in phase 5: mob-death drops (`indevDeathDrop`), chest scatter, TNT
 drops (all just call `SurvivalDrops.Spawn`), player death scatter
 (`SurvivalDeathDrops`), and then projectiles (arrows).
+
+
+## Phase 5b - the rest of the drop sources - DONE
+
+Wired every remaining drop source onto the proven `SurvivalDrops.Spawn` path
+(`SpawnScatter` = N single-item drops each with a pop; `SpawnStack` = one drop
+carrying a whole stack; `MinedDelay(lvl)` = 10t Indev / 0 c0.30):
+- Mob death (`SurvivalMobs.KillMob`): Indev 0-2 of the mob's death item
+  (`indevDeathDrop`: zombie feather 256+32, skeleton arrow 256+6, pig porkchop
+  256+63, creeper gunpowder 256+33, spider string 256+31; sheep none); c0.30
+  pig/sheep 1-2 brown mushrooms (Block.Mushroom).
+- Sheep shear (`HandleAttack`): Indev 1+rand(3) GRAY cloth at head height + takes
+  the hit; c0.30 1-3 WHITE cloth, shear replaces the hit.
+- Container scatter (`SurvivalInventory.ContainerRemoved`): a mined chest/furnace
+  drops each stored stack as one drop at the block centre.
+- Player death (`SurvivalNet.OnPlayerDied`): SurvivalDeathDrops (and not creative)
+  scatters main+craft+armor+cursor at the corpse then clears them (`DeathScatter`).
+- Explosion drops deferred: server explosions (`CreeperExplode`) only damage
+  entities - no block-destruction trigger exists yet.
+
+Verified live (synthetic clients): pig death -> item 319 (raw porkchop) x1-2 per
+rand(3); sheep shear -> item 35 (gray wool) x2 at head height; sheep death drops
+nothing.
+
+
+## Phase 5c - PROJECTILES (arrows) - DONE
+
+New server file **`Network/SurvivalArrows.cs`** + client MP appliers. A player
+Tab-fire (c0.30) / bow use (Indev) and a skeleton's shot become server-owned
+Arrow entities that fly the genuine c0.30 `Arrow.tick` model, stick into blocks,
+and hit players/mobs for authoritative damage. New wire (no ext bump, ids were
+free): `SURV_ARROW_SPAWN 0x33`, `_STICK 0x34`, `_REMOVE 0x35`, `_AMMO 0x36`,
+intent `SURV_FIRE_ARROW 0x88`.
+
+Division of labour mirrors drops: the SERVER owns each arrow's flight authority
+(block-stick + every hit) and the ammo; the client seeds an `st_arrows` entry and
+simulates the SAME c0.30 flight (`SurvivalTest_TickNetArrows`, MP-only, no local
+collision) so the arc stays in lock-step until a STICK (snap+freeze) or REMOVE.
+- Velocity is per-TICK (genuine Arrow units); wire vel = blocks/tick × 1024 (i16),
+  pos = coord × 32. Spawn also carries `type` (0 player / 1 mob) + `gravity` (=1/
+  force, u8×100) so the client's flight matches exactly.
+- `FireFromPlayer` (SURV_FIRE_ARROW): c0.30 spends a counted quiver arrow
+  (`Ammo` in Extras, 20..99, streamed as SURV_ARROW_AMMO); Indev spends an arrow
+  item from the inventory (`SurvivalInventory.ConsumeArrow`, id 256+6). Aim is sent
+  as i16 hundredths-of-degrees (yaw as u16 0..36000, pitch signed) for precision.
+- `FireFromMob` + skeleton AI: a targeted skeleton (dist<24, on ground) has a 1/30
+  per-tick chance to loose an arrow (type 1, damage 3, force 1.0) with the genuine
+  asymmetric spread (yaw +/-22.5, pitch biased upward).
+- `Tick`: c0.30 drag(0.998) + speed-scaled gravity, substep sweep (0.2/step) for
+  block-stick (`SolidOverlap`) and entity-hit (`HitEntity` -> players via
+  `DamagePlayer`, mobs via new `SurvivalMobs.TryArrowHitMob` -> HurtMob + aggro).
+  The shooter is ALWAYS excluded from its own arrow (no blanket grace window - a
+  close target still hits). Stuck player arrows are pickable within ~1.35 blocks
+  (c0.30 refunds ammo, Indev gives an arrow item), then REMOVE reason 2. Player
+  stuck arrows despawn after 300t at 1% / tick; mob arrows after 20t.
+
+Client: `struct ArrowEntity` gained `net`/`netId`; `SurvivalTest_NetArrowSpawn/
+Stick/Remove` + `NetSetArrowCount` feed `st_arrows`/`st_playerArrows`;
+`TickNetArrows` runs the flight in the ServerDriven branch (next to the puppet/
+drop net ticks). `SurvivalTest_TryShootArrow` (c0.30 Tab) and `TryUseBow` (Indev)
+now send SURV_FIRE_ARROW in MP instead of early-returning. Rendering is the
+unchanged SP `SurvivalTest_RenderArrows` (gated only on Enabled).
+
+Verified live (synthetic clients on a temporarily-c0.30 gt1 for the free quiver):
+- Fire straight down: ARROW_AMMO 20->19, ARROW_SPAWN {type 0, grav 0.83, vel
+  (0,-1.2,-0.02)}, the arrow flew down and ARROW_STICK at the floor (y 33.5->32.3),
+  then the player picked it up -> ARROW_AMMO back to 20 + ARROW_REMOVE reason 2.
+- Two players: Archer's level shots hit Victim -> Victim HP 20 -> 0 (7 dmg each),
+  each ARROW_REMOVE reason 1 (hit). Confirms HitEntity -> DamagePlayer.
+- Skeleton fire observed: stray ARROW_SPAWNs originating away from the player were
+  skeletons shooting at the clients (FireFromMob path).
+
+Rig / test-setup notes (not product bugs): the console can't invoke the survival
+`/give` (its Use never runs from console), so ammo for an Indev-map test can't be
+granted that way - tested the quiver path on a temporarily-Classic gt1 instead
+(reverted after). Synthetic clients spawn inside the gt1 spawn structure, so
+level shots hit the wall until both players are lifted into open air. An early
+bug where a blanket 5-tick owner-grace skipped ALL entity collision (letting the
+arrow fly past a close target) was fixed to only ever exclude the shooter.
+
+Still pending in phase 5+: Indev arrow flight nuances (gaussian spread, water
+drag, bounce/re-loosen from mined blocks), the death-arrow burst, block-
+destroying explosions (+ their 0.3-chance drops), and the PLAYER_EQUIP (0x50)
+armor/held-item streaming for other players.

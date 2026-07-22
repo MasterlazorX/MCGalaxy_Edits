@@ -1937,6 +1937,12 @@ SURV_DROP_SPAWN 0x30  [1..2]dropId(u16)  [3..4]itemId(u16, ≥256 = item)  [5]co
                       [6..11]pos  [12..17]vel(i16 = coord/sec × 512)  [18]rot0(u8)
 SURV_DROP_PICKUP 0x31 [1..2]dropId  [3]pickerEntityId(u8 Classic entity id)
 SURV_DROP_REMOVE 0x32 [1..2]dropId  [3]reason(0 despawn/1 destroyed)
+SURV_ARROW_SPAWN 0x33 [1..2]arrowId(u16)  [3]type(0 player/1 mob)  [4]gravity(u8=1/force ×100)
+                      [5..10]pos(i16 coord×32)  [11..16]vel(i16 blocks/TICK ×1024)
+                      (client seeds st_arrows + simulates the same c0.30 flight)
+SURV_ARROW_STICK 0x34 [1..2]arrowId  [3..8]pos(i16 coord×32)  (snap + freeze in a block)
+SURV_ARROW_REMOVE 0x35 [1..2]arrowId  [3]reason(0 despawn/1 hit/2 pickup)
+SURV_ARROW_AMMO  0x36 [1..2]count(u16)  (the player's own quiver count, HUD)
 SURV_PLAYER_EQUIP 0x50 [1]entityId(u8)  [2..3]heldId(u16)  [4..11]armor[4](u16 each)
 SURV_BLOCKMETA  0x40  [1..6]xyz(i16 block coords)  [7]meta
 ```
@@ -1959,6 +1965,8 @@ SURV_CONT_CLOSE   0x84  (window closed → server returns cursor + craft grid)
 SURV_HELD_SLOT    0x85  [1]hotbarIndex
 SURV_DROP_ITEM    0x86  [1]slot  [2]wholeStack(0/1)
 SURV_RESPAWN      0x87  (menu action)
+SURV_FIRE_ARROW   0x88  [1..2]yaw(u16 ×100, 0..36000)  [3..4]pitch(i16 ×100)  [5]kind(0 tab/1 bow)
+                        (server owns the arrow entity + ammo; validates + spawns)
 ```
 
 Reuse standard packets where they fit (don't duplicate): player movement =

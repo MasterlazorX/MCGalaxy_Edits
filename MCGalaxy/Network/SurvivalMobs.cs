@@ -513,6 +513,31 @@ namespace MCGalaxy.Network
             0         // SHEEP    -> nothing
         };
 
+        /// <summary> Arrow-vs-mob hit test (SurvivalArrows): the arrow box centred at
+        /// (ax,ay,az) is tested against every live mob on the level (skipping the
+        /// shooter mob); the first overlap takes HurtMob damage + aggro credit.
+        /// Returns whether a mob was hit. </summary>
+        public static bool TryArrowHitMob(Level lvl, double ax, double ay, double az,
+                                          double halfW, double halfH, int ownerMobId,
+                                          int damage, Player ownerPlayer) {
+            LevelMobs lm = GetLevel(lvl, false);
+            if (lm == null) return false;
+            lock (lm.Mobs) {
+                foreach (SurvMob m in lm.Mobs)
+                {
+                    if (m.Dead || m.Health <= 0) continue;
+                    if (m.Id == ownerMobId) continue; // never self-hit the shooter
+                    double hw = Width(lvl, m) / 2.0, h = Height(lvl, m);
+                    if (ax + halfW < m.X - hw || ax - halfW > m.X + hw) continue;
+                    if (ay + halfH < m.Y      || ay - halfH > m.Y + h)  continue;
+                    if (az + halfW < m.Z - hw || az - halfW > m.Z + hw) continue;
+                    HurtMob(lvl, lm, m, ownerPlayer, damage);
+                    return true;
+                }
+            }
+            return false;
+        }
+
         static void KillMob(Level lvl, LevelMobs lm, SurvMob m, Player killer) {
             m.Health = 0;
             m.Dead   = true;
@@ -681,6 +706,17 @@ namespace MCGalaxy.Network
             // full 3D distance - the genuine mild under-pitch quirk
             m.Yaw   = (float)(Math.Atan2(ddx, -ddz) * 180.0 / Math.PI);
             m.Pitch = (float)(Math.Atan2(-ddy, dist) * 180.0 / Math.PI);
+
+            // Skeleton ranged AI (Skeleton.onLivingUpdate: a targeted skeleton has a
+            // 1/30 per-tick chance to loose an arrow). Fired from the skeleton's eye
+            // with the genuine asymmetric spread (yaw +/-22.5, pitch biased upward).
+            if (m.Type == TYPE_SKELETON && dist < 24.0 && m.OnGround && rng.Next(30) == 0) {
+                double sy = m.Yaw   + (rng.NextDouble() * 45.0 - 22.5);
+                double sp = m.Pitch - (rng.NextDouble() * 45.0 - 10.0);
+                double eye = m.Y + Height(lvl, m) * 0.9;
+                SurvivalArrows.FireFromMob(lvl, m.Id, m.X, eye, m.Z, sy, sp);
+                m.AttackDelay = 10; // brief cooldown so it doesn't machine-gun
+            }
 
             // chase: stride toward the victim (the c0.30 target branch in WanderAI
             // pushes forward; Indev v1 reuses it pending the A* port)
@@ -930,6 +966,7 @@ namespace MCGalaxy.Network
             // leak forever as dictionary keys
             SurvivalInventory.PruneRegistry(loaded);
             SurvivalDrops.Prune(loaded); // drop registries are Level-keyed the same way
+            SurvivalArrows.Prune(loaded);
         }
 
         static void TickLevel(Level lvl, LevelMobs lm, Player[] watchers, Player[] viewers) {
@@ -977,6 +1014,9 @@ namespace MCGalaxy.Network
 
             // dropped items age, get collected, and despawn on the same cadence
             SurvivalDrops.Tick(lvl);
+
+            // arrows fly, stick, hit and despawn on the same cadence
+            SurvivalArrows.Tick(lvl);
 
             // non-survival clients on this map see the mobs as plain Classic
             // entities with ChangeModel (SurvivalFallbacks) - synced at 10 Hz,

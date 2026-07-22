@@ -98,6 +98,10 @@ namespace MCGalaxy.Network
         public const byte DROP_SPAWN   = 0x30;
         public const byte DROP_PICKUP  = 0x31;
         public const byte DROP_REMOVE  = 0x32;
+        public const byte ARROW_SPAWN  = 0x33;
+        public const byte ARROW_STICK  = 0x34;
+        public const byte ARROW_REMOVE = 0x35;
+        public const byte ARROW_AMMO   = 0x36;
         public const byte BLOCKMETA    = 0x40;
         public const byte PLAYER_EQUIP = 0x50;
 
@@ -110,6 +114,7 @@ namespace MCGalaxy.Network
         public const byte HELD_SLOT    = 0x85;
         public const byte DROP_ITEM    = 0x86;
         public const byte RESPAWN      = 0x87;
+        public const byte FIRE_ARROW   = 0x88;
 
         /// <summary> SURV_HELLO flag bits (byte 2). </summary>
         [Flags]
@@ -165,6 +170,8 @@ namespace MCGalaxy.Network
             SendHealth(p); // and the current health/score
             SurvivalMobs.SendLevelMobs(p, lvl); // phase 3: the level's live mob population
             SurvivalDrops.SendLevelDrops(p, lvl); // phase 5: the level's dropped items (at rest)
+            SurvivalArrows.SendLevelArrows(p, lvl); // phase 5: in-flight + stuck arrows
+            SurvivalArrows.SendInitialAmmo(p, lvl); // c0.30 quiver count for the HUD
             // phase 4: the server-owned inventory + cursor. NOT on creative maps -
             // there the client keeps the genuine local palette inventory (the
             // server tracks no inventory in creative: free build, no consume),
@@ -363,6 +370,72 @@ namespace MCGalaxy.Network
             msg[0] = DROP_REMOVE;
             msg[1] = (byte)(dropId >> 8); msg[2] = (byte)dropId;
             msg[3] = reason;
+            SendMessage(p, msg);
+        }
+
+
+        // ==================== arrows (SURV_ARROW_*) ====================
+
+        static short ArrowPos(double v) { return (short)Math.Round(v * SurvivalArrows.POS_SCALE); }
+        static short ArrowVel(double v) {
+            double s = v * SurvivalArrows.VEL_SCALE;
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            return (short)s;
+        }
+
+        /// <summary> SURV_ARROW_SPAWN: [arrowId:u16][type][gravity(u8=×100)]
+        /// [pos:3xi16 coord*32][vel:3xi16 blocks/tick*1024]. The client seeds an
+        /// st_arrows entry and simulates the SAME c0.30 flight until STICK/REMOVE. </summary>
+        public static void SendArrowSpawn(Player p, int arrowId, byte type, double gravity,
+                                          double x, double y, double z, double vx, double vy, double vz) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = ArrowPos(x),  py = ArrowPos(y),  pz = ArrowPos(z);
+            short sx = ArrowVel(vx), sy = ArrowVel(vy), sz = ArrowVel(vz);
+            msg[0]  = ARROW_SPAWN;
+            msg[1]  = (byte)(arrowId >> 8); msg[2] = (byte)arrowId;
+            msg[3]  = type;
+            msg[4]  = (byte)Math.Max(0, Math.Min(255, (int)Math.Round(gravity * 100.0)));
+            msg[5]  = (byte)(px >> 8); msg[6]  = (byte)px;
+            msg[7]  = (byte)(py >> 8); msg[8]  = (byte)py;
+            msg[9]  = (byte)(pz >> 8); msg[10] = (byte)pz;
+            msg[11] = (byte)(sx >> 8); msg[12] = (byte)sx;
+            msg[13] = (byte)(sy >> 8); msg[14] = (byte)sy;
+            msg[15] = (byte)(sz >> 8); msg[16] = (byte)sz;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_ARROW_STICK: [arrowId:u16][pos:3xi16]. Snaps the arrow to the
+        /// authoritative stuck position and freezes it. </summary>
+        public static void SendArrowStick(Player p, int arrowId, double x, double y, double z) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = ArrowPos(x), py = ArrowPos(y), pz = ArrowPos(z);
+            msg[0] = ARROW_STICK;
+            msg[1] = (byte)(arrowId >> 8); msg[2] = (byte)arrowId;
+            msg[3] = (byte)(px >> 8); msg[4] = (byte)px;
+            msg[5] = (byte)(py >> 8); msg[6] = (byte)py;
+            msg[7] = (byte)(pz >> 8); msg[8] = (byte)pz;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_ARROW_REMOVE: [arrowId:u16][reason(0 despawn/1 hit/2 pickup)]. </summary>
+        public static void SendArrowRemove(Player p, int arrowId, byte reason) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = ARROW_REMOVE;
+            msg[1] = (byte)(arrowId >> 8); msg[2] = (byte)arrowId;
+            msg[3] = reason;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_ARROW_AMMO: [count:u16] - the player's own quiver count (HUD). </summary>
+        public static void SendArrowAmmo(Player p, int count) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = ARROW_AMMO;
+            msg[1] = (byte)(count >> 8); msg[2] = (byte)count;
             SendMessage(p, msg);
         }
 
@@ -712,6 +785,15 @@ namespace MCGalaxy.Network
                     // [id][slot][wholeStack] - Q-toss: take the item off the
                     // server-owned inventory and fling it out as a drop entity.
                     if (data.Length >= 3) SurvivalDrops.Toss(p, data[1], data[2] != 0);
+                    break;
+                case FIRE_ARROW:
+                    // [id][yaw:u16 ×100 (0..36000)][pitch:i16 ×100][kind(0 tab/1 bow)]
+                    // - the server spawns + simulates the arrow (ammo checked inside)
+                    if (data.Length >= 6) {
+                        double yaw   = (((data[1] << 8) | data[2]) & 0xFFFF) / 100.0;
+                        double pitch = (short)((data[3] << 8) | data[4]) / 100.0;
+                        SurvivalArrows.FireFromPlayer(p, yaw, pitch, data[5]);
+                    }
                     break;
                 default:
                     Logger.Log(LogType.Debug, "survival: unexpected msg 0x{0:X2} from {1}", id, p.name);
