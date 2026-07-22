@@ -1206,3 +1206,86 @@ slots); the doll gate skips the viewer doll and keeps the target's. /Inventory
 Verified (graphical rig, gdb-injected NetContOpen(3,40)+NetContTarget+NetContSolo(1)
 +samples): a single centered panel with the target's model, armor/storage/hotbar,
 and no viewer inventory.
+
+
+## Block drops (phase 5a) - DONE: mine/toss -> drop entity -> proximity pickup
+
+Mining a block (and the Q-toss) now spawns a real physical drop entity that the
+player walks over to collect, instead of teleporting the yield straight into the
+inventory. New server file **`Network/SurvivalDrops.cs`**; new client appliers +
+MP tick in `SurvivalTest.c`/`SurvivalNet.c`. Wire ids were already reserved
+(`SURV_DROP_SPAWN 0x30`, `_PICKUP 0x31`, `_REMOVE 0x32`); no ext bump (still v3).
+
+**Division of labour** (the server can't run ClassiCube's collision engine):
+- SERVER owns the LOGICAL drop. `SurvivalDrops` keeps a per-level registry
+  (`Dictionary<Level,LevelDrops>` + a lock, pruned on unload next to the mob/
+  container registries). Each `Drop` has an id (u16 wire key), block/item id,
+  count, a settled feet-space X/Y/Z, an Age and a PickupDelay counter, and rot0.
+- `SpawnMined(p,lvl,x,y,z,view,held)` replaces the old `AddOne` loop in
+  `SurvivalInventory.OnBlockChanging`'s mine branch. Indev rolls the genuine
+  `SurvivalItems.MiningDrops` table (harvest gating, grass->dirt, ore->item, seed
+  rolls) and spawns one drop entity per item; c0.30 drops the block itself.
+- `Spawn(...)` settles Y by scanning straight down for the first solid block
+  (`SettleY`, using `CollideType.IsSolid`) and streams `SURV_DROP_SPAWN` with the
+  SPAWN pos + a genuine pop velocity (Item ctor: xd/zd +/-2 b/s, yd +4 b/s) purely
+  for the client's visual arc. The settle point is the pickup centre.
+- `Toss(p,slot,whole)` handles `SURV_DROP_ITEM`: `SurvivalInventory.TakeForToss`
+  removes the item + echoes the slot, then the drop is flung along the player's
+  look vector (Vec3_GetDirVector replicated server-side from p.Rot bytes) with a
+  40-tick self-pickup delay (mined uses 10).
+- `Tick(lvl)` runs on the 20 TPS mob tick (added next to `TickFurnaces`): ages
+  every drop, counts down PickupDelay, awards it, despawns at 6000t.
+
+**Player-to-player semantics** (what the user asked about):
+- WHICH player wins a contested pickup: `FindPicker` walks the level's survival
+  watchers IN ORDER and returns the FIRST within `bb.grow(1,0,1)` reach (h^2 <=
+  1.35^2, feet dy in [-0.5,2.0]) with inventory room - matching genuine
+  `Player.tick`'s `findEntities` sweep (tick order, no distance tiebreak).
+- PICKUP DELAY: the `delayBeforeCanPickup` counter lives on the DROP, so during
+  the window NOBODY may collect it. That is exactly what lets a player toss a
+  stack to a friend (40t) without instantly re-vacuuming it.
+- Pickup is whole-stack only (`SurvivalInventory.PickUp` checks `HasRoomFor`
+  first, no partial-remainder re-count over the wire); a full inventory leaves the
+  drop for someone else / later.
+- `SURV_DROP_PICKUP` is fanned PER-VIEWER: the picker gets pickerEntityId=255
+  (ENTITIES_SELF_ID -> its own body), every other watcher gets the picker's Classic
+  entity id AS THEY see it (via `EntityList.TryGetVisibleID`), so their client
+  animates the item flying into the right body. Server-authoritative: no client
+  ever self-awards (anti-dupe / anti-reach-hack).
+
+**Client** (`SurvivalTest.c`): `struct DropItem` gained `net`/`netId`/`pickupTarget`.
+`SurvivalTest_NetDropSpawn/Pickup/Remove` feed the existing `st_drops` pool;
+`SurvivalTest_TickNetDrops(delta)` runs in the ServerDriven branch (next to the
+puppet-mob tick) - it runs the drop's LOCAL physics + spin/bob + Indev lava/water
+visuals, but NEVER local pickup, lifetime despawn, or fire-destroy (the server owns
+those, and burning a net drop locally would desync). Pickup eases toward the picker
+body captured on `DROP_PICKUP`. `SurvivalNet.c` decodes 0x30/0x31/0x32 (pos coord*32,
+vel coord/sec*512). Rendering is the unchanged SP `SurvivalTest_RenderDrops` (gated
+only on `SurvivalTest_Enabled`, called unconditionally in `Render3DFrame`).
+
+**Verified** (synthetic protocol clients, `test-clients/drops_test.py` +
+`drops_pvp.py`):
+- Single miner: break grass (80,30,34) -> `DROP_SPAWN {id 1, item 3 (dirt), pos
+  (80.5,30.5,34.5), vel vy=4.0}`; walk on -> `DROP_PICKUP {id 1, picker 255}` +
+  `INV_FULL [(0, 3, 1)]`. Full mine->drop->pickup->inventory round trip.
+- Two players on one spot: both get the shared `DROP_SPAWN`; Alice (first in tick
+  order) wins with picker=255 + the inventory echo; Bob sees the SAME drop id
+  picked up by picker=0 (Alice's id from his view) and gets NO inventory; exactly
+  ONE player collects (no dupe). Pickup fired ~514 ms after spawn = ~10 ticks,
+  confirming the mined delay gate.
+- Client render path proven live: a graphical client on the survival map (so
+  ServerDriven=true) + gdb-injected `NetDropSpawn`s -> a gdb probe of `st_drops`
+  showed all drops active with `net=1`, correct ids/counts, and physics running
+  (spawned at y=33.3, settled to the floor y=32.0). `SurvivalTest_Enabled=1` and
+  `RenderDrops` is unconditional, so they draw. A beauty-shot of them on-screen was
+  blocked only by the headless rig (the client spawned enclosed and gdb can't
+  redirect its interpolated camera down to the floor) - not a code issue.
+
+Test-client note: fixed a latent size-table bug shared with the older clients -
+Classic opcode 0x0a (relative position update, no orientation) is 4 payload bytes,
+not 5; it only bites once mobs/players are actually moving (mob streaming triggers
+it), which is why the earlier static tests never desynced.
+
+Still pending in phase 5: mob-death drops (`indevDeathDrop`), chest scatter, TNT
+drops (all just call `SurvivalDrops.Spawn`), player death scatter
+(`SurvivalDeathDrops`), and then projectiles (arrows).

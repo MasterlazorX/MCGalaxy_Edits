@@ -2032,12 +2032,35 @@ the **server** runs each of these and emits `SURV_DROP_SPAWN`.
 
 ### 26.4 Checklist
 
-- [ ] Server runs all drop sources + deterministic `DropPhysics` + 6000t despawn.
-- [ ] `SURV_DROP_SPAWN` carries pos+vel+rot0; clients simulate locally (no per‑tick
-      stream); verify a drop lands in the same cell on two clients.
-- [ ] Pickup is server‑detected → `SURV_INV_SLOT` + `SURV_DROP_PICKUP`; the picker
-      plays the fly‑in, everyone removes. No client self‑award.
-- [ ] Batch multi‑drop scatters; relevance‑filter per player.
+- [x] Server runs the mining + Q‑toss drop sources (`SurvivalDrops.SpawnMined` /
+      `.Toss`) + 6000t despawn. Mob‑death / chest‑scatter / TNT drops reuse the same
+      `Spawn(...)` and land with the rest of Phase 5.
+- [x] `SURV_DROP_SPAWN` carries pos+vel+rot0; the client seeds a `st_drops` entry
+      and runs its own `DropPhysics` for the visual arc (`SurvivalTest_TickNetDrops`,
+      MP‑only — no local pickup/despawn).
+- [x] Pickup is server‑detected → `SURV_INV_SLOT`/`INV_FULL` + `SURV_DROP_PICKUP`;
+      the picker's client plays the fly‑in (`pickerEntityId` = 255 for the picker
+      itself, else that viewer's Classic id for the picker's body), everyone else
+      removes. No client self‑award (anti‑dupe / anti‑reach‑hack).
+- [ ] Batch multi‑drop scatters; relevance‑filter per player. *(deferred — v1
+      streams every drop to every survival watcher on the level.)*
+
+**Implementation note — server settle vs. client physics.** The plan's §26.3
+"identical deterministic physics on both sides" was relaxed: the server can't run
+ClassiCube's `Collisions_MoveAndWallSlide`, so it does **not** replicate the bounce.
+Instead `SurvivalDrops` settles each drop straight down onto the first solid block
+(`SettleY`) and uses that resting point as the **pickup centre**, while the streamed
+pos+vel drive the client's *visual* arc only. Pickup is proximity‑ + tick‑order‑
+authoritative (`FindPicker` walks the level's survival watchers in order — the first
+one within `bb.grow(1,0,1)` reach and with room wins, matching genuine
+`Player.tick`'s `findEntities` sweep). The `delayBeforeCanPickup` counter (10t mined
+/ 40t tossed) lives on the drop, so during that window **nobody** may collect it —
+which is what lets a player toss a stack to another player without instantly
+re‑vacuuming it. Whole‑stack pickup only (no partial‑remainder re‑count over the
+wire). Verified end‑to‑end: mine→`DROP_SPAWN`→walk‑on→`DROP_PICKUP` picker=255 +
+inventory echo; two players contesting one drop → exactly one wins (tick order), the
+loser sees the same drop id picked up by the winner's entity id and gets nothing;
+the pickup fires ~514 ms after spawn (≈10 ticks), confirming the delay gate.
 
 ## 27. Inventory / crafting / container transactions & interaction clicks
 

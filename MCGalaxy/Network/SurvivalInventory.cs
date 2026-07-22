@@ -972,6 +972,50 @@ namespace MCGalaxy.Network
             return given;
         }
 
+        /// <summary> Drop-pickup path: if the WHOLE stack fits, add it and echo the
+        /// affected slots; returns true (collected) or false (no room - the drop
+        /// stays on the ground for someone else / later). Whole-stack only, so a
+        /// pickup never leaves a partial drop the client can't re-count. </summary>
+        public static bool PickUp(Player p, ushort id, int count) {
+            if (!SurvivalNet.Active(p, p.level)) return false;
+            PlayerInv inv = Get(p);
+            if (!HasRoomFor(inv, p, id, count)) return false;
+            for (int n = 0; n < count; n++) AddOne(p, inv, id, 0);
+            SendAll(p); // several slots may change - a full resync is simplest
+            return true;
+        }
+
+        // Whether the main inventory can absorb `count` more of `id` (empty slots
+        // hold a full stack each; matching stacks take up to their max).
+        static bool HasRoomFor(PlayerInv inv, Player p, ushort id, int count) {
+            int max = MaxStack(p, id), room = 0;
+            for (int i = 0; i < MAIN_SLOTS; i++)
+            {
+                if (inv.Slots[i].Count == 0)              room += max;
+                else if (inv.Slots[i].Id == id)           room += Math.Max(0, max - inv.Slots[i].Count);
+                if (room >= count) return true;
+            }
+            return room >= count;
+        }
+
+        /// <summary> Q-toss path: takes item(s) off a hotbar slot for SurvivalDrops
+        /// to fling out as a drop entity. `whole` empties the stack, otherwise one
+        /// is taken. Echoes the slot; returns false (nothing taken) for an empty or
+        /// out-of-range slot. </summary>
+        public static bool TakeForToss(Player p, int slot, bool whole, out ushort id, out byte count) {
+            id = 0; count = 0;
+            if (slot < 0 || slot >= MAIN_SLOTS) return false;
+            PlayerInv inv = Get(p);
+            if (inv.Slots[slot].Count == 0) return false;
+
+            id    = inv.Slots[slot].Id;
+            count = whole ? inv.Slots[slot].Count : (byte)1;
+            inv.Slots[slot].Count -= count;
+            if (inv.Slots[slot].Count == 0) { inv.Slots[slot].Id = 0; inv.Slots[slot].Damage = 0; }
+            SendSlot(p, inv, slot);
+            return true;
+        }
+
         /// <summary> Debug: prints a player's non-empty server-side slots + cursor
         /// to the viewer (/Survival inv). </summary>
         public static void DebugDump(Player viewer, Player target) {
@@ -1121,28 +1165,14 @@ namespace MCGalaxy.Network
                 if (collide == CollideType.SwimThrough || collide == CollideType.LiquidWater ||
                     collide == CollideType.LiquidLava) return;
 
-                if (indev) {
-                    // the genuine Indev drop table (SpawnIndevDrops port): grass->
-                    // dirt, stone->cobble, coal ore->coal ITEM, gravel's flint
-                    // roll, harvest gating by held pickaxe tier, crops' seed
-                    // rolls... v1 puts yields straight into the inventory (the
-                    // drop-entity hop is phase 5).
-                    ushort held = inv.HeldSlot >= 0 && inv.HeldSlot < 9 ? inv.Slots[inv.HeldSlot].Id : (ushort)0;
-                    List<KeyValuePair<ushort, int>> drops = new List<KeyValuePair<ushort, int>>();
-                    lock (dropRng) SurvivalItems.MiningDrops(dropRng, raw, held, drops);
-                    bool any = false;
-                    foreach (KeyValuePair<ushort, int> d in drops)
-                    {
-                        for (int n = 0; n < d.Value; n++) any |= AddOne(p, inv, d.Key, 0);
-                    }
-                    if (any) SendAll(p); // several slots may change - resync
-                } else {
-                    if (raw > Block.CLASSIC_MAX_BLOCK) return;
-                    if (AddOne(p, inv, raw, 0)) {
-                        int idx = FindStack(inv, raw);
-                        if (idx >= 0) SendSlot(p, inv, idx);
-                    } // full inventory: the block is simply not picked up
-                }
+                // phase 5: mining no longer teleports the yield into the inventory -
+                // it spawns physical drop entities (the genuine Indev drop table on
+                // an Indev map, the block itself on c0.30) that the player then
+                // walks over to collect. SurvivalDrops owns the harvest gating,
+                // grass->dirt / ore->item mapping, seed rolls and the pop/settle.
+                ushort held = indev && inv.HeldSlot >= 0 && inv.HeldSlot < 9
+                            ? inv.Slots[inv.HeldSlot].Id : (ushort)0;
+                SurvivalDrops.SpawnMined(p, lvl, x, y, z, raw, held);
             }
         }
 

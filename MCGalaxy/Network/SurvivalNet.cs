@@ -164,6 +164,7 @@ namespace MCGalaxy.Network
             SendTime(p);   // seed the client with the current world time right away
             SendHealth(p); // and the current health/score
             SurvivalMobs.SendLevelMobs(p, lvl); // phase 3: the level's live mob population
+            SurvivalDrops.SendLevelDrops(p, lvl); // phase 5: the level's dropped items (at rest)
             // phase 4: the server-owned inventory + cursor. NOT on creative maps -
             // there the client keeps the genuine local palette inventory (the
             // server tracks no inventory in creative: free build, no consume),
@@ -304,6 +305,64 @@ namespace MCGalaxy.Network
             msg[0] = FURN_PROG;
             msg[1] = burn;
             msg[2] = cook;
+            SendMessage(p, msg);
+        }
+
+
+        // ==================== dropped items (SURV_DROP_*) ====================
+
+        static short DropPos(double v) { return (short)Math.Round(v * SurvivalDrops.POS_SCALE); }
+        static short DropVel(double v) {
+            double s = v * SurvivalDrops.VEL_SCALE;
+            if (s >  32767) s =  32767; // clamp into i16 (a runaway toss never overflows)
+            if (s < -32768) s = -32768;
+            return (short)s;
+        }
+
+        /// <summary> SURV_DROP_SPAWN: [dropId:u16][itemId:u16][count][pos:3xi16 coord*32]
+        /// [vel:3xi16 coord/sec*512][rot0]. The client spawns the visual drop and runs
+        /// its own arc from pos+vel; the server keeps the authoritative resting spot. </summary>
+        public static void SendDropSpawn(Player p, int dropId, ushort item, byte count,
+                                         double x, double y, double z,
+                                         double vx, double vy, double vz, byte rot0) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = DropPos(x),  py = DropPos(y),  pz = DropPos(z);
+            short sx = DropVel(vx), sy = DropVel(vy), sz = DropVel(vz);
+            msg[0]  = DROP_SPAWN;
+            msg[1]  = (byte)(dropId >> 8); msg[2]  = (byte)dropId;
+            msg[3]  = (byte)(item >> 8);   msg[4]  = (byte)item;
+            msg[5]  = count;
+            msg[6]  = (byte)(px >> 8); msg[7]  = (byte)px;
+            msg[8]  = (byte)(py >> 8); msg[9]  = (byte)py;
+            msg[10] = (byte)(pz >> 8); msg[11] = (byte)pz;
+            msg[12] = (byte)(sx >> 8); msg[13] = (byte)sx;
+            msg[14] = (byte)(sy >> 8); msg[15] = (byte)sy;
+            msg[16] = (byte)(sz >> 8); msg[17] = (byte)sz;
+            msg[18] = rot0;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_DROP_PICKUP: [dropId:u16][pickerEntityId]. Removes the drop
+        /// on the client with the fly-into-you animation toward the given body
+        /// (255 = this viewer, 0xFF = not visible so no animation). </summary>
+        public static void SendDropPickup(Player p, int dropId, byte pickerEntityId) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = DROP_PICKUP;
+            msg[1] = (byte)(dropId >> 8); msg[2] = (byte)dropId;
+            msg[3] = pickerEntityId;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_DROP_REMOVE: [dropId:u16][reason(0 despawn/1 destroyed)].
+        /// Removes the drop on the client with no pickup animation. </summary>
+        public static void SendDropRemove(Player p, int dropId, byte reason) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = DROP_REMOVE;
+            msg[1] = (byte)(dropId >> 8); msg[2] = (byte)dropId;
+            msg[3] = reason;
             SendMessage(p, msg);
         }
 
@@ -646,8 +705,9 @@ namespace MCGalaxy.Network
                     }
                     break;
                 case DROP_ITEM:
-                    // TODO(survival): DROP_ITEM needs drop entities (phase 5).
-                    Logger.Log(LogType.Debug, "survival: intent 0x{0:X2} from {1} (handler deferred)", id, p.name);
+                    // [id][slot][wholeStack] - Q-toss: take the item off the
+                    // server-owned inventory and fling it out as a drop entity.
+                    if (data.Length >= 3) SurvivalDrops.Toss(p, data[1], data[2] != 0);
                     break;
                 default:
                     Logger.Log(LogType.Debug, "survival: unexpected msg 0x{0:X2} from {1}", id, p.name);

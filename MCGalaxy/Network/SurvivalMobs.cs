@@ -896,6 +896,7 @@ namespace MCGalaxy.Network
             // pruned on unload too, or unloaded Levels (and their block arrays)
             // leak forever as dictionary keys
             SurvivalInventory.PruneRegistry(loaded);
+            SurvivalDrops.Prune(loaded); // drop registries are Level-keyed the same way
         }
 
         static void TickLevel(Level lvl, LevelMobs lm, Player[] watchers, Player[] viewers) {
@@ -940,6 +941,9 @@ namespace MCGalaxy.Network
 
             // furnaces smelt on the same 20 TPS cadence (TileEntityFurnace)
             SurvivalInventory.TickFurnaces(lvl);
+
+            // dropped items age, get collected, and despawn on the same cadence
+            SurvivalDrops.Tick(lvl);
 
             // non-survival clients on this map see the mobs as plain Classic
             // entities with ChangeModel (SurvivalFallbacks) - synced at 10 Hz,
