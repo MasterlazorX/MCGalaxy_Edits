@@ -1530,3 +1530,67 @@ proves working).
 DEFERRED (backlog, unchanged): third-person held-item render; leaf decay, fire
 and finite-fluid ticks server-side (still client-local); block-destroying
 explosions.
+
+## Server-side Indev block physics: leaf decay, fire, finite fluids — SurvivalPhysics.cs
+
+The deferred client-only world sim is now server-authoritative too. New file
+MCGalaxy/Network/SurvivalPhysics.cs (fire + finite fluids), plus a leaf-decay
+handler in SurvivalGrowth, all ticked from the survival mob loop (Indev only,
+under lock(lm.Mobs)) and pruned on unload. Every change streams as an ordinary
+SetBlock (no new wire).
+
+Notify model (the key server adaptation): the client drives fire/fluids by inline
+recursion through its block-change hook; the server can't (a waking lake or a
+collapsing fire field would blow the stack). Instead SurvivalGrowth.SetView
+announces every server-authored change to SurvivalPhysics.Notify, which ONLY
+ENQUEUES work (schedule fire, schedule/activate fluid, re-check neighbours) -
+never sets a block inline. TickFire/TickFluids drain the queues next tick, which
+IS the genuine scheduled-update model, so cascades spread over ticks instead of
+recursing. Player edits reach the same Notify via OnBlockChangedEvent
+(registered in CorePlugin); a map-load scan (setTickOnLoad) schedules pre-existing
+fire + moving fluid the first time a level ticks.
+
+ * Leaf decay (SurvivalGrowth.TickLeaves): a leaf with a non-solid block below
+   and no log within x+-2,y-1..y,z+-2 decays, dropping a sapling on a 1-in-10
+   roll - a chopped canopy peels from the bottom up.
+ * Fire (BlockFire port): the age nibble store, the <=200/tick scheduled queue
+   (tickRate 20), spread/ability tables (planks/log/leaves/bookshelf/tnt/cloth),
+   updateTick (age, retire when nothing burns, consume neighbours down 100/up
+   200/sides 300, jump to air cells to y+4), fireSpread from flowing lava,
+   flint&steel-style ignition via placement. TNT is consumed but not detonated
+   (block-destroying explosions still unported, same limit as CreeperExplode).
+ * Finite fluids (BlockFlowing/Stationary port): spread-down-then-one-random-
+   horizontal with volume-conserving donor removal (World.floodFill +
+   fluidFlowCheck ported with the genuine x+(z<<10) layer packing), infinite
+   springs from water/lava sources (-9999 sourced => never donates),
+   stagnation (1/3 -> 1/3 retry, else water evaporates / lava petrifies to
+   stone), water extinguishes fire + petrifies adjacent lava, lava ignites
+   flammable neighbours, still<->moving wake on neighbour change. tickRate
+   5 water / 25 lava.
+
+Client (ClassiCube): the whole local Indev world sim is now gated off under
+server drive - Physics_Tick returns early when SurvivalNet_ServerDriven() before
+IndevFire_Tick/IndevTest_TickFluids/IndevTest_TickRandomBlocks, so nothing runs
+twice or diverges. Ambient display ticks (fire crackle, lava embers, water foam)
+are a separate path (IndevTest_RandomDisplayTicks) and keep running. The earlier
+per-block growth gate inside TickRandomBlocks was removed in favour of this one
+clean gate.
+
+Verified (test-clients/physics_test.py + iso probes, synthetic Owner client on
+gt1, SurvivalCreative+verify-admin-perm=127 for headless building):
+ * FLUID: a water SOURCE floods thousands of cells (infinite spring, correct);
+   a SINGLE water block stays one cell, falls, and dissipates - volume bounded,
+   no runaway duplication. Water washing over fire extinguished it (incidental
+   WaterContact confirmation).
+ * LEAF: 9/9 floating (log-less) leaves decayed to air within ~16s.
+ * FIRE: a wood platform + fire progressively burned 4/11 wood to air.
+ * clean server log throughout.
+
+Test rig gotcha (re-confirmed): promoting the synthetic account to build restricted
+blocks (water/lava/fire) trips verify-admin-perm - the client gets "verify with
+/Pass before you can modify blocks" and every edit reverts. Set verify-admin-perm
+= 127 (and SurvivalCreative = true on the map) for headless physics tests; revert
+after.
+
+DEFERRED (backlog): third-person held-item render; block-destroying explosions
+(TNT detonation, creeper block damage).

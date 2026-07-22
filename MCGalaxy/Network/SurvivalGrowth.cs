@@ -95,7 +95,7 @@ namespace MCGalaxy.Network
         // ==================== view-id helpers ====================
 
         // Reads the flattened Indev view id stored at a cell (0 = air / OOB).
-        static ushort ViewAt(Level lvl, int x, int y, int z) {
+        internal static ushort ViewAt(Level lvl, int x, int y, int z) {
             if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return 0;
             return Block.ToRaw(Block.Convert(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z)));
         }
@@ -103,8 +103,14 @@ namespace MCGalaxy.Network
         // Writes a view id back to the world, streaming it to every viewer as a
         // plain SetBlock (Player.Console == a server-authored change, no BlockDB
         // manual-place flag). Matches the existing survival server block writes.
-        static void SetView(Level lvl, int x, int y, int z, ushort view) {
+        // Every server-authored change is announced to SurvivalPhysics so fire
+        // and finite fluids schedule/validate off it (the genuine notify hook).
+        internal static void SetView(Level lvl, int x, int y, int z, ushort view) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return;
+            ushort old = ViewAt(lvl, x, y, z);
+            if (old == view) return;
             lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.FromRaw((BlockID)view));
+            SurvivalPhysics.Notify(lvl, x, y, z, old, view);
         }
 
         static bool IsCrops(ushort v)    { return v >= SurvivalBlocks.CROPS_0 && v <= SurvivalBlocks.CROPS_7; }
@@ -315,9 +321,13 @@ namespace MCGalaxy.Network
                     v == Block.StillWater || v == Block.StillLava) continue;
 
                 if (v == Block.Grass)        { TickGrass(lvl, g, x, y, z); continue; }
+                if (v == Block.Leaves)       { TickLeaves(lvl, g, x, y, z); continue; }
                 if (IsCrops(v))              { TickCrops(lvl, g, x, y, z, v); continue; }
                 if (IsFarmland(v))           { TickFarmland(lvl, g, x, y, z, v); continue; }
                 if (v == Block.Sapling)      { TickSapling(lvl, g, x, y, z); continue; }
+                if (SurvivalPhysics.IsFire(v))        { SurvivalPhysics.RandomTickFire(lvl, x, y, z); continue; }
+                if (SurvivalPhysics.IsMovingFluid(v)) { SurvivalPhysics.RandomTickFluid(lvl, x, y, z, v); continue; }
+                if (SurvivalPhysics.IsSource(v))      { SurvivalPhysics.RandomTickSource(lvl, x, y, z, v); continue; }
             }
         }
 
@@ -341,6 +351,25 @@ namespace MCGalaxy.Network
             if (ViewAt(lvl, tx, ty, tz) != Block.Dirt) return;
             if (!IsLit(lvl, tx, ty, tz)) return;
             SetView(lvl, tx, ty, tz, Block.Grass);
+        }
+
+        // BlockLeaves.updateTick: a leaf whose block below is non-solid and that
+        // has no log within x+-2, y-1..y, z+-2 decays - dropping a sapling on a
+        // 1-in-10 roll, then vanishing. Because it only fires when the block
+        // below is not solid, a chopped canopy peels away from the bottom up.
+        static void TickLeaves(Level lvl, LevelGrowth g, int x, int y, int z) {
+            ushort below = y > 0 ? ViewAt(lvl, x, y - 1, z) : (ushort)Block.Air;
+            if (CollideType.IsSolid(lvl.CollideType(Block.FromRaw((BlockID)below)))) return; // !isSolid gate
+
+            for (int dx = x - 2; dx <= x + 2; dx++)
+                for (int dy = y - 1; dy <= y; dy++)
+                    for (int dz = z - 2; dz <= z + 2; dz++)
+                        if (ViewAt(lvl, dx, dy, dz) == Block.Log) return; // log nearby - keep
+
+            if (g.Rng.Next(10) == 0)
+                SurvivalDrops.SpawnScatter(lvl, x + 0.5, y + 0.5, z + 0.5,
+                                           (ushort)Block.Sapling, 1, SurvivalDrops.MinedDelay(lvl));
+            SetView(lvl, x, y, z, Block.Air);
         }
 
         // BlockCrops.updateTick: the stay check first, then a farmland-weighted,
