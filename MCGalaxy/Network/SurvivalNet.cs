@@ -607,6 +607,10 @@ namespace MCGalaxy.Network
             if (!Active(p, p.level)) return;
             SetHealth(p, 0); // SURV_HEALTH(0): death camera + Game Over screen, held until revive
             p.Extras[DWELL_KEY] = RESPAWN_TIMEOUT_SECS;
+            // phase 5: scatter the inventory as drop entities (map opt-out via
+            // SurvivalDeathDrops; creative maps keep the local palette, no scatter)
+            if (p.level.Config.SurvivalDeathDrops && !p.level.Config.SurvivalCreative)
+                SurvivalInventory.DeathScatter(p);
             Logger.Log(LogType.Debug, "survival: {0} died (cause block {1}), holding death screen", p.name, cause);
         }
 

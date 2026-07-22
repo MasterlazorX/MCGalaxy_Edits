@@ -501,6 +501,18 @@ namespace MCGalaxy.Network
             return true;
         }
 
+        // Indev EntityLiving.onDeath reinterprets scoreValue() as the death-drop
+        // item id: 0-2 of it per death (client indevDeathDrop). Sheep drop nothing
+        // on death (their wool comes from the shear).
+        static readonly ushort[] indevDeathDrop = {
+            256 + 32, // ZOMBIE   -> feather
+            256 + 6,  // SKELETON -> arrow (item)
+            256 + 63, // PIG      -> raw porkchop
+            256 + 33, // CREEPER  -> gunpowder
+            256 + 31, // SPIDER   -> string
+            0         // SHEEP    -> nothing
+        };
+
         static void KillMob(Level lvl, LevelMobs lm, SurvMob m, Player killer) {
             m.Health = 0;
             m.Dead   = true;
@@ -510,6 +522,19 @@ namespace MCGalaxy.Network
             if (killer != null && lvl.Config.SurvivalMode == SurvivalMode.Classic) {
                 int[] scores = { 80, 120, 10, 200, 105, 10 };
                 SurvivalNet.AddScore(killer, scores[m.Type]);
+            }
+
+            // phase 5 death drops (spawned at the mob's feet position)
+            if (lvl.Config.SurvivalMode == SurvivalMode.Indev) {
+                ushort item = indevDeathDrop[m.Type];
+                if (item != 0) {
+                    int n = lm.Rng.Next(3); // 0-2, genuine rand(3)
+                    SurvivalDrops.SpawnScatter(lvl, m.X, m.Y, m.Z, item, n, SurvivalDrops.MinedDelay(lvl));
+                }
+            } else if (m.Type == TYPE_PIG || m.Type == TYPE_SHEEP) {
+                // c0.30 Pig.die/Sheep.die both drop 1-2 brown mushrooms
+                int n = (int)(lm.Rng.NextDouble() + lm.Rng.NextDouble() + 1.0);
+                SurvivalDrops.SpawnScatter(lvl, m.X, m.Y, m.Z, Block.Mushroom, n, 0);
             }
         }
 
@@ -555,11 +580,19 @@ namespace MCGalaxy.Network
                 }
 
                 // Sheep shear before damage: c0.30 replaces the hit entirely; Indev
-                // shears AND falls through to damage. Wool drops are phase 5.
+                // shears AND falls through to damage. A punched furred sheep scatters
+                // wool (Indev 1+rand(3) GRAY cloth at head height; c0.30 1-3 WHITE).
                 bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
                 if (m.Type == TYPE_SHEEP && m.HasFur) {
                     m.HasFur = false;
-                    if (!indev) return; // c0.30: shear instead of damage
+                    if (indev) {
+                        int wool = 1 + lm.Rng.Next(3);
+                        SurvivalDrops.SpawnScatter(lvl, m.X, m.Y + 1.0, m.Z, Block.Gray, wool, SurvivalDrops.MinedDelay(lvl));
+                    } else {
+                        int wool = (int)(lm.Rng.NextDouble() * 3.0 + 1.0);
+                        SurvivalDrops.SpawnScatter(lvl, m.X, m.Y, m.Z, Block.White, wool, 0);
+                        return; // c0.30: shear replaces the hit entirely
+                    }
                 }
 
                 // Bare-fist damage: c0.30 flat 4, Indev fist 1 (held-item damage

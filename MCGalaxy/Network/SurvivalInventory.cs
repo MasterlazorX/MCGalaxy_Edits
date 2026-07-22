@@ -642,9 +642,10 @@ namespace MCGalaxy.Network
         }
 
 
-        /// <summary> A container block was mined/removed: discard its tile entity
-        /// (contents vanish until phase-5 drops implement the genuine scatter) and
-        /// force-close any screens viewing it. Called from OnBlockChanging. </summary>
+        /// <summary> A container block was mined/removed: scatter its stored contents
+        /// as drop entities (genuine TileEntity.onBreak / IndevTE scatter), discard
+        /// the tile entity, and force-close any screens viewing it. Called from
+        /// OnBlockChanging. </summary>
         public static void ContainerRemoved(Level lvl, int x, int y, int z) {
             Container te = null;
             lock (contLock) {
@@ -655,6 +656,15 @@ namespace MCGalaxy.Network
                 }
             }
             if (te == null) return;
+
+            // scatter each non-empty slot as one drop carrying its full stack
+            // (one EntityItem per stack, at the broken block's centre)
+            int delay = SurvivalDrops.MinedDelay(lvl);
+            foreach (Slot s in te.Slots)
+            {
+                if (s.Count == 0 || s.Id == 0) continue;
+                SurvivalDrops.SpawnStack(lvl, x + 0.5, y + 0.5, z + 0.5, s.Id, s.Count, delay);
+            }
 
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player pl in players)
@@ -996,6 +1006,37 @@ namespace MCGalaxy.Network
                 if (room >= count) return true;
             }
             return room >= count;
+        }
+
+        /// <summary> Player-death scatter (SurvivalDeathDrops): drops one entity per
+        /// non-empty player slot (main + craft + armor + cursor - never the shared
+        /// container range) at the player's chest, carrying the full stack, then
+        /// clears them and resyncs. Genuine Player.die scatters the inventory so a
+        /// respawned player can walk back and re-collect it. </summary>
+        public static void DeathScatter(Player p) {
+            Level lvl = p.level;
+            if (lvl == null || !SurvivalNet.Active(p, lvl)) return;
+            PlayerInv inv = Get(p);
+            double x = p.Pos.X / 32.0;
+            double y = (p.Pos.Y - Entities.CharacterHeight) / 32.0 + 1.0; // chest height
+            double z = p.Pos.Z / 32.0;
+            int delay = SurvivalDrops.MinedDelay(lvl);
+            bool any = false;
+
+            for (int i = 0; i < TOTAL_SLOTS; i++)
+            {
+                if (i >= CONT_BASE && i < ARMOR_BASE) continue; // container range isn't the player's
+                if (inv.Slots[i].Count == 0 || inv.Slots[i].Id == 0) continue;
+                SurvivalDrops.SpawnStack(lvl, x, y, z, inv.Slots[i].Id, inv.Slots[i].Count, delay);
+                inv.Slots[i] = new Slot();
+                any = true;
+            }
+            if (inv.Cursor.Count > 0 && inv.Cursor.Id != 0) {
+                SurvivalDrops.SpawnStack(lvl, x, y, z, inv.Cursor.Id, inv.Cursor.Count, delay);
+                inv.Cursor = new Slot();
+                any = true;
+            }
+            if (any) SendAll(p); // the emptied inventory is now authoritative
         }
 
         /// <summary> Q-toss path: takes item(s) off a hotbar slot for SurvivalDrops

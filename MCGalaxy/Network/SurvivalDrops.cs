@@ -238,9 +238,31 @@ namespace MCGalaxy.Network
         }
 
         // Item ctor pop: xd/zd uniform +/-0.1 block/tick, yd fixed 0.2 block/tick.
-        static double PopX() { return (rng.NextDouble() * 0.2 - 0.1) * 20.0; }
+        static double PopX() { lock (rng) return (rng.NextDouble() * 0.2 - 0.1) * 20.0; }
         static double PopY() { return 0.2 * 20.0; }
-        static double PopZ() { return (rng.NextDouble() * 0.2 - 0.1) * 20.0; }
+        static double PopZ() { lock (rng) return (rng.NextDouble() * 0.2 - 0.1) * 20.0; }
+
+        /// <summary> The mined/scattered pickup delay for this map: 10 ticks on Indev
+        /// (genuine dropBlockAsItemWithChance), 0 on c0.30. </summary>
+        public static int MinedDelay(Level lvl) {
+            return lvl.Config.SurvivalMode == SurvivalMode.Indev ? MINED_DELAY : 0;
+        }
+
+        /// <summary> Spawns `count` separate single-item drops at (x,y,z), each with
+        /// its own random pop - a mob-death scatter, a wool shear, an explosion
+        /// scatter (genuine BlockUtils.dropItems: one EntityItem per item). </summary>
+        public static void SpawnScatter(Level lvl, double x, double y, double z,
+                                        ushort item, int count, int delay) {
+            for (int i = 0; i < count; i++)
+                Spawn(lvl, x, y, z, PopX(), PopY(), PopZ(), item, 1, delay);
+        }
+
+        /// <summary> Spawns ONE drop carrying a whole stack at (x,y,z) with a random
+        /// pop - a chest scatter or a player-death scatter (one drop per slot). </summary>
+        public static void SpawnStack(Level lvl, double x, double y, double z,
+                                      ushort item, int count, int delay) {
+            Spawn(lvl, x, y, z, PopX(), PopY(), PopZ(), item, count, delay);
+        }
 
 
         // ==================== tick (pickup + despawn) ====================
