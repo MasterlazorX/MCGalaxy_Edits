@@ -40,7 +40,8 @@ namespace MCGalaxy.Network
     ///  * Mining yields the genuine Indev drop table (SurvivalItems.MiningDrops,
     ///    harvest-gated) straight into the inventory; the drop-entity hop is phase 5.
     ///  * Furnaces smelt on the 20 TPS survival tick (TickFurnaces).
-    ///  * Armor slots accept nothing yet (equip/absorption is future work).
+    ///  * Armor slots accept their matching piece (SlotArmor.isItemValid) and
+    ///    broadcast the worn change; damage-absorption is future work.
     ///  * Death keeps the inventory (drops are phase 5; SurvivalDeathDrops honoured then).
     ///  * Max stacks: per-id in Indev (blocks 99 / items 64 / tools 1), flat 99 in c0.30.
     /// </remarks>
@@ -941,9 +942,19 @@ namespace MCGalaxy.Network
             PlayerInv inv = Get(p);
             bool right = button != 0;
 
-            // SlotArmor.isItemValid: nothing is placeable into armor slots yet
-            // (no armor items exist in MP v1); taking out is always allowed.
-            if (idx >= ARMOR_BASE && inv.Cursor.Count > 0) return;
+            // SlotArmor.isItemValid: an armor slot (99 boots .. 102 helmet) accepts
+            // ONLY its matching piece; wrong item or non-armor is refused, taking
+            // out is always allowed. Applies to the player's own armor slots and,
+            // for an admin's editable /Inventory view, the target's armor cells.
+            if (inv.Cursor.Count > 0) {
+                if (idx >= ARMOR_BASE && idx < ARMOR_BASE + ARMOR_SLOTS &&
+                    ArmorSlotRejects(idx, inv.Cursor.Id)) return;
+                if (isCont && open.Kind == CONT_PLAYERINV) {
+                    int ts = PlayerInvSlot(ci);
+                    if (ts >= ARMOR_BASE && ts < ARMOR_BASE + ARMOR_SLOTS &&
+                        ArmorSlotRejects(ts, inv.Cursor.Id)) return;
+                }
+            }
             // SlotFurnace (the output, container slot 2): TAKE-ONLY - placing
             // into it (including merging onto an existing stack) is refused,
             // like the genuine furnace GUI (user-reported).
@@ -975,6 +986,13 @@ namespace MCGalaxy.Network
                 SendCursor(p, inv);
                 EquipIfVisibleChange(p, idx); // took off armor / rearranged the held slot
             }
+        }
+
+        // SlotArmor.isItemValid: the armor slot (99 boots .. 102 helmet, matching
+        // the client's cell order) accepts only its own piece. True = refuse.
+        static bool ArmorSlotRejects(int armorSlot, ushort cursorId) {
+            int want = (ARMOR_BASE + ARMOR_SLOTS - 1) - armorSlot; // 102->0 helmet .. 99->3 boots
+            return SurvivalItems.ArmorPiece(cursorId) != want;
         }
 
         // The GuiContainer click model applied to one slot + the cursor: pick up

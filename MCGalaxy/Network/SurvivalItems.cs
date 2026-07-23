@@ -161,6 +161,15 @@ namespace MCGalaxy.Network
             return d.HasValue && d.Value.Kind == K_FLINTSTEEL;
         }
 
+        /// <summary> The armor piece an item equips (SlotArmor.getArmorType /
+        /// ItemArmor.armorType: 0 helmet, 1 chestplate, 2 leggings, 3 boots), or
+        /// -1 when the item is not armor. </summary>
+        public static int ArmorPiece(ushort id) {
+            ItemDef? d = Find(id);
+            if (!d.HasValue || d.Value.Kind != K_ARMOR) return -1;
+            return d.Value.Param;
+        }
+
         /// <summary> HP an edible item restores (ItemFood/ItemSoup param), else 0. </summary>
         public static int FoodHeal(ushort id) {
             ItemDef? d = Find(id);
