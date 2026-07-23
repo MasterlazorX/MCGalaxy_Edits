@@ -432,7 +432,26 @@ namespace MCGalaxy.Network
 
         // ItemStack.damageItem: wear a tool by `amount`; it shatters (empties the
         // slot) once damage exceeds its maxDamage. No-op for non-damageable ids.
+        /// <summary> The item id in the player's currently-selected hotbar slot
+        /// (0 when the slot is empty or the player has no survival inventory). </summary>
+        internal static ushort HeldItemId(Player p) {
+            PlayerInv inv = Get(p);
+            if (inv == null) return 0;
+            int h = inv.HeldSlot;
+            return h >= 0 && h < 9 && inv.Slots[h].Count > 0 ? inv.Slots[h].Id : (ushort)0;
+        }
+
+        /// <summary> Wears the held weapon from a landed melee hit (ItemStack.damageItem
+        /// via EntityLiving.attackEntityFrom): sword 1, tool 2, others none. Indev-only
+        /// durability - the caller gates on Indev. </summary>
+        internal static void WearHeldForMelee(Player p) {
+            PlayerInv inv = Get(p);
+            if (inv == null) return;
+            DamageHeldTool(p, inv, inv.HeldSlot, SurvivalItems.ToolUseWear(HeldItemId(p), true));
+        }
+
         static void DamageHeldTool(Player p, PlayerInv inv, int held, int amount) {
+            if (amount <= 0 || held < 0 || held > 8) return;
             int max = SurvivalItems.MaxDurability(inv.Slots[held].Id);
             if (max == 0) return;
             inv.Slots[held].Damage += (short)amount;
@@ -1431,6 +1450,13 @@ namespace MCGalaxy.Network
                 BlockID old = lvl.GetBlock(x, y, z);
                 ushort raw  = p.Session.ConvertBlock(Block.Convert(old));
                 if (raw == Block.Air) return;
+                // PlayerControllerSP.sendBlockRemoved runs Item.onBlockDestroyed for
+                // EVERY removal (mined or instant), so the held tool wears exactly
+                // once per block broken - pick/shovel/axe 1, sword 2, others none.
+                // Indev-only (ToolUseWear no-ops off Indev tools / a bare fist).
+                if (indev)
+                    DamageHeldTool(p, inv, inv.HeldSlot, SurvivalItems.ToolUseWear(
+                        inv.HeldSlot >= 0 && inv.HeldSlot < 9 ? inv.Slots[inv.HeldSlot].Id : (ushort)0, false));
                 // a mined container discards its tile entity + force-closes viewers
                 if (indev && (IsChestView(raw) || IsFurnaceView(raw)))
                     ContainerRemoved(lvl, x, y, z);
@@ -1438,6 +1464,14 @@ namespace MCGalaxy.Network
                 byte collide = lvl.CollideType(old);
                 if (collide == CollideType.SwimThrough || collide == CollideType.LiquidWater ||
                     collide == CollideType.LiquidLava) return;
+
+                // mining a TNT block never drops an item (TNTBlock.getDropCount()==0):
+                // the mine removes the block and TNTPhysics.onBreak primes a full-fuse
+                // PrimedTnt entity in its place (both c0.30 and Indev).
+                if (raw == Block.TNT) {
+                    SurvivalTnt.Ignite(lvl, x, y, z, SurvivalTnt.DefaultFuse(lvl));
+                    return;
+                }
 
                 // phase 5: mining no longer teleports the yield into the inventory -
                 // it spawns physical drop entities (the genuine Indev drop table on

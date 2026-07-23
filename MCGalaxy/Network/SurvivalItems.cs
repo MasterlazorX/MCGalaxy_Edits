@@ -210,6 +210,37 @@ namespace MCGalaxy.Network
             }
         }
 
+        /// <summary> IndevTest_ToolUseWear: how much durability the held item loses
+        /// from one use. ItemSword wears 1 per entity hit / 2 per block destroyed;
+        /// ItemTool (shovel/pick/axe) the reverse; everything else - hoes and flint
+        /// &amp; steel included - wears from NEITHER (they only wear through their own
+        /// onItemUse). </summary>
+        public static int ToolUseWear(ushort id, bool entityHit) {
+            ItemDef? d = Find(id);
+            if (!d.HasValue) return 0;
+            switch (d.Value.Kind) {
+                case K_SWORD:  return entityHit ? 1 : 2;
+                case K_SHOVEL: case K_PICKAXE: case K_AXE:
+                    return entityHit ? 2 : 1;
+                default: return 0;
+            }
+        }
+
+        /// <summary> Item.getDamageVsEntity (Minecraft.java:352 melee): a bare fist
+        /// or any non-weapon item deals 1; ItemTool is base+tier (shovel 1, pickaxe
+        /// 2, axe 3); ItemSword is 4 + tier*2. </summary>
+        public static int MeleeDamage(ushort id) {
+            ItemDef? d = Find(id);
+            if (!d.HasValue) return 1;
+            switch (d.Value.Kind) {
+                case K_SWORD:   return 4 + d.Value.Param * 2;
+                case K_SHOVEL:  return 1 + d.Value.Param;
+                case K_PICKAXE: return 2 + d.Value.Param;
+                case K_AXE:     return 3 + d.Value.Param;
+                default:        return 1;
+            }
+        }
+
 
         // ==================== harvest gating (IndevTest_CanHarvest) ====================
 

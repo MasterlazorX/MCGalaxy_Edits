@@ -718,9 +718,13 @@ namespace MCGalaxy.Network
                     }
                 }
 
-                // Bare-fist damage: c0.30 flat 4, Indev fist 1 (held-item damage
-                // tables arrive with phase 4's server-side inventory).
-                HurtMob(lvl, lm, m, p, indev ? 1 : 4);
+                // Melee damage: c0.30 is a flat 4 regardless of held item; Indev
+                // (Minecraft.java:352) reads the held item's getDamageVsEntity -
+                // bare fist 1, tools base+tier, swords 4+tier*2.
+                int dmg = indev ? SurvivalItems.MeleeDamage(SurvivalInventory.HeldItemId(p)) : 4;
+                HurtMob(lvl, lm, m, p, dmg);
+                // hitEntity: the held weapon wears (sword 1, tool 2, others none).
+                if (indev) SurvivalInventory.WearHeldForMelee(p);
             }
         }
 
@@ -1439,6 +1443,7 @@ namespace MCGalaxy.Network
             SurvivalInventory.PruneRegistry(loaded);
             SurvivalDrops.Prune(loaded); // drop registries are Level-keyed the same way
             SurvivalArrows.Prune(loaded);
+            SurvivalTnt.Prune(loaded);   // primed-TNT registries are Level-keyed too
             SurvivalGrowth.Prune(loaded); // growth/light caches are Level-keyed too
             SurvivalPhysics.Prune(loaded); // fire/fluid schedules are Level-keyed too
             SurvivalInventory.FlushEquip(); // send equipment for entities that became visible this tick
@@ -1498,6 +1503,10 @@ namespace MCGalaxy.Network
 
             // arrows fly, stick, hit and despawn on the same cadence
             SurvivalArrows.Tick(lvl);
+
+            // primed TNT hops, counts down its fuse and detonates (chain reactions
+            // ignite more, appended for next tick) on the same cadence
+            SurvivalTnt.Tick(lvl);
 
             // Indev world growth: crops ripen, farmland hydrates, saplings grow
             // into trees and grass spreads on the genuine random-block-tick rate

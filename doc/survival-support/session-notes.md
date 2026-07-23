@@ -1692,9 +1692,9 @@ Verified live (explosion_test.py, /SurvSpawn creeper at a synthetic client's
 feet on gt1): the blast set 51 nearby blocks to air, spawned 19 drops, and
 killed the point-blank player - clean server log.
 
-DEFERRED: the primed-TNT ENTITY (mining TNT -> a hopping/fused entity; the
-in-blast TNT chain reaction) needs a streamed TNT entity like drops/arrows -
-v1 detonates fire-caught TNT immediately and just clears TNT caught in a blast.
+UPDATE: the primed-TNT ENTITY + chain reaction is now implemented - see the
+"Primed TNT entity + chain reaction (SurvivalTnt.cs)" section at the end. (This
+paragraph described the v1 that detonated fire-caught TNT immediately.)
 
 ## Survival map persistence (SurvivalPersistence.cs)
 
@@ -1722,3 +1722,54 @@ path (build-verified; live GUI round-trip is a follow-up).
 
 Wired in CorePlugin (OnLevelSave/Unload/Loaded). extra/survival/*.sur are
 runtime data (gitignored bin tree).
+
+## Tool durability + held-weapon melee (SurvivalItems / SurvivalInventory / SurvivalMobs)
+
+`ItemStack.damageItem` ported server-side (Indev-only; c0.30 tools have no
+durability). `SurvivalItems.ToolUseWear(id, entityHit)` mirrors the client's
+`IndevTest_ToolUseWear`: a sword wears 1 per entity hit / 2 per block broken,
+a shovel/pickaxe/axe the reverse, everything else (hoes, flint&steel) from
+NEITHER (they only wear through their own onItemUse). Two hooks:
+
+ * BLOCK BREAK: in `OnBlockChanging`'s mining branch, every non-air removal wears
+   the held slot by `ToolUseWear(held, false)` (PlayerControllerSP.sendBlockRemoved
+   runs onBlockDestroyed for EVERY removal, mined or instant). `DamageHeldTool`
+   already shatters past `32 << tier` and echoes the slot; now guards amount<=0.
+ * MELEE HIT: `HandleAttack` now deals genuine held-weapon damage
+   (`SurvivalItems.MeleeDamage` = getDamageVsEntity: fist 1, tool base+tier,
+   sword 4+tier*2) instead of a flat fist, and wears the weapon by
+   `ToolUseWear(held, true)` via `SurvivalInventory.WearHeldForMelee`.
+
+Build-verified; shares the already-live `DamageHeldTool` path (hoe wear).
+
+## Primed TNT entity + chain reaction (SurvivalTnt.cs)
+
+The DEFERRED primed-TNT entity is now real. A server-owned per-level sim
+(mirrors SurvivalDrops/SurvivalArrows) with a new streamed entity:
+
+ * WIRE: `SURV_TNT_SPAWN 0x37` [tntId:u16][pos:3xi16 *32][vel:3xi16 blocks/tick*1024]
+   [fuse:u16] and `SURV_TNT_REMOVE 0x38` [tntId:u16][reason 0 detonate/1 defuse].
+   Like arrows, the client seeds an `st_tnt` entry and simulates the SAME
+   PrimedTnt hop/smoke/flash from the streamed seed - it never explodes locally
+   (`SurvivalTest_TickNetTnt` in the ServerDriven branch; local SP defuse skips
+   net entries). Streamed to joiners at handshake (`SendLevel`).
+ * IGNITION (all call `SurvivalTnt.Ignite`, which clears the block + spawns the
+   entity with the PrimedTnt ctor pop): mining a TNT block (full fuse, both
+   modes - TNTBlock.getDropCount()==0 so no item drop), fire consuming TNT
+   (`FireTryCatch`, full fuse - replaced the v1 immediate blast), and a blast
+   clearing a TNT block (`SurvivalExplosions.DestroyBlocks`, short randomized
+   chain fuse: Indev 10+rand(20), c0.30 5+rand(10)).
+ * PHYSICS: gravity 0.04, AABB clip-collision (clipY/X/Z) against solid blocks,
+   drag 0.98 + ground friction 0.7 - faithful to PrimedTnt.tick for the common
+   pop+fall. Fuse post-decrements; at expiry `SurvivalMobs.ExplodeAt` runs the
+   full blast (entity damage + `DestroyBlocks`), which chain-ignites more TNT.
+   Ticked after the mob loop under lock(lm.Mobs); the descending iteration leaves
+   chain-armed entries (appended) for the next tick, the genuine one-tick delay.
+ * Fuse=80 Indev / 40 c0.30 (`DefaultFuse`); pool capped at 128/level.
+   Transient, so NOT persisted across unload.
+
+Verified live (fire -> TNT on a creative Indev gt1): full-fuse SPAWN (id=1,
+fuse=80), detonation ~4s later (SURV_TNT_REMOVE), the blast re-primed both
+neighbour TNT blocks with partial fuses (fuse=25 and 14), each detonating on
+its own fuse, 402 blocks destroyed to air. ENTITY+FUSE / DETONATION / CHAIN all
+OBSERVED. Mining-ignition shares the same Ignite() path (build-verified).

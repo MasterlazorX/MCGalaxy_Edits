@@ -277,8 +277,8 @@ namespace MCGalaxy.Network
         const float TNT_BLAST_RADIUS = 4.0f; // c0.30/Indev PrimedTnt.explode radius
 
         // BlockFire.tryToCatchBlockOnFire: rand(bound) < ability consumes the block
-        // (half fire, half air); caught TNT detonates (v1: immediate, no primed-TNT
-        // fuse entity yet).
+        // (half fire, half air); caught TNT is removed and primed as a full-fuse
+        // entity (BlockTNT.onBlockDestroyedByPlayer) rather than blowing instantly.
         static void FireTryCatch(LevelPhys lp, Level lvl, int x, int y, int z, int bound) {
             if (!In(lvl, x, y, z)) return;
             ushort b = View(lvl, x, y, z);
@@ -286,7 +286,7 @@ namespace MCGalaxy.Network
             if (lp.Rng.Next(bound) >= ability) return;
             if (b == Block.TNT) {
                 Set(lvl, x, y, z, Block.Air);
-                SurvivalMobs.ExplodeAt(lvl, x + 0.5, y + 0.5, z + 0.5, TNT_BLAST_RADIUS);
+                SurvivalTnt.Ignite(lvl, x, y, z, SurvivalTnt.DefaultFuse(lvl));
                 return;
             }
             Set(lvl, x, y, z, lp.Rng.Next(2) == 0 ? FIRE : (ushort)Block.Air);

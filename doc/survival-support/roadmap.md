@@ -105,7 +105,9 @@ Server owns health and the day/night clock. Core loop (health → damage → dea
 respawn) is complete; graduated Indev damage is the one refinement left.
 
 - ✅ `SURV_TIME (0x04)` — day/night driven by the server (scheduler clock, pushed
-  to survival players + seeded at handshake). v1 clock is shared across maps.
+  to survival players + seeded at handshake). Now **per-map**: each level advances
+  its own `Level.Config.SurvivalTime`, which saves with the `.lvl` so time of day
+  persists across unload/reload.
 - ✅ `SURV_HEALTH (0x03)` — authoritative health + score (stored in `Player.Extras`,
   sent at handshake and on change via `SetHealth`).
 - ✅ `SURV_RESPAWN (0x87)` — client respawn intent → server resets health, repositions
@@ -136,9 +138,14 @@ Indev-specific animations (creeper swell, sheep grazing). Landed as
 - ✅ `SURV_MOB_SPAWN 0x10`, `SURV_MOB_MOVE 0x11`, `SURV_MOB_STATE 0x12`,
   `SURV_MOB_DESPAWN 0x13` — see session-notes for the layouts + the sim scope.
 - ✅ Server runs mob AI, spawner, physics, damage; client renders + interpolates.
-- ✅ `SURV_ATTACK (0x80)` — reach-validated melee → damage/knockback/aggro/shear.
-- ⬜ *Refinements:* Indev A* pathfinding, skeleton arrows (needs phase-5 wire),
-  block-destroying explosions (opt-in), a real light model, mob persistence.
+- ✅ `SURV_ATTACK (0x80)` — reach-validated melee → damage/knockback/aggro/shear;
+  now with **held-weapon damage** (`getDamageVsEntity`) and tool wear on the hit.
+- ✅ Indev A* pathfinding (`Pathfinder`, weighted-wander fallback), skeleton
+  arrows (phase-5 wire), block-destroying explosions (`SurvivalExplosions`,
+  gated on `SurvivalBlockDamage`), sky/block-light model (`SurvivalGrowth`
+  lighting), and **mob persistence** (`SurvivalPersistence` sidecar). All
+  live-tested.
+- ⬜ *Refinements:* mob-vs-mob arrow aggro, PvP.
 
 ## 🔶 Phase 4 — Inventory & containers (first slice landed)
 
@@ -169,19 +176,46 @@ Server owns inventory, containers, crafting, smelting.
   1/8 seed to inventory pending drops), seeds → crop + consume, food → heal +
   consume (soup → bowl), tool durability (`damageItem`, shatters past
   `32 << tier`). Live-tested server-side (farmland 60 / crop 59 / seed consumed
-  / bread eaten / hoe dmg 1). Flint&steel → fire deferred with the phase-5 fire
-  ticks (spread/burnout).
-- ⬜ Remaining phase-4 tail: mining-tool durability (wear on block break),
-  `SURV_PLAYER_EQUIP 0x50` + armor absorption.
+  / bread eaten / hoe dmg 1). Flint&steel → fire deferred (server `USE_ITEM`).
+- ✅ **Mining-tool durability** (`ItemStack.damageItem`): the held tool wears on
+  every block broken (pick/shovel/axe 1, sword 2, others none) and the reverse
+  on a melee hit, shattering past `32 << tier` — Indev-only, mirrors the client's
+  `IndevTest_ToolUseWear`. Build-verified.
+- ✅ **`SURV_PLAYER_EQUIP 0x50`** (a remote player's held item + 4 worn armor ids,
+  broadcast on change) and **armor damage absorption** (`EntityPlayer.attackEntityFrom`:
+  pieces wear by raw damage, absorb in 25ths, shatter). Live-tested.
 
-## ⬜ Phase 5 — Drops & advanced simulation
+## ✅ Phase 5 — Drops & advanced simulation
 
-- Item drops: `SURV_DROP_SPAWN 0x30`, `SURV_DROP_PICKUP 0x31`,
-  `SURV_DROP_REMOVE 0x32`, intent `SURV_DROP_ITEM (0x86)`. Despawn timing is
-  server-owned.
-- Remaining RNG-/tick-driven systems, all server-run and pushed as block
-  changes / metadata / time: grass spread + decay, leaf decay, farmland
-  moisture, crop + sapling growth, fire spread/burnout, furnace smelting.
+- ✅ Item drops (`SurvivalDrops`): `SURV_DROP_SPAWN 0x30`, `SURV_DROP_PICKUP 0x31`,
+  `SURV_DROP_REMOVE 0x32`, intent `SURV_DROP_ITEM (0x86)`. Server-owned pop arc,
+  pickup gating, 5-min despawn; mob-death / chest-scatter / player-death / blast
+  scatter all feed it. Live-tested.
+- ✅ Arrows (`SurvivalArrows`): `SURV_ARROW_SPAWN 0x33` / `STICK 0x34` /
+  `REMOVE 0x35` / `AMMO 0x36`, intent `SURV_FIRE_ARROW 0x88`; c0.30 flight
+  simulated client-side from the streamed seed, server owns sticks + hits.
+- ✅ RNG-/tick-driven world simulation, all server-run (`SurvivalGrowth` +
+  `SurvivalPhysics`) and pushed as block changes: grass spread, leaf decay,
+  farmland moisture, crop + sapling growth, fire spread/burnout, and genuine
+  **finite fluids** (springs, volume-conserving flow, stagnation/petrify).
+  The client's own SP loops are gated off in MP. Live-tested.
+- ✅ **Primed TNT** (`SurvivalTnt`): `SURV_TNT_SPAWN 0x37` / `SURV_TNT_REMOVE 0x38`.
+  Igniting a TNT block — mining it, fire consuming it, or a blast catching it —
+  removes the block and spawns a server-owned `PrimedTnt` entity that pops, falls,
+  counts down its fuse, and detonates (`SurvivalMobs.ExplodeAt`); a blast that
+  clears other TNT chain-ignites it with a short randomized fuse. The client
+  simulates the hop/smoke/flash from the streamed seed and never explodes locally.
+  Live-tested (fire → full-fuse detonation → chain reaction with partial fuses).
+- ✅ **Map persistence** (`SurvivalPersistence` sidecar `extra/survival/<lvl>.sur`):
+  mobs + chest/furnace contents saved on unload/save, restored on load; time of
+  day + grown terrain persist on their own (level config + `.lvl`). Player
+  inventories are session-only (deferred for a later pass).
+
+## ⬜ Backlog (post-phase-5 polish)
+
+- ⬜ Player-inventory persistence across unload.
+- ⬜ Flint & steel → fire via the server `USE_ITEM` path.
+- ⬜ PvP (`SurvivalPvP`), mob-vs-mob arrow aggro, MP primed-TNT defuse.
 
 ---
 
@@ -195,14 +229,17 @@ Server owns inventory, containers, crafting, smelting.
 | 0x04 | TIME | S→C | ✅ 2 |
 | 0x10–0x13 | MOB_* | S→C | ✅ 3 |
 | 0x20–0x25 | INV_/CONT_/FURN_/CURSOR | S→C | ✅ 4 |
-| 0x30–0x32 | DROP_* | S→C | 5 |
-| 0x40 | BLOCKMETA | S→C | 1 |
-| 0x50 | PLAYER_EQUIP | S→C | 4 |
+| 0x30–0x32 | DROP_* | S→C | ✅ 5 |
+| 0x33–0x36 | ARROW_* | S→C | ✅ 5 |
+| 0x37–0x38 | TNT_SPAWN / TNT_REMOVE | S→C | ✅ 5 |
+| 0x40 | BLOCKMETA | S→C | 1 (reserved) |
+| 0x50 | PLAYER_EQUIP | S→C | ✅ 4 |
 | 0x80 | ATTACK | C→S | ✅ 3 |
 | 0x81 | USE_ITEM | C→S | 🔶 4 (opens ✅, eat/tools with items) |
 | 0x82–0x85 | SLOT/RESULT/CONT/HELD | C→S | ✅ 4 |
-| 0x86 | DROP_ITEM | C→S | 5 |
+| 0x86 | DROP_ITEM | C→S | ✅ 5 |
 | 0x87 | RESPAWN | C→S | ✅ 2 |
+| 0x88 | FIRE_ARROW | C→S | ✅ 5 |
 
 ---
 

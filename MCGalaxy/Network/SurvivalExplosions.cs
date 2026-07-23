@@ -128,8 +128,14 @@ namespace MCGalaxy.Network
                         ushort id = View(lvl, bx, by, bz);
                         if (id == Block.Air) continue;
 
-                        // TNT caught in a blast: v1 just removes it (the genuine
-                        // primed-TNT chain reaction needs the entity port).
+                        // TNT caught in a blast: cleared and re-primed as a fresh
+                        // entity with a short randomized fuse (the classic chain
+                        // reaction) instead of dropping an item.
+                        if (id == Block.TNT) {
+                            SurvivalGrowth.SetView(lvl, bx, by, bz, Block.Air);
+                            SurvivalTnt.Ignite(lvl, bx, by, bz, SurvivalTnt.ChainFuse(lvl, rng));
+                            continue;
+                        }
                         ExplodeDrops(lvl, bx, by, bz, id, rng);
                         SurvivalInventory.ContainerRemovedIfAny(lvl, bx, by, bz, id); // chest/furnace scatter + TE cleanup
                         SurvivalGrowth.SetView(lvl, bx, by, bz, Block.Air);

@@ -102,6 +102,8 @@ namespace MCGalaxy.Network
         public const byte ARROW_STICK  = 0x34;
         public const byte ARROW_REMOVE = 0x35;
         public const byte ARROW_AMMO   = 0x36;
+        public const byte TNT_SPAWN    = 0x37;
+        public const byte TNT_REMOVE   = 0x38;
         public const byte BLOCKMETA    = 0x40;
         public const byte PLAYER_EQUIP = 0x50;
 
@@ -171,6 +173,7 @@ namespace MCGalaxy.Network
             SurvivalMobs.SendLevelMobs(p, lvl); // phase 3: the level's live mob population
             SurvivalDrops.SendLevelDrops(p, lvl); // phase 5: the level's dropped items (at rest)
             SurvivalArrows.SendLevelArrows(p, lvl); // phase 5: in-flight + stuck arrows
+            SurvivalTnt.SendLevel(p, lvl);        // primed TNT mid-fuse
             SurvivalArrows.SendInitialAmmo(p, lvl); // c0.30 quiver count for the HUD
             // other players' equipment (SURV_PLAYER_EQUIP) is sent per entity as it
             // becomes visible (SurvivalInventory.OnEntitySpawned), not here - the
@@ -439,6 +442,50 @@ namespace MCGalaxy.Network
             byte[] msg = new byte[Packet.PluginMessageDataLength];
             msg[0] = ARROW_AMMO;
             msg[1] = (byte)(count >> 8); msg[2] = (byte)count;
+            SendMessage(p, msg);
+        }
+
+
+        // ==================== primed TNT (SURV_TNT_*) ====================
+
+        static short TntPos(double v) { return (short)Math.Round(v * 32.0); }          // coord*32
+        static short TntVel(double v) {                                                // blocks/tick*1024
+            double s = v * 1024.0;
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            return (short)s;
+        }
+
+        /// <summary> SURV_TNT_SPAWN: [tntId:u16][pos:3xi16 coord*32][vel:3xi16 blocks/tick*1024]
+        /// [fuse:u16]. The client seeds an st_tnt entry and simulates the SAME PrimedTnt
+        /// hop/smoke/flash from pos+vel until SURV_TNT_REMOVE detonates it. </summary>
+        public static void SendTntSpawn(Player p, int tntId, double x, double y, double z,
+                                        double vx, double vy, double vz, int fuse) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = TntPos(x),  py = TntPos(y),  pz = TntPos(z);
+            short sx = TntVel(vx), sy = TntVel(vy), sz = TntVel(vz);
+            msg[0]  = TNT_SPAWN;
+            msg[1]  = (byte)(tntId >> 8); msg[2]  = (byte)tntId;
+            msg[3]  = (byte)(px >> 8); msg[4]  = (byte)px;
+            msg[5]  = (byte)(py >> 8); msg[6]  = (byte)py;
+            msg[7]  = (byte)(pz >> 8); msg[8]  = (byte)pz;
+            msg[9]  = (byte)(sx >> 8); msg[10] = (byte)sx;
+            msg[11] = (byte)(sy >> 8); msg[12] = (byte)sy;
+            msg[13] = (byte)(sz >> 8); msg[14] = (byte)sz;
+            msg[15] = (byte)(fuse >> 8); msg[16] = (byte)fuse;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_TNT_REMOVE: [tntId:u16][reason(0 detonate/1 defuse)]. On
+        /// detonate the client shows the block-break burst; the blast's actual block
+        /// destruction arrives as authoritative SetBlocks. </summary>
+        public static void SendTntRemove(Player p, int tntId, byte reason) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = TNT_REMOVE;
+            msg[1] = (byte)(tntId >> 8); msg[2] = (byte)tntId;
+            msg[3] = reason;
             SendMessage(p, msg);
         }
 
