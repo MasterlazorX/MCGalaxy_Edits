@@ -646,10 +646,12 @@
     <Compile Include="Network\SurvivalArrows.cs" />
     <Compile Include="Network\SurvivalBlocks.cs" />
     <Compile Include="Network\SurvivalDrops.cs" />
+    <Compile Include="Network\SurvivalGrowth.cs" />
     <Compile Include="Network\SurvivalInventory.cs" />
     <Compile Include="Network\SurvivalItems.cs" />
     <Compile Include="Network\SurvivalMobs.cs" />
     <Compile Include="Network\SurvivalNet.cs" />
+    <Compile Include="Network\SurvivalPhysics.cs" />
     <Compile Include="Network\Utils\BufferedBlockSender.cs" />
     <Compile Include="Network\Utils\HttpUtil.cs" />
     <Compile Include="Network\Utils\Utils.cs" />
