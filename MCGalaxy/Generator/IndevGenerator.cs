@@ -78,6 +78,7 @@ namespace MCGalaxy.Generator
             }
 
             IndevGenerator gen = new IndevGenerator(lvl, type, theme, args.Seed);
+            gen.player = p;
             gen.Run();
             gen.ApplyLevelSettings();
             p.Message("Indev world ready: theme &b{0}&S, type &b{1}&S, seed &b{2}&S - spawn house at ({3}, {4}, {5}).",
@@ -240,6 +241,14 @@ namespace MCGalaxy.Generator
         readonly int width, length, height, volume;
         readonly int type, theme, seed;
         readonly JRandom rnd;
+        Player player; // who requested the gen - receives the phase banners
+
+        // The genuine Indev ProgressBarDisplay phase banner (LevelGenerator's
+        // setText). Streamed to the generating player so the client sees the
+        // same "Raising.. / Soiling.. / Growing.." progression Indev shows.
+        void Status(string phase) {
+            if (player != null) player.Message("&8Indev: &7{0}", phase);
+        }
 
         bool IsIsland   { get { return type == 1; } }
         bool IsFloating { get { return type == 2; } }
@@ -1175,18 +1184,23 @@ namespace MCGalaxy.Generator
                 if (IsFlat) {
                     for (int i = 0; i < width * length; i++) heightmap[i] = 0;
                 } else {
+                    if (layer == 0) { Status("Raising.."); Status("Eroding.."); }
                     RaiseAndErode();
                 }
+                if (layer == 0) Status("Soiling..");
                 Soil();
+                if (layer == 0) Status("Growing..");
                 Grow();
             }
 
+            Status("Carving..");
             Carve();
             // genuine runs the ore veins under the "Carving.." banner
             PopulateOre(Block.CoalOre, 1000, 10, (height << 2) / 5);
             PopulateOre(Block.IronOre,  800,  8, height * 3 / 5);
             PopulateOre(Block.GoldOre,  500,  6, (height << 1) / 5);
             PopulateOre(SurvivalBlocks.DIAMOND_ORE, 800, 2, height / 5);
+            Status("Melting..");
             LavaGen();
 
             cloudHeight = height + 2;
@@ -1201,6 +1215,7 @@ namespace MCGalaxy.Generator
                 groundLevel = waterLevel - 9;
             }
 
+            Status("Watering..");
             LiquidThemeSpawner();
             if (!IsFloating) {
                 byte edgeFluid = theme == 1 ? Block.StillLava : Block.StillWater;
@@ -1221,11 +1236,14 @@ namespace MCGalaxy.Generator
             worldRnd2 = Assemble();
             // World.generate() also computed heightMap + the light snapshot that
             // every Building/Planting pass reads from
+            Status("Lighting..");
             WRInit();
 
             FindSpawn();
+            Status("Building..");
             GenerateHouse();
 
+            Status("Planting..");
             if (theme != 1) GrowGrass();
 
             GrowTrees();
