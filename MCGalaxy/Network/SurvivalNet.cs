@@ -478,8 +478,15 @@ namespace MCGalaxy.Network
         const int TICKS_PER_TICK  = 20;                       // world ticks advanced per scheduler pass
         static readonly TimeSpan TIME_INTERVAL = TimeSpan.FromSeconds(1); // -> a 20 minute day
 
-        static int worldTime; // read/written across threads; int access is atomic, slight staleness is fine
+        // Per-map day/night clock: each survival level owns its time in
+        // Level.Config.SurvivalTime, which auto-persists with the level's
+        // .properties (so time of day survives unload/reload for free).
         static SchedulerTask timeTask;
+
+        /// <summary> This level's world time (0..23999). </summary>
+        internal static int TimeOf(Level lvl) {
+            return lvl == null ? 0 : ((lvl.Config.SurvivalTime % DAY_TICKS) + DAY_TICKS) % DAY_TICKS;
+        }
 
         /// <summary> Starts the survival day/night clock. Called once from CorePlugin. </summary>
         public static void Start() {
@@ -498,7 +505,12 @@ namespace MCGalaxy.Network
         }
 
         static void TimeTick(SchedulerTask task) {
-            worldTime = (worldTime + TICKS_PER_TICK) % DAY_TICKS;
+            // advance each loaded survival level's own clock
+            foreach (Level lvl in LevelInfo.Loaded.Items)
+            {
+                if (lvl.Config.SurvivalMode == SurvivalMode.Off) continue;
+                lvl.Config.SurvivalTime = (TimeOf(lvl) + TICKS_PER_TICK) % DAY_TICKS;
+            }
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player p in players)
             {
@@ -515,7 +527,7 @@ namespace MCGalaxy.Network
         }
 
         static void SendTime(Player p) {
-            int time = worldTime;
+            int time = TimeOf(p.level);
             byte[] msg = new byte[Packet.PluginMessageDataLength];
             msg[0] = TIME;
             msg[1] = (byte)(time >> 8); // worldTime, big-endian u16
@@ -524,25 +536,25 @@ namespace MCGalaxy.Network
             SendMessage(p, msg);
         }
 
-        /// <summary> Sky light right now - the mob simulation's day/night input
-        /// (sunburn, darkness spawn rule, spider light-flee). </summary>
-        internal static byte CurrentSkyLight() { return SkyLight(worldTime); }
+        /// <summary> Sky light on a level right now - the mob simulation's day/night
+        /// input (sunburn, darkness spawn rule, spider light-flee). </summary>
+        internal static byte CurrentSkyLight(Level lvl) { return SkyLight(TimeOf(lvl)); }
 
-        /// <summary> Current world time (0..23999; 0 sunrise, 6000 noon, 12000 sunset). </summary>
-        public static int WorldTime { get { return worldTime; } }
+        /// <summary> A level's world time (0..23999; 0 sunrise, 6000 noon, 12000 sunset). </summary>
+        public static int WorldTimeOf(Level lvl) { return TimeOf(lvl); }
 
         /// <summary> CurrentSkyLight for callers outside the assembly-internal sim. </summary>
-        public static byte CurrentSkyLightPublic() { return CurrentSkyLight(); }
+        public static byte CurrentSkyLightPublic(Level lvl) { return CurrentSkyLight(lvl); }
 
-        /// <summary> Sets the world clock (debug / testing: forcing night to check monster
-        /// spawns, sunburn, the client's celestial sky). Pushed to every survival player
-        /// immediately rather than waiting for the next 1 s clock tick. </summary>
-        public static void SetWorldTime(int time) {
-            worldTime = ((time % DAY_TICKS) + DAY_TICKS) % DAY_TICKS;
-            Player[] players = PlayerInfo.Online.Items;
-            foreach (Player p in players)
+        /// <summary> Sets a level's world clock (debug / testing: forcing night to check
+        /// monster spawns, sunburn, the client's celestial sky). Pushed to that level's
+        /// survival players immediately rather than waiting for the next 1 s clock tick. </summary>
+        public static void SetWorldTime(Level lvl, int time) {
+            if (lvl == null) return;
+            lvl.Config.SurvivalTime = ((time % DAY_TICKS) + DAY_TICKS) % DAY_TICKS;
+            foreach (Player p in PlayerInfo.Online.Items)
             {
-                if (Active(p, p.level)) SendTime(p);
+                if (p.level == lvl && Active(p, p.level)) SendTime(p);
             }
         }
 

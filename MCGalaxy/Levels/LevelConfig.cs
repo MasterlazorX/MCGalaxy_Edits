@@ -342,6 +342,8 @@ namespace MCGalaxy
         public int SurvivalMobCap;
         [ConfigBool("SurvivalBlockDamage", "Survival", true)]
         public bool SurvivalBlockDamage = true; // creeper/TNT blasts destroy terrain (off = entity damage only, for protected builds)
+        [ConfigInt("SurvivalTime", "Survival", 0, 0, 23999)]
+        public int SurvivalTime; // per-map day/night clock (0..23999); persists with the level
 
         // Games settings
         [ConfigInt("Likes", "Game", 0)]

@@ -171,7 +171,7 @@ namespace MCGalaxy.Network
         // Genuine getBlockLightValue: the greater of the (eased) sky light where
         // the cell sees the sky, and the flooded block light from lamps.
         static int LightLevel(Level lvl, LevelGrowth g, int x, int y, int z) {
-            int sky = IsLit(lvl, x, y, z) ? SurvivalNet.CurrentSkyLight() : 0;
+            int sky = IsLit(lvl, x, y, z) ? SurvivalNet.CurrentSkyLight(lvl) : 0;
             int lamp = BlockLightAt(g, lvl, x, y, z);
             return sky > lamp ? sky : lamp;
         }

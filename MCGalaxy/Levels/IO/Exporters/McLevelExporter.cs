@@ -132,7 +132,7 @@ namespace MCGalaxy.Levels.IO {
                 WriteI16(s, "SurroundingWaterHeight",  water);
                 WriteU8 (s, "SurroundingGroundType", 2); // grass - genuine writes grass always
                 WriteU8 (s, "SurroundingWaterType",  lava ? Block.Lava : Block.Water);
-                WriteI16(s, "TimeOfDay", SurvivalNet.WorldTime % 24000);
+                WriteI16(s, "TimeOfDay", SurvivalNet.WorldTimeOf(lvl) % 24000);
             } s.WriteByte(NBT_END);
 
             WriteDict(s, "Map");

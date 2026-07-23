@@ -381,7 +381,7 @@ namespace MCGalaxy.Network
         }
 
         static bool IsBright(Level lvl, SurvMob m) {
-            return SurvivalNet.CurrentSkyLight() > 7 && SkyExposed(lvl, m);
+            return SurvivalNet.CurrentSkyLight(lvl) > 7 && SkyExposed(lvl, m);
         }
 
 
@@ -1330,7 +1330,7 @@ namespace MCGalaxy.Network
         }
 
         static bool ColumnLit(Level lvl, int x, int y, int z) {
-            if (SurvivalNet.CurrentSkyLight() <= 7) return false; // night: everywhere is dark
+            if (SurvivalNet.CurrentSkyLight(lvl) <= 7) return false; // night: everywhere is dark
             for (int by = y; by < lvl.Height; by++)
             {
                 if (IsSolidAt(lvl, x, by, z)) return false;
@@ -1668,7 +1668,7 @@ namespace MCGalaxy.Network
             LevelMobs lm = GetLevel(lvl, false);
             if (lm == null) { p.Message("No mob registry for this level yet (no survival player has ticked it)."); return; }
             SpawnStats st = lm.Stats;
-            int time = SurvivalNet.WorldTime;
+            int time = SurvivalNet.WorldTimeOf(lvl);
             p.Message("Spawner on {0}&S: &b{1}&S ticks, &b{2}&S rolls, &b{3}&S attempts, &b{4}&S spawned",
                       lvl.ColoredName, st.Ticks, st.Rolls, st.Attempts, st.Spawned);
             p.Message("  rejected: &b{0}&S empty-column, &b{1}&S out-of-bounds, &b{2}&S at-cap",
@@ -1676,7 +1676,7 @@ namespace MCGalaxy.Network
             p.Message("  last spawn: &b{0}&S; live mobs &b{1}&S/&b{2}",
                       st.LastSpawn, CountMobs(lvl), MAX_MOBS_PER_LEVEL);
             p.Message("  clock: worldTime &b{0}&S ({1}&S), sky light &b{2}&S - monsters need dark, animals light",
-                      time, DescribeTime(time), SurvivalNet.CurrentSkyLight());
+                      time, DescribeTime(time), SurvivalNet.CurrentSkyLight(lvl));
         }
 
         /// <summary> Debug: the nearest live mobs to a player, for /Survival mobs. </summary>

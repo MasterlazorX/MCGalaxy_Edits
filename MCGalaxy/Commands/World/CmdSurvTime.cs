@@ -30,9 +30,9 @@ namespace MCGalaxy.Commands.World
 
         public override void Use(Player p, string message, CommandData data) {
             if (message.Length == 0) {
-                int t = SurvivalNet.WorldTime;
+                int t = SurvivalNet.WorldTimeOf(p.level);
                 p.Message("World time: &b{0}&S ({1}&S), sky light &b{2}&S/15",
-                          t, SurvivalMobs.DescribeTime(t), SurvivalNet.CurrentSkyLightPublic());
+                          t, SurvivalMobs.DescribeTime(t), SurvivalNet.CurrentSkyLightPublic(p.level));
                 p.Message("Cycle: 0 sunrise, 6000 noon, 12000 sunset, 18000 midnight (20 min/day).");
                 p.Message("Set with &T/SurvTime [day/noon/sunset/night/midnight/sunrise/<ticks>]");
                 return;
@@ -50,9 +50,9 @@ namespace MCGalaxy.Commands.World
                     }
                     break;
             }
-            SurvivalNet.SetWorldTime(time);
+            SurvivalNet.SetWorldTime(p.level, time);
             p.Message("World time set to &b{0}&S ({1}&S) - pushed to all survival players.",
-                      SurvivalNet.WorldTime, SurvivalMobs.DescribeTime(SurvivalNet.WorldTime));
+                      SurvivalNet.WorldTimeOf(p.level), SurvivalMobs.DescribeTime(SurvivalNet.WorldTimeOf(p.level)));
         }
 
         public override void Help(Player p) {

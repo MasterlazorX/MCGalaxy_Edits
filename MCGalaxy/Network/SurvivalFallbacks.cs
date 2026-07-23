@@ -51,7 +51,7 @@ namespace MCGalaxy.Network
         /// colours of non-survival clients on survival maps as the clock moves. </summary>
         public static void TickEnv(Player p, Level lvl) {
             if (!p.Supports(CpeExt.EnvColors)) return;
-            int light = SurvivalNet.CurrentSkyLight();
+            int light = SurvivalNet.CurrentSkyLight(lvl);
             if (p.Extras.GetInt(ENV_KEY, -1) == light) return;
             p.Extras[ENV_KEY] = light;
 
