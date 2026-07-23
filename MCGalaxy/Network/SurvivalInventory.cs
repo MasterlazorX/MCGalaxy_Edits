@@ -656,6 +656,47 @@ namespace MCGalaxy.Network
             if (IsChestView(view) || IsFurnaceView(view)) ContainerRemoved(lvl, x, y, z);
         }
 
+        // ==================== persistence (SurvivalPersistence) ====================
+
+        /// <summary> Writes the level's chest/furnace tile entities as "cont x y z kind
+        /// burn cook curBurn nslots id:count:dmg..." lines for the map sidecar. </summary>
+        internal static void SaveContainers(Level lvl, System.IO.TextWriter w) {
+            lock (contLock) {
+                Dictionary<long, Container> map;
+                if (!contRegistry.TryGetValue(lvl, out map)) return;
+                foreach (Container c in map.Values)
+                {
+                    System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                    sb.AppendFormat("cont {0} {1} {2} {3} {4} {5} {6} {7}",
+                        c.X, c.Y, c.Z, c.Kind, c.BurnTime, c.CookTime, c.CurrentBurn, c.Slots.Length);
+                    foreach (Slot s in c.Slots) sb.AppendFormat(" {0}:{1}:{2}", s.Id, s.Count, s.Damage);
+                    w.WriteLine(sb.ToString());
+                }
+            }
+        }
+
+        /// <summary> Restores one saved tile entity into the level's container
+        /// registry (the block itself is already in the .lvl). </summary>
+        internal static void RestoreContainer(Level lvl, string[] p) {
+            if (p.Length < 9) return;
+            Container c = new Container();
+            c.X = int.Parse(p[1]); c.Y = int.Parse(p[2]); c.Z = int.Parse(p[3]);
+            c.Kind = byte.Parse(p[4]);
+            c.BurnTime = int.Parse(p[5]); c.CookTime = int.Parse(p[6]); c.CurrentBurn = int.Parse(p[7]);
+            int n = int.Parse(p[8]);
+            c.Slots = new Slot[n];
+            for (int i = 0; i < n && 9 + i < p.Length; i++) {
+                string[] f = p[9 + i].Split(':');
+                if (f.Length < 3) continue;
+                c.Slots[i] = new Slot { Id = ushort.Parse(f[0]), Count = byte.Parse(f[1]), Damage = short.Parse(f[2]) };
+            }
+            lock (contLock) {
+                Dictionary<long, Container> map;
+                if (!contRegistry.TryGetValue(lvl, out map)) { map = new Dictionary<long, Container>(); contRegistry[lvl] = map; }
+                map[PackPos(c.X, c.Y, c.Z)] = c;
+            }
+        }
+
         public static void ContainerRemoved(Level lvl, int x, int y, int z) {
             Container te = null;
             lock (contLock) {

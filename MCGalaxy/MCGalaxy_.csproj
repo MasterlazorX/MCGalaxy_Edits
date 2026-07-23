@@ -652,6 +652,7 @@
     <Compile Include="Network\SurvivalItems.cs" />
     <Compile Include="Network\SurvivalMobs.cs" />
     <Compile Include="Network\SurvivalNet.cs" />
+    <Compile Include="Network\SurvivalPersistence.cs" />
     <Compile Include="Network\SurvivalPhysics.cs" />
     <Compile Include="Network\Utils\BufferedBlockSender.cs" />
     <Compile Include="Network\Utils\HttpUtil.cs" />

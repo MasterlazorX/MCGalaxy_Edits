@@ -1359,6 +1359,46 @@ namespace MCGalaxy.Network
         }
 
 
+        // ==================== persistence (SurvivalPersistence) ====================
+
+        static readonly System.Globalization.CultureInfo INV = System.Globalization.CultureInfo.InvariantCulture;
+
+        /// <summary> Writes the level's live mobs as "mob type x y z yaw pitch health
+        /// hasFur fuseState fire" lines for the map sidecar. </summary>
+        internal static void SaveMobs(Level lvl, System.IO.TextWriter w) {
+            LevelMobs lm = GetLevel(lvl, false);
+            if (lm == null) return;
+            lock (lm.Mobs) {
+                foreach (SurvMob m in lm.Mobs)
+                {
+                    if (m.Dead) continue;
+                    w.WriteLine("mob {0} {1} {2} {3} {4} {5} {6} {7} {8} {9}",
+                        m.Type, m.X.ToString(INV), m.Y.ToString(INV), m.Z.ToString(INV),
+                        m.Yaw.ToString(INV), m.Pitch.ToString(INV), m.Health,
+                        m.HasFur ? 1 : 0, (int)m.FuseState, m.Fire);
+                }
+            }
+        }
+
+        /// <summary> Restores one saved mob into the level (SendLevelMobs streams it
+        /// to players as they join). </summary>
+        internal static void RestoreMob(Level lvl, string[] p) {
+            if (p.Length < 11) return;
+            LevelMobs lm = GetLevel(lvl, true);
+            SurvMob m = new SurvMob();
+            m.Id = nextMobId++; if (nextMobId == 0) nextMobId = 1;
+            m.Type = byte.Parse(p[1], INV);
+            if (m.Type >= Types.Length) return;
+            m.X = double.Parse(p[2], INV); m.Y = double.Parse(p[3], INV); m.Z = double.Parse(p[4], INV);
+            m.Yaw = float.Parse(p[5], INV); m.Pitch = float.Parse(p[6], INV);
+            m.Health = int.Parse(p[7], INV);
+            m.HasFur = p[8] == "1";
+            m.FuseState = (sbyte)int.Parse(p[9], INV);
+            m.Fire = int.Parse(p[10], INV);
+            lock (lm.Mobs) { lm.Mobs.Add(m); lm.InitialSpawned = true; }
+        }
+
+
         // ==================== the tick ====================
 
         static void Tick(SchedulerTask task) {

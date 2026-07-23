@@ -1695,3 +1695,30 @@ killed the point-blank player - clean server log.
 DEFERRED: the primed-TNT ENTITY (mining TNT -> a hopping/fused entity; the
 in-blast TNT chain reaction) needs a streamed TNT entity like drops/arrows -
 v1 detonates fire-caught TNT immediately and just clears TNT caught in a blast.
+
+## Survival map persistence (SurvivalPersistence.cs)
+
+A survival map's live simulation state now survives unload/reload. Four parts:
+
+ * TIME OF DAY: per-map now (Level.Config.SurvivalTime), so it auto-persists in
+   the level .properties - the shared static worldTime is gone; every survival
+   level runs its own day/night clock and CurrentSkyLight/WorldTime/SetWorldTime
+   take a Level. Verified: gt1 saved "SurvivalTime = 420" on /save.
+ * GROWTH: free - the growth tick writes real blocks, which save in the .lvl.
+ * MOBS + CONTAINERS: a per-level sidecar extra/survival/<lvl>.sur, written on
+   OnLevelSave + OnLevelUnload, read on OnLevelLoaded. "mob type x y z yaw pitch
+   health hasFur fuseState fire" lines (SurvivalMobs.SaveMobs/RestoreMob) and
+   "cont x y z kind burn cook curBurn nslots id:count:dmg..." lines
+   (SurvivalInventory.SaveContainers/RestoreContainer, chest/furnace tile
+   entities incl. furnace smelt state). Restored mobs stream to players via the
+   existing SendLevelMobs join sync; restored containers repopulate the TE
+   registry (their blocks are already in the .lvl). Atomic-ish write (tmp+move).
+ * PLAYER INVENTORIES: deferred (user choice) - session-only for now.
+
+Verified live: 19 mobs saved to gt1.sur; after a full server restart (unload
+saves, startup loads+restores) a joining client was streamed 16 restored mobs
+(vs 0 without persistence), clean log. Container save/restore is the symmetric
+path (build-verified; live GUI round-trip is a follow-up).
+
+Wired in CorePlugin (OnLevelSave/Unload/Loaded). extra/survival/*.sur are
+runtime data (gitignored bin tree).

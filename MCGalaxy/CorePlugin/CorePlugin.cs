@@ -51,6 +51,9 @@ namespace MCGalaxy.Core {
             OnJoiningLevelEvent.Register(Network.SurvivalInventory.OnJoiningLevel, Priority.Low);
             OnPlayerDisconnectEvent.Register(Network.SurvivalInventory.OnPlayerDisconnect, Priority.Low);
             OnLevelLoadedEvent.Register(Network.SurvivalBlocks.OnLevelLoaded, Priority.Low);
+            OnLevelLoadedEvent.Register(Network.SurvivalPersistence.OnLevelLoaded, Priority.Low);
+            OnLevelSaveEvent.Register(Network.SurvivalPersistence.OnLevelSave, Priority.Low);
+            OnLevelUnloadEvent.Register(Network.SurvivalPersistence.OnLevelUnload, Priority.Low);
             Network.SurvivalNet.Start();
         }
         
@@ -76,6 +79,9 @@ namespace MCGalaxy.Core {
             OnJoiningLevelEvent.Unregister(Network.SurvivalInventory.OnJoiningLevel);
             OnPlayerDisconnectEvent.Unregister(Network.SurvivalInventory.OnPlayerDisconnect);
             OnLevelLoadedEvent.Unregister(Network.SurvivalBlocks.OnLevelLoaded);
+            OnLevelLoadedEvent.Unregister(Network.SurvivalPersistence.OnLevelLoaded);
+            OnLevelSaveEvent.Unregister(Network.SurvivalPersistence.OnLevelSave);
+            OnLevelUnloadEvent.Unregister(Network.SurvivalPersistence.OnLevelUnload);
             Network.SurvivalNet.Stop();
         }
     }
