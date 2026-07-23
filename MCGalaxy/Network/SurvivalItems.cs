@@ -170,6 +170,26 @@ namespace MCGalaxy.Network
             return d.Value.Param;
         }
 
+        // ItemArmor durability: maxDamage {11,16,15,13}[piece] * 3 << tier, with
+        // tiers cloth 0 / chain 1 / iron 2 / diamond 3 / GOLD 1 (gold really has
+        // chain durability). Armor ids are contiguous 256+42..61, 4 per set.
+        static readonly int[] armorBase  = { 11, 16, 15, 13 }; // helmet, chestplate, leggings, boots
+        static readonly int[] armorTier  = { 0, 1, 2, 3, 1 };  // cloth, chain, iron, diamond, gold
+        static readonly int[] armorReduce = { 3, 8, 6, 3 };    // damageReduceAmount per piece (tier-independent)
+
+        /// <summary> ItemArmor.getMaxDamage for an armor id (durability), or 0. </summary>
+        public static int ArmorMaxDamage(ushort id) {
+            int piece = ArmorPiece(id);
+            if (piece < 0) return 0;
+            return armorBase[piece] * 3 << armorTier[(id - 256 - 42) / 4];
+        }
+
+        /// <summary> ItemArmor.damageReduceAmount for an armor id, or 0. </summary>
+        public static int ArmorReduce(ushort id) {
+            int piece = ArmorPiece(id);
+            return piece < 0 ? 0 : armorReduce[piece];
+        }
+
         /// <summary> HP an edible item restores (ItemFood/ItemSoup param), else 0. </summary>
         public static int FoodHeal(ushort id) {
             ItemDef? d = Find(id);

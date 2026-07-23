@@ -665,7 +665,20 @@ namespace MCGalaxy.Network
             int invinc = p.Extras.GetInt(INVINC_KEY, 0);
             int health = GetHealth(p);
             int last   = p.Extras.GetInt(LASTHP_KEY, health);
-            if (invinc > 10) {
+
+            if (p.level.Config.SurvivalMode == SurvivalMode.Indev) {
+                // EntityPlayer.attackEntityFrom (Indev): unlike c0.30 there is NO
+                // delta damage inside the fresh invulnerability half-window - the
+                // hit simply misses (and armor is untouched). Otherwise armor
+                // absorbs in 25ths (wearing every worn piece by the raw damage)
+                // before the hit lands and re-arms the window.
+                if (invinc > 10) return;
+                damage = SurvivalInventory.AbsorbArmor(p, damage);
+                if (damage <= 0) return; // fully absorbed (armor still wore)
+                p.Extras[LASTHP_KEY] = health;
+                p.Extras[INVINC_KEY] = 20;
+                health -= damage;
+            } else if (invinc > 10) {
                 if (last - damage >= health) return; // absorbed by the fresh window
                 health = last - damage;
             } else {

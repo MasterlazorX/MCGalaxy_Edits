@@ -1638,3 +1638,29 @@ high so the mob lands on the surface instead of embedded in terrain.)
 
 DEFERRED (backlog): mob-vs-mob aggro from arrows; block-destroying explosions;
 third-person held-item render.
+
+## Armor damage absorption (EntityPlayer.attackEntityFrom) — Indev
+
+Worn armor now reduces incoming player damage (mob melee, arrows, environmental
+- everything routes through SurvivalNet.DamagePlayer). A port of the client's
+SP formula (oracle-verified), Indev-only:
+
+ * ArmorValue (InventoryPlayer.getPlayerArmorValue): wear-weighted sum of the
+   worn pieces' damageReduceAmount - (reduce-1)*remain/max + 1. Reduce is
+   tier-independent (helmet 3 / chestplate 8 / leggings 6 / boots 3); durability
+   is base{11,16,15,13}[piece]*3 << tier (cloth 0 / chain 1 / iron 2 / diamond 3
+   / gold=chain 1). Added to SurvivalItems: ArmorMaxDamage / ArmorReduce.
+ * DamagePlayer Indev branch (SurvivalInventory.AbsorbArmor): scaled = raw *
+   (25 - armorValue) + carriedRemainder; HP lost = scaled/25, remainder carried
+   between hits (Player.Extras). Every worn piece wears by the RAW damage even
+   when the result rounds to zero; a piece past its max shatters (removed +
+   BroadcastEquip). Also made the Indev invuln window a full miss inside the
+   fresh half (no c0.30 delta damage), matching attackEntityFrom.
+
+Verified live (armor_dmg.py, zombie melee on gt1): BARE took 5/hit and died in
+~4 hits; FULL IRON took 1-2/hit (climbing as the pieces wore) and survived ~12,
+the four pieces still worn - clean server log.
+
+Test-rig note: the op account now has a password (physop / claudetest1). Tests
+send "/Pass claudetest1" as their first chat line to verify the session before
+any /Give or /SurvSpawn.

@@ -824,6 +824,54 @@ namespace MCGalaxy.Network
                 armor[i] = inv.Slots[ARMOR_BASE + i].Count > 0 ? inv.Slots[ARMOR_BASE + i].Id : (ushort)0;
         }
 
+        // ==================== armor absorption (EntityPlayer.attackEntityFrom) ====================
+
+        const string DMG_REMAINDER_KEY = "survival.dmgRemainder"; // EntityPlayer.damageRemainder
+
+        // InventoryPlayer.getPlayerArmorValue: the summed damageReduceAmount of
+        // worn pieces, weighted by their remaining durability.
+        static int ArmorValue(PlayerInv inv) {
+            int reduce = 0, remain = 0, max = 0;
+            for (int i = 0; i < ARMOR_SLOTS; i++) {
+                int s = ARMOR_BASE + i;
+                if (inv.Slots[s].Count <= 0) continue;
+                int m = SurvivalItems.ArmorMaxDamage(inv.Slots[s].Id);
+                if (m <= 0) continue;
+                remain += m - inv.Slots[s].Damage;
+                max    += m;
+                reduce += SurvivalItems.ArmorReduce(inv.Slots[s].Id);
+            }
+            return max == 0 ? 0 : (reduce - 1) * remain / max + 1;
+        }
+
+        /// <summary> EntityPlayer.attackEntityFrom armor scaling (Indev): reduces the
+        /// raw damage in 25ths weighted by worn armor, carrying the sub-1HP remainder
+        /// between hits, and wears every worn piece by the raw damage (shattering a
+        /// piece past its max). Returns the HP actually lost (0 = fully absorbed; the
+        /// armor still wore). Caller applies the returned HP loss. </summary>
+        public static int AbsorbArmor(Player p, int damage) {
+            PlayerInv inv = Get(p);
+            int armorValue = ArmorValue(inv);
+            int scaled = damage * (25 - armorValue) + p.Extras.GetInt(DMG_REMAINDER_KEY, 0);
+
+            bool shattered = false;
+            for (int i = 0; i < ARMOR_SLOTS; i++) {
+                int s = ARMOR_BASE + i;
+                if (inv.Slots[s].Count <= 0) continue;
+                if (SurvivalItems.ArmorMaxDamage(inv.Slots[s].Id) <= 0) continue;
+                inv.Slots[s].Damage += (short)damage;
+                if (inv.Slots[s].Damage > SurvivalItems.ArmorMaxDamage(inv.Slots[s].Id)) {
+                    inv.Slots[s] = new Slot(); // shatter
+                    shattered = true;
+                }
+                SendSlot(p, inv, s);
+            }
+            p.Extras[DMG_REMAINDER_KEY] = scaled % 25;
+            if (shattered) BroadcastEquip(p); // a worn piece vanished - update the body
+            return scaled / 25;
+        }
+
+
         const string EQUIP_KEY = "survival.equip"; // last-broadcast {held,a0,a1,a2,a3}
 
         // Resolves the equipped player's entity id as the viewer sees it and streams
