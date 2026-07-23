@@ -274,14 +274,21 @@ namespace MCGalaxy.Network
             return c > cur ? c : cur;
         }
 
+        const float TNT_BLAST_RADIUS = 4.0f; // c0.30/Indev PrimedTnt.explode radius
+
         // BlockFire.tryToCatchBlockOnFire: rand(bound) < ability consumes the block
-        // (half fire, half air). Caught TNT is consumed but not detonated (no block-
-        // destroying explosion port yet).
+        // (half fire, half air); caught TNT detonates (v1: immediate, no primed-TNT
+        // fuse entity yet).
         static void FireTryCatch(LevelPhys lp, Level lvl, int x, int y, int z, int bound) {
             if (!In(lvl, x, y, z)) return;
             ushort b = View(lvl, x, y, z);
             int ability = FireAbility(b);
             if (lp.Rng.Next(bound) >= ability) return;
+            if (b == Block.TNT) {
+                Set(lvl, x, y, z, Block.Air);
+                SurvivalMobs.ExplodeAt(lvl, x + 0.5, y + 0.5, z + 0.5, TNT_BLAST_RADIUS);
+                return;
+            }
             Set(lvl, x, y, z, lp.Rng.Next(2) == 0 ? FIRE : (ushort)Block.Air);
         }
 

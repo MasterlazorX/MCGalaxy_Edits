@@ -1664,3 +1664,34 @@ the four pieces still worn - clean server log.
 Test-rig note: the op account now has a password (physop / claudetest1). Tests
 send "/Pass claudetest1" as their first chat line to verify the session before
 any /Give or /SurvSpawn.
+
+## Block-destroying explosions (World.createExplosion) — SurvivalExplosions.cs
+
+Creeper/TNT blasts now carve terrain, not just damage entities. A port of the
+client's Indev_CreateExplosion:
+
+ * SurvivalExplosions.DestroyBlocks: 16^3 boundary rays seed a destroy set,
+   each paying (resistance+0.3)*0.3 per occupied cell + a flat 0.225/step; cells
+   passed while power>0 are cleared in genuine descending order with the 30%
+   Indev drop roll (Block.getExplosionResistance table ported by view id -
+   water/still-lava blast-proof at 100, flowing lava 1.2, bedrock 3.6M, stone
+   group 6, dirt/sand 0.5, leaves 0.2, ...). Blasted chests/furnaces scatter
+   (ContainerRemovedIfAny); drops route through SurvivalDrops.
+ * SurvivalExplosions.Density / RayBlocked: the getBlockDensity shielding raycast
+   used by the entity-damage half.
+ * SurvivalMobs.ExplodeAt: the genuine density-falloff damage to every player +
+   mob in 2*radius ((f^2+f)/2*8*diam+1, f=(1-d)*density) plus a velocity kick to
+   mobs, then DestroyBlocks. CreeperExplode routes here (creeper radius 3 Indev /
+   4 c0.30). SurvivalPhysics fire->TNT detonates via ExplodeAt (radius 4).
+ * Opt-in: new per-map SurvivalBlockDamage config (default true). Off = entity
+   damage still lands but terrain is spared, for protected builds. Removed blocks
+   go through SetView -> lvl.UpdateBlock so they're streamed + BlockDB-recorded
+   (undoable) and wake adjacent fluids.
+
+Verified live (explosion_test.py, /SurvSpawn creeper at a synthetic client's
+feet on gt1): the blast set 51 nearby blocks to air, spawned 19 drops, and
+killed the point-blank player - clean server log.
+
+DEFERRED: the primed-TNT ENTITY (mining TNT -> a hopping/fused entity; the
+in-blast TNT chain reaction) needs a streamed TNT entity like drops/arrows -
+v1 detonates fire-caught TNT immediately and just clears TNT caught in a blast.

@@ -650,6 +650,12 @@ namespace MCGalaxy.Network
         /// as drop entities (genuine TileEntity.onBreak / IndevTE scatter), discard
         /// the tile entity, and force-close any screens viewing it. Called from
         /// OnBlockChanging. </summary>
+        /// <summary> Scatter + tile-entity cleanup for a chest/furnace destroyed by
+        /// something other than a normal mine (an explosion), by view id. </summary>
+        internal static void ContainerRemovedIfAny(Level lvl, int x, int y, int z, ushort view) {
+            if (IsChestView(view) || IsFurnaceView(view)) ContainerRemoved(lvl, x, y, z);
+        }
+
         public static void ContainerRemoved(Level lvl, int x, int y, int z) {
             Container te = null;
             lock (contLock) {

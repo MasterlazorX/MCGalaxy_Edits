@@ -646,6 +646,7 @@
     <Compile Include="Network\SurvivalArrows.cs" />
     <Compile Include="Network\SurvivalBlocks.cs" />
     <Compile Include="Network\SurvivalDrops.cs" />
+    <Compile Include="Network\SurvivalExplosions.cs" />
     <Compile Include="Network\SurvivalGrowth.cs" />
     <Compile Include="Network\SurvivalInventory.cs" />
     <Compile Include="Network\SurvivalItems.cs" />

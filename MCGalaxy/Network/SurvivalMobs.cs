@@ -618,22 +618,65 @@ namespace MCGalaxy.Network
             }
         }
 
-        // Genuine c0.30 death-explosion (client Mob_CreeperExplode): radius ~4,
-        // entity damage only in v1 (block destruction deliberately not ported yet).
-        static void CreeperExplode(Level lvl, SurvMob m, float radius) {
-            Player[] players = PlayerInfo.Online.Items;
-            foreach (Player p in players)
+        // A creeper's death blast: World.createExplosion centred on the creeper.
+        static void CreeperExplode(Level lvl, LevelMobs lm, SurvMob m, float radius) {
+            double off = Types[m.Type].HeightOff; // eye-ish anchor (createExplosion's entity.y)
+            ExplodeAt(lvl, lm, m.X, m.Y + off, m.Z, radius, m, "@p was blown up by a creeper");
+        }
+
+        /// <summary> World.createExplosion: density-falloff damage to every player
+        /// and mob in 2*radius (shielded by intervening blocks), a velocity kick,
+        /// then the terrain destruction (SurvivalExplosions, gated on the map's
+        /// SurvivalBlockDamage). Called under lock(lm.Mobs). owner = the exploding
+        /// mob (excluded + credited), null for TNT/environment. </summary>
+        static void ExplodeAt(Level lvl, LevelMobs lm, double cx, double cy, double cz,
+                              float r, SurvMob owner, string deathMsg) {
+            double diam = r * 2.0;
+
+            // players (before any block is removed, so the density rays see intact world)
+            foreach (Player p in PlayerInfo.Online.Items)
             {
-                if (p.level != lvl || !SurvivalNet.Active(p, lvl)) continue;
-                double px = p.Pos.X / 32.0, py = (p.Pos.Y - Entities.CharacterHeight) / 32.0, pz = p.Pos.Z / 32.0;
-                double dx = px - m.X, dy = py - m.Y, dz = pz - m.Z;
+                if (p.level != lvl || !SurvivalNet.Active(p, lvl) || SurvivalNet.IsDead(p)) continue;
+                double feet = (p.Pos.Y - Entities.CharacterHeight) / 32.0;
+                double px = p.Pos.X / 32.0, pz = p.Pos.Z / 32.0, anchor = feet + 1.62;
+                double dx = px - cx, dy = anchor - cy, dz = pz - cz;
                 double dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-                if (dist >= radius) continue;
-                // Approximate falloff: full-strength up close, linear to 0 at the edge
-                // (the genuine density-raycast falloff needs the block-destruction port)
-                int damage = (int)((1.0 - dist / radius) * 15.0 + 1.0);
-                SurvivalNet.DamagePlayer(p, damage, "@p was blown up by a creeper");
+                if (dist / diam > 1.0) continue;
+                double dens = SurvivalExplosions.Density(lvl, cx, cy, cz,
+                              px - 0.3, feet, pz - 0.3, px + 0.3, feet + 1.8, pz + 0.3);
+                double f = (1.0 - dist / diam) * dens;
+                int dmg = (int)((f * f + f) / 2.0 * 8.0 * diam + 1.0);
+                if (dmg > 0) SurvivalNet.DamagePlayer(p, dmg, deathMsg);
             }
+
+            // mobs
+            for (int i = lm.Mobs.Count - 1; i >= 0; i--)
+            {
+                SurvMob e = lm.Mobs[i];
+                if (e == owner || e.Dead || e.Health <= 0) continue;
+                double eoff = Types[e.Type].HeightOff;
+                double dx = e.X - cx, dy = (e.Y + eoff) - cy, dz = e.Z - cz;
+                double dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist / diam > 1.0) continue;
+                double hw = Width(lvl, e) / 2.0, h = Height(lvl, e);
+                double dens = SurvivalExplosions.Density(lvl, cx, cy, cz,
+                              e.X - hw, e.Y, e.Z - hw, e.X + hw, e.Y + h, e.Z + hw);
+                double f = (1.0 - dist / diam) * dens;
+                int dmg = (int)((f * f + f) / 2.0 * 8.0 * diam + 1.0);
+                if (dmg <= 0) continue;
+                HurtMob(lvl, lm, e, null, dmg);
+                if (dist > 0.0001) { e.VX += dx / dist * f; e.VY += dy / dist * f; e.VZ += dz / dist * f; }
+            }
+
+            SurvivalExplosions.DestroyBlocks(lvl, cx, cy, cz, r, lm.Rng);
+        }
+
+        /// <summary> A TNT-style blast at a block cell (SurvivalPhysics fire->TNT).
+        /// Resolves the level's mob registry and runs the full explosion. Called
+        /// under the survival tick lock. </summary>
+        internal static void ExplodeAt(Level lvl, double x, double y, double z, float r) {
+            LevelMobs lm = GetLevel(lvl, true);
+            ExplodeAt(lvl, lm, x, y, z, r, null, "@p was caught in an explosion");
         }
 
         /// <summary> Handles a SURV_ATTACK intent: validates reach + state, then applies
@@ -818,7 +861,7 @@ namespace MCGalaxy.Network
                     m.MoveForward = 0; // stands its ground while swelling
                     if (m.FuseTicks >= 30) {
                         // Indev fuse blast (client Mob_IndevCreeperBlast): radius 3
-                        CreeperExplode(lvl, m, 3.0f);
+                        CreeperExplode(lvl, lm, m, 3.0f);
                         KillMob(lvl, lm, m, null);
                         m.DeathTicks = 20; // blast leaves no corpse window
                     }
@@ -1470,7 +1513,7 @@ namespace MCGalaxy.Network
                 m.DeathTicks++;
                 if (m.DeathTicks > 20) {
                     // c0.30 creepers blow up when their corpse window closes
-                    if (Types[m.Type].IsCreeper && !indev) CreeperExplode(lvl, m, 4.0f);
+                    if (Types[m.Type].IsCreeper && !indev) CreeperExplode(lvl, lm, m, 4.0f);
                     return false;
                 }
                 // corpse: no AI, but gravity still settles the body

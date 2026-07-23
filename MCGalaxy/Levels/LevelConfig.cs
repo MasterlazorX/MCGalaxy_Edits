@@ -340,6 +340,8 @@ namespace MCGalaxy
         // from the map volume). Lower it to thin out a crowded map.
         [ConfigInt("SurvivalMobCap", "Survival", 0, 0, 256)]
         public int SurvivalMobCap;
+        [ConfigBool("SurvivalBlockDamage", "Survival", true)]
+        public bool SurvivalBlockDamage = true; // creeper/TNT blasts destroy terrain (off = entity damage only, for protected builds)
 
         // Games settings
         [ConfigInt("Likes", "Game", 0)]
