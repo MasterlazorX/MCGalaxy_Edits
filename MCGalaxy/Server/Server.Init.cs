@@ -38,10 +38,19 @@ namespace MCGalaxy
         }
         
         static void GenerateMain() {
-            Logger.Log(LogType.SystemActivity, "main level not found, generating..");
+            Logger.Log(LogType.SystemActivity, "main level not found, generating a survival Indev inland world..");
             mainLevel = new Level(Server.Config.MainLevel, 128, 64, 128);
-            
-            MapGen.Find("Flat").Generate(Player.Console, mainLevel, "");
+
+            // Default the fresh main level to a survival-ready Indev inland world at
+            // the usual 128x64x128. The Indev generator's ApplyLevelSettings turns on
+            // SurvivalMode=Indev, hazards, the Indev block set + theme env, and drops
+            // the spawn inside the generated house; mainLevel.Save() persists both the
+            // .lvl and its survival .properties so a restart reloads it as survival.
+            MapGen gen = MapGen.Find("Indev");
+            if (gen == null || !gen.Generate(Player.Console, mainLevel, "inland")) {
+                Logger.Log(LogType.Warning, "Indev generation unavailable, falling back to a flat main level.");
+                MapGen.Find("Flat").Generate(Player.Console, mainLevel, "");
+            }
             mainLevel.Save();
             Level.LoadMetadata(mainLevel);
             LevelInfo.Add(mainLevel);
