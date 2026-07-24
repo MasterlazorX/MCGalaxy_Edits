@@ -1816,3 +1816,20 @@ MP PRIMED-TNT DEFUSE (PrimedTnt.hurt with a Player attacker, c0.30 ONLY):
    +0.09s, NO detonation (reason 0) and no blast. Clean defuse.
 
 Wire: SURV_ATTACK (0x80) targetKind now 0 mob / 1 player / 2 primed TNT.
+
+## Adversarial review of flint&steel + TNT-defuse (outcome)
+
+A 4-lens verified review (concurrency, abuse/validation, oracle-fidelity, desync)
+ran over the diff. The concurrency (defuse vs detonate double-free), security
+(forged/out-of-reach/Indev ATTACK-2), and desync lenses came back CLEAN. Two
+confirmed findings, both minor + Indev-only:
+ * LOW - flint & steel on a WORLD-BOUNDARY cell: the server wears the tool
+   unconditionally (genuine ItemFlintAndSteel.onItemUse), but the client SP oracle
+   returned false BEFORE wearing on the non-interior early-out, so SP wore 0 while
+   MP wore 1 at map edges. FIXED on the client (IndevFire_UseFlintSteel): the
+   interior/air check now gates only the fire placement; the item wears + the click
+   is consumed unconditionally, so SP == MP == genuine.
+ * NIT (deferred) - MP flint & steel ignition is silent; SP plays "fire.ignite".
+   This is the general server-authoritative trait (a Console UpdateBlock reaches
+   the client as a plain SetBlock with no sound); replaying it would need a sound
+   message. No state divergence - accepted limitation for now.
