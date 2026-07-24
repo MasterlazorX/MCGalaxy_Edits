@@ -145,7 +145,16 @@ Indev-specific animations (creeper swell, sheep grazing). Landed as
   gated on `SurvivalBlockDamage`), sky/block-light model (`SurvivalGrowth`
   lighting), and **mob persistence** (`SurvivalPersistence` sidecar). All
   live-tested.
-- ⬜ *Refinements:* mob-vs-mob arrow aggro, PvP.
+- ✅ **Mob-vs-mob arrow aggro + infighting** (Indev): EntityCreature.attackEntityFrom
+  targets whatever entity hurt it last, so a skeleton arrow that tags another mob
+  starts a mutual retaliation fight - the victim paths to and attacks the shooter
+  with its own per-type behavior (melee/pounce/bow/fuse), targets displacing on
+  each new hit. Live-verified (a four-way skeleton war).
+- ✅ **PvP** (`SurvivalPvP` flag, HELLO bit2): melee via `SURV_ATTACK` targetKind 1
+  (per-viewer entity id, resolved + reach-validated server-side, held-weapon
+  damage through the victim's armor absorption) and player-fired arrows hitting
+  players (previously ungated - now PvP-only; skeleton arrows always hit).
+  Live-verified: gate off = no damage, gate on = damage.
 
 ## 🔶 Phase 4 — Inventory & containers (first slice landed)
 
@@ -223,8 +232,10 @@ Server owns inventory, containers, crafting, smelting.
 
 ## ⬜ Backlog (post-phase-5 polish)
 
-- ⬜ Player-inventory persistence across unload.
-- ⬜ PvP (`SurvivalPvP`), mob-vs-mob arrow aggro.
+- ✅ Player-inventory persistence (`extra/survival/players/<name>.inv`): main +
+  hotbar + worn armor saved on disconnect (shutdown kicks everyone, covering
+  restarts), lazily restored on the session's first inventory touch. The craft
+  grid + cursor stay session-only. Live-verified across a reconnect.
 - ✅ Flint & steel → fire (server `USE_ITEM`) — see Phase 5.
 - ✅ MP primed-TNT melee defuse (c0.30) — see Phase 5.
 

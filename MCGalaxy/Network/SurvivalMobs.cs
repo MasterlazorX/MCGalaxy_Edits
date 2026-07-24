@@ -524,11 +524,23 @@ namespace MCGalaxy.Network
 
         /// <summary> Mob.hurt()'s dual-threshold invulnerability + knockback + aggro.
         /// attacker may be null (environment). Returns whether the hit landed. </summary>
-        static bool HurtMob(Level lvl, LevelMobs lm, SurvMob m, Player attacker, int damage) {
+        static bool HurtMob(Level lvl, LevelMobs lm, SurvMob m, Player attacker, int damage,
+                            SurvMob attackerMob = null) {
             if (m.Dead || m.Health <= 0 || damage <= 0) return false;
 
-            // BasicAttackAI.hurt: aggro onto the attacker on every hit
-            if (attacker != null && !Types[m.Type].Passive) m.Target = attacker;
+            // BasicAttackAI.hurt / EntityCreature.attackEntityFrom: aggro onto the
+            // attacker on every hit - whichever entity hurt it last wins, so a mob
+            // attacker (skeleton arrow, infighting melee) displaces a player target
+            // and vice versa.
+            if (!Types[m.Type].Passive) {
+                if (attacker != null)         { m.Target = attacker; m.TargetMob = null; }
+                else if (attackerMob != null) {
+                    if (m.TargetMob != attackerMob)
+                        Logger.Log(LogType.Debug, "survival: {0} #{1} now targets {2} #{3} (infight)",
+                                   Types[m.Type].Name, m.Id, Types[attackerMob.Type].Name, attackerMob.Id);
+                    m.TargetMob = attackerMob; m.Target = null;
+                }
+            }
             m.NoActionTime = 0;
 
             if (m.InvincTicks > 10) {
@@ -541,8 +553,11 @@ namespace MCGalaxy.Network
             }
             m.HurtThisTick = true;
 
-            if (attacker != null) {
-                double ax = attacker.Pos.X / 32.0, az = attacker.Pos.Z / 32.0;
+            // knockback away from whichever entity landed the hit
+            double ax = 0, az = 0; bool knock = false;
+            if (attacker != null)         { ax = attacker.Pos.X / 32.0; az = attacker.Pos.Z / 32.0; knock = true; }
+            else if (attackerMob != null) { ax = attackerMob.X;         az = attackerMob.Z;         knock = true; }
+            if (knock) {
                 double dx = ax - m.X, dz = az - m.Z;
                 double dist = Math.Sqrt(dx * dx + dz * dz);
                 if (dist >= 0.0001) {
@@ -578,6 +593,14 @@ namespace MCGalaxy.Network
             LevelMobs lm = GetLevel(lvl, false);
             if (lm == null) return false;
             lock (lm.Mobs) {
+                // resolve the shooter mob (if any) so a skeleton arrow that tags
+                // another mob starts the genuine retaliation infight - the victim's
+                // attackEntityFrom targets whatever entity hurt it.
+                SurvMob shooter = null;
+                if (ownerMobId > 0) {
+                    foreach (SurvMob s in lm.Mobs)
+                        if (s.Id == ownerMobId) { shooter = s; break; }
+                }
                 foreach (SurvMob m in lm.Mobs)
                 {
                     if (m.Dead || m.Health <= 0) continue;
@@ -586,7 +609,7 @@ namespace MCGalaxy.Network
                     if (ax + halfW < m.X - hw || ax - halfW > m.X + hw) continue;
                     if (ay + halfH < m.Y      || ay - halfH > m.Y + h)  continue;
                     if (az + halfW < m.Z - hw || az - halfW > m.Z + hw) continue;
-                    HurtMob(lvl, lm, m, ownerPlayer, damage);
+                    HurtMob(lvl, lm, m, ownerPlayer, damage, shooter);
                     return true;
                 }
             }
@@ -686,7 +709,9 @@ namespace MCGalaxy.Network
             if (lvl == null || !SurvivalNet.Active(p, lvl) || SurvivalNet.IsDead(p)) return;
             // targetKind 2 = a primed TNT (c0.30 PrimedTnt.hurt melee defuse)
             if (targetKind == 2) { SurvivalTnt.Defuse(lvl, targetId, p); return; }
-            if (targetKind != 0) return; // player targets = PvP, phase-later
+            // targetKind 1 = another player (PvP melee, gated on the map flag)
+            if (targetKind == 1) { HandlePvPAttack(p, lvl, targetId); return; }
+            if (targetKind != 0) return;
             LevelMobs lm = GetLevel(lvl, false);
             if (lm == null) return;
 
@@ -728,6 +753,41 @@ namespace MCGalaxy.Network
                 // hitEntity: the held weapon wears (sword 1, tool 2, others none).
                 if (indev) SurvivalInventory.WearHeldForMelee(p);
             }
+        }
+
+        /// <summary> PvP melee (SURV_ATTACK targetKind 1): the attacker's client sends
+        /// the per-viewer entity id it hit; resolve it back to the Player, validate the
+        /// map's SurvivalPvP flag + reach, and apply the same held-weapon damage as a
+        /// mob hit. DamagePlayer runs the victim's armor absorption; the weapon wears
+        /// like any landed melee hit. </summary>
+        static void HandlePvPAttack(Player p, Level lvl, int targetId) {
+            if (!lvl.Config.SurvivalPvP) return;
+
+            // reverse the attacker's per-viewer entity id table to find the victim
+            Player victim = null;
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player pl in players)
+            {
+                if (pl == p || pl.level != lvl) continue;
+                byte eid;
+                if (p.EntityList.TryGetVisibleID(pl, out eid) && eid == targetId) { victim = pl; break; }
+            }
+            if (victim == null || !SurvivalNet.Active(victim, lvl) || SurvivalNet.IsDead(victim)) return;
+            if (victim.Game.Referee) return; // referees are out-of-game observers
+
+            // reach: same padded eye-to-target envelope as the mob attack path
+            double px = p.Pos.X / 32.0, py = p.Pos.Y / 32.0, pz = p.Pos.Z / 32.0;
+            double vx = victim.Pos.X / 32.0, vy = victim.Pos.Y / 32.0, vz = victim.Pos.Z / 32.0;
+            double dx = px - vx, dy = py - vy, dz = pz - vz;
+            if (dx * dx + dy * dy + dz * dz > 6 * 6) {
+                Logger.Log(LogType.Debug, "survival: rejected pvp attack from {0} (out of reach)", p.name);
+                return;
+            }
+
+            bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
+            int dmg = indev ? SurvivalItems.MeleeDamage(SurvivalInventory.HeldItemId(p)) : 4;
+            SurvivalNet.DamagePlayer(victim, dmg, "@p was slain by " + p.name);
+            if (indev) SurvivalInventory.WearHeldForMelee(p);
         }
 
 
@@ -857,27 +917,30 @@ namespace MCGalaxy.Network
         // Returns hasAttacked: true only when a shooting skeleton or a swelling
         // creeper stands its ground this tick (the client's Mob_IndevAttackEntity
         // return). Melee mobs keep striding at the victim mid-swing (false).
-        static bool IndevAttack(Level lvl, LevelMobs lm, SurvMob m, Player target, double dist, Random rng) {
-            if (Types[m.Type].IsCreeper) {
-                // EntityCreeper.attackEntity: fuse starts within 3 blocks, keeps
-                // burning within 7 once lit, blows at 30 ticks.
-                if ((m.FuseState <= 0 && dist < 3.0) || (m.FuseState > 0 && dist < 7.0)) {
-                    m.FuseState = 1;
-                    m.FuseTicks++;
-                    m.MoveForward = 0; // stands its ground while swelling
-                    if (m.FuseTicks >= 30) {
-                        // Indev fuse blast (client Mob_IndevCreeperBlast): radius 3
-                        CreeperExplode(lvl, lm, m, 3.0f);
-                        KillMob(lvl, lm, m, null);
-                        m.DeathTicks = 20; // blast leaves no corpse window
-                    }
-                    return true; // swelling: stands its ground
-                } else {
-                    m.FuseState = -1;
-                    if (m.FuseTicks > 0) m.FuseTicks--;
+        // EntityCreeper.attackEntity: fuse starts within 3 blocks, keeps burning
+        // within 7 once lit, blows at 30 ticks. Target-agnostic (only distance
+        // matters), shared by the player-target and mob-target attack paths.
+        static bool CreeperFuseStep(Level lvl, LevelMobs lm, SurvMob m, double dist) {
+            if ((m.FuseState <= 0 && dist < 3.0) || (m.FuseState > 0 && dist < 7.0)) {
+                m.FuseState = 1;
+                m.FuseTicks++;
+                m.MoveForward = 0; // stands its ground while swelling
+                if (m.FuseTicks >= 30) {
+                    // Indev fuse blast (client Mob_IndevCreeperBlast): radius 3
+                    CreeperExplode(lvl, lm, m, 3.0f);
+                    KillMob(lvl, lm, m, null);
+                    m.DeathTicks = 20; // blast leaves no corpse window
                 }
-                return false;
+                return true; // swelling: stands its ground
+            } else {
+                m.FuseState = -1;
+                if (m.FuseTicks > 0) m.FuseTicks--;
             }
+            return false;
+        }
+
+        static bool IndevAttack(Level lvl, LevelMobs lm, SurvMob m, Player target, double dist, Random rng) {
+            if (Types[m.Type].IsCreeper) return CreeperFuseStep(lvl, lm, m, dist);
 
             if (m.Type == TYPE_SPIDER) {
                 // EntitySpider.attackEntity: light makes it lose interest; a 2-6
@@ -925,6 +988,60 @@ namespace MCGalaxy.Network
             m.NoActionTime = 0;
             SurvivalNet.DamagePlayer(target, strength, "@p was slain by a " + Types[m.Type].Name);
             return false; // melee mobs keep striding at the victim mid-swing
+        }
+
+        // The mob-victim mirror of IndevAttack: EntityCreature.playerToAttack is any
+        // Entity, so a mob retaliating against another mob (a skeleton arrow that
+        // tagged it, or infighting melee) attacks with exactly the same per-type
+        // behaviors, just aimed at the victim mob instead of a player.
+        static bool IndevAttackMob(Level lvl, LevelMobs lm, SurvMob m, SurvMob victim, double dist, Random rng) {
+            if (Types[m.Type].IsCreeper) return CreeperFuseStep(lvl, lm, m, dist);
+
+            if (m.Type == TYPE_SPIDER) {
+                // light makes it lose interest; 2-6 block pounce toward the victim
+                if (IsBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; m.TargetMob = null; m.PathCount = 0; return false; }
+                if (dist > 2.0 && dist < 6.0 && rng.Next(10) == 0) {
+                    if (m.OnGround) {
+                        double dx = victim.X - m.X, dz = victim.Z - m.Z;
+                        double hor = Math.Sqrt(dx * dx + dz * dz);
+                        if (hor >= 0.0001) {
+                            m.VX = dx / hor * 0.5 * 0.8 + m.VX * 0.2;
+                            m.VZ = dz / hor * 0.5 * 0.8 + m.VZ * 0.2;
+                            m.VY = 0.4;
+                        }
+                    }
+                    return false;
+                }
+            }
+
+            if (m.Type == TYPE_SKELETON) {
+                // bow fire at the victim mob within 10 blocks, 30-tick cooldown;
+                // TryArrowHitMob's shooter-skip keeps it from shooting itself.
+                if (dist >= 10.0) return false;
+                if (m.AttackDelay == 0) {
+                    double yawRad = m.Yaw * Math.PI / 180.0;
+                    double fromX  = m.X + Math.Cos(yawRad) * 0.16;
+                    double fromY  = m.Y + Height(lvl, m) * 0.85 - 0.1 + 1.0;
+                    double fromZ  = m.Z + Math.Sin(yawRad) * 0.16;
+                    double aimX   = victim.X - m.X;
+                    double aimZ   = victim.Z - m.Z;
+                    double aimY   = (victim.Y + Height(lvl, victim) * 0.85 - 0.2) - fromY;
+                    double hor    = Math.Sqrt(aimX * aimX + aimZ * aimZ);
+                    aimY += hor * 0.2;
+                    SurvivalArrows.FireFromMobIndev(lvl, m.Id, fromX, fromY, fromZ, aimX, aimY, aimZ);
+                    m.AttackDelay = 30;
+                }
+                return true; // in bow range: stands its ground
+            }
+
+            // melee: same reach/cooldown as the player path; the hit sets the
+            // victim's TargetMob back to us, so the fight is mutual.
+            int strength = Types[m.Type].IndevMelee;
+            if (strength == 0 || dist >= 2.5 || m.AttackDelay > 0) return false;
+            m.AttackDelay  = 10;
+            m.NoActionTime = 0;
+            HurtMob(lvl, lm, victim, null, strength, m);
+            return false;
         }
 
 
@@ -1148,9 +1265,22 @@ namespace MCGalaxy.Network
                                    !target.Session.hasSurvival || SurvivalNet.IsDead(target))) {
                 m.Target = null; target = null; m.PathCount = 0;
             }
+            // a mob victim (arrow retaliation / infighting melee) - the last hit's
+            // attacker wins (HurtMob keeps Target/TargetMob mutually exclusive), so
+            // while an infight is live it takes precedence over hunting players
+            SurvMob tmob = m.TargetMob;
+            if (tmob != null && (tmob.Dead || tmob.Health <= 0)) {
+                m.TargetMob = null; tmob = null; m.PathCount = 0;
+            }
+            bool haveTarget = tmob != null || target != null;
+
+            // the victim's feet-space position, whichever kind it is
+            double tfx = 0, tfy = 0, tfz = 0;
+            if (tmob != null)        { tfx = tmob.X; tfy = tmob.Y; tfz = tmob.Z; }
+            else if (target != null) { tfx = target.Pos.X / 32.0; tfy = (target.Pos.Y - Entities.CharacterHeight) / 32.0; tfz = target.Pos.Z / 32.0; }
 
             bool hasAttacked = false;
-            if (target == null) {
+            if (!haveTarget) {
                 // findPlayerToAttack: non-passive aggro within 16; spider only while
                 // its own spot is dark.
                 bool canHunt = !info.Passive &&
@@ -1168,22 +1298,25 @@ namespace MCGalaxy.Network
                         FindPath(lvl, m, target.Pos.X / 32.0, (target.Pos.Y - Entities.CharacterHeight) / 32.0, target.Pos.Z / 32.0);
                 }
             } else {
-                double tfx = target.Pos.X / 32.0, tfy = (target.Pos.Y - Entities.CharacterHeight) / 32.0, tfz = target.Pos.Z / 32.0;
                 double ddx = tfx - m.X, ddy = tfy - m.Y, ddz = tfz - m.Z;
                 double dist = Math.Sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
-                if (ddx * ddx + ddy * ddy + ddz * ddz > 1024.0 && rng.Next(100) == 0) { m.Target = null; m.PathCount = 0; return; }
+                if (ddx * ddx + ddy * ddy + ddz * ddz > 1024.0 && rng.Next(100) == 0) {
+                    m.Target = null; m.TargetMob = null; m.PathCount = 0; return;
+                }
                 // face the victim so the bow/melee aim is correct (server yaw basis)
                 m.Yaw = (float)(Math.Atan2(ddx, -ddz) * 180.0 / Math.PI);
                 m.Pitch = (float)(Math.Atan2(-ddy, dist) * 180.0 / Math.PI);
 
-                double meY = m.Y + Height(lvl, m) * 0.85, peY = target.Pos.Y / 32.0;
+                double meY = m.Y + Height(lvl, m) * 0.85;
+                double peY = tmob != null ? tmob.Y + Height(lvl, tmob) * 0.85 : target.Pos.Y / 32.0;
                 if (!SightBlocked(lvl, m.X, meY, m.Z, tfx, peY, tfz))
-                    hasAttacked = IndevAttack(lvl, lm, m, target, dist, rng);
+                    hasAttacked = tmob != null ? IndevAttackMob(lvl, lm, m, tmob, dist, rng)
+                                               : IndevAttack(lvl, lm, m, target, dist, rng);
             }
 
             if (hasAttacked) { m.MoveStrafe = 0; m.MoveForward = 0; m.Jumping = false; return; }
 
-            bool wantWander = target == null || (m.PathCount > 0 && rng.Next(20) != 0);
+            bool wantWander = !haveTarget || (m.PathCount > 0 && rng.Next(20) != 0);
             if (wantWander) {
                 if (m.PathCount == 0 || rng.Next(100) == 0) {
                     int bx = -1, by = -1, bz = -1; double bestW = -99999.0;
@@ -1200,8 +1333,8 @@ namespace MCGalaxy.Network
                     }
                     if (bx > 0) FindPath(lvl, m, bx + 0.5, by + 0.5, bz + 0.5);
                 }
-            } else if (target != null) {
-                FindPath(lvl, m, target.Pos.X / 32.0, (target.Pos.Y - Entities.CharacterHeight) / 32.0, target.Pos.Z / 32.0);
+            } else if (haveTarget) {
+                FindPath(lvl, m, tfx, tfy, tfz);
             }
 
             if (m.PathCount > 0 && rng.Next(100) != 0) {
@@ -1493,6 +1626,7 @@ namespace MCGalaxy.Network
                     StreamMob(lvl, watchers, m);
                 } else {
                     BroadcastDespawn(lvl, m, m.Dead ? (byte)1 : (byte)0);
+                    m.Dead = true; // ghost-guard: any mob holding this as TargetMob drops it
                     lm.Mobs.RemoveAt(i);
                 }
             }

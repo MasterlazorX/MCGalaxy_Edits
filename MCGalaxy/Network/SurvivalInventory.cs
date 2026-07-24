@@ -76,8 +76,66 @@ namespace MCGalaxy.Network
             object o;
             if (p.Extras.TryGet(INV_KEY, out o)) return (PlayerInv)o;
             PlayerInv inv = new PlayerInv();
+            LoadInv(p, inv); // restore the persisted inventory, if any (first touch this session)
             p.Extras[INV_KEY] = inv;
             return inv;
+        }
+
+
+        // ==================== persistence (per-player sidecar) ====================
+        // The survival inventory follows the player (not the level), so it persists
+        // as extra/survival/players/<name>.inv - written on disconnect (shutdown
+        // kicks everyone, so it covers restarts too), read lazily on the session's
+        // first inventory touch. Main + hotbar (0..35) and worn armor (99..102)
+        // persist; the 3x3 craft grid and cursor stack are session-only (genuine
+        // returns/drops those when the GUI closes).
+
+        static string InvPath(Player p) {
+            return "extra/survival/players/" + p.name.ToLower() + ".inv";
+        }
+
+        static void LoadInv(Player p, PlayerInv inv) {
+            try {
+                string path = InvPath(p);
+                if (!System.IO.File.Exists(path)) return;
+                foreach (string line in System.IO.File.ReadAllLines(path))
+                {
+                    if (line.Length == 0 || line[0] == '#') continue;
+                    string[] parts = line.Split(' ');
+                    if (parts.Length < 5 || parts[0] != "s") continue;
+                    int idx; ushort id; byte count; short dmg;
+                    if (!int.TryParse(parts[1], out idx) || !ushort.TryParse(parts[2], out id) ||
+                        !byte.TryParse(parts[3], out count) || !short.TryParse(parts[4], out dmg)) continue;
+                    bool valid = (idx >= 0 && idx < MAIN_SLOTS) || (idx >= ARMOR_BASE && idx < ARMOR_BASE + ARMOR_SLOTS);
+                    if (!valid || count == 0) continue;
+                    inv.Slots[idx].Id = id; inv.Slots[idx].Count = count; inv.Slots[idx].Damage = dmg;
+                }
+            } catch (Exception ex) {
+                Logger.LogError("Error loading survival inventory for " + p.name, ex);
+            }
+        }
+
+        static void SaveInv(Player p) {
+            object o;
+            if (!p.Extras.TryGet(INV_KEY, out o)) return; // never touched survival state
+            PlayerInv inv = (PlayerInv)o;
+            try {
+                System.IO.Directory.CreateDirectory("extra/survival/players");
+                string path = InvPath(p), tmp = path + ".tmp";
+                using (System.IO.StreamWriter w = new System.IO.StreamWriter(tmp)) {
+                    w.WriteLine("# survival inventory v1: " + p.name);
+                    for (int i = 0; i < MAIN_SLOTS; i++)
+                        if (inv.Slots[i].Count > 0)
+                            w.WriteLine("s {0} {1} {2} {3}", i, inv.Slots[i].Id, inv.Slots[i].Count, inv.Slots[i].Damage);
+                    for (int i = ARMOR_BASE; i < ARMOR_BASE + ARMOR_SLOTS; i++)
+                        if (inv.Slots[i].Count > 0)
+                            w.WriteLine("s {0} {1} {2} {3}", i, inv.Slots[i].Id, inv.Slots[i].Count, inv.Slots[i].Damage);
+                }
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+                System.IO.File.Move(tmp, path);
+            } catch (Exception ex) {
+                Logger.LogError("Error saving survival inventory for " + p.name, ex);
+            }
         }
 
         static int MaxStack(Player p, ushort id) {
@@ -850,6 +908,7 @@ namespace MCGalaxy.Network
         /// of them (the view holds a now-departed Player). Registered on
         /// OnPlayerDisconnectEvent. </summary>
         public static void OnPlayerDisconnect(Player target, string reason) {
+            SaveInv(target); // persist the survival inventory (no-op if never touched)
             Player[] players = PlayerInfo.Online.Items;
             foreach (Player pl in players)
             {

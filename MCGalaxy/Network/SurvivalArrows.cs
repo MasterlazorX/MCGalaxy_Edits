@@ -375,13 +375,16 @@ namespace MCGalaxy.Network
         // Tests the arrow against players + mobs on the level; applies authoritative
         // damage on the first hit. Returns whether the arrow was consumed.
         static bool HitEntity(Level lvl, Arrow a, double x, double y, double z) {
-            // players (skip the owner; PvP friendly-fire otherwise). Player box is
-            // ~0.6 wide, ~1.8 tall, feet at (Pos - characterHeight).
-            Player[] players = PlayerInfo.Online.Items;
+            // players (skip the owner). A PLAYER-fired arrow only hits other players
+            // when the map's SurvivalPvP flag is on; skeleton arrows always hit.
+            // Player box is ~0.6 wide, ~1.8 tall, feet at (Pos - characterHeight).
+            bool playersHittable = a.OwnerPlayer == null || lvl.Config.SurvivalPvP;
+            Player[] players = playersHittable ? PlayerInfo.Online.Items : new Player[0];
             foreach (Player p in players)
             {
                 if (p.level != lvl || !SurvivalNet.Active(p, lvl) || SurvivalNet.IsDead(p)) continue;
                 if (p == a.OwnerPlayer) continue;
+                if (p.Game.Referee) continue; // observers aren't targets
                 double fx = p.Pos.X / 32.0, fy = (p.Pos.Y - Entities.CharacterHeight) / 32.0, fz = p.Pos.Z / 32.0;
                 if (BoxHit(x, y, z, fx, fy, fz, 0.3, 1.8)) {
                     string who = a.OwnerPlayer != null ? a.OwnerPlayer.name : "an arrow";

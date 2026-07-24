@@ -1833,3 +1833,44 @@ confirmed findings, both minor + Indev-only:
    This is the general server-authoritative trait (a Console UpdateBlock reaches
    the client as a plain SetBlock with no sound); replaying it would need a sound
    message. No state divergence - accepted limitation for now.
+
+## PvP, player-inventory persistence, mob infighting (SurvivalMobs / SurvivalArrows / SurvivalInventory)
+
+The last three roadmap features, all live-tested on gt1.
+
+PVP (SurvivalPvP flag, already streamed as HELLO bit2):
+ * Client: SurvivalTest_TryAttackMob now also ray-casts OTHER PLAYER entities
+   (Entities.List, skip self) when ServerDriven && (ActiveFlags & 0x04), closest
+   target under the crosshair winning across mobs/TNT/paintings/players, and
+   sends SURV_ATTACK targetKind 1 with the per-viewer entity id.
+ * Server: HandleAttack targetKind 1 -> HandlePvPAttack: gate on
+   lvl.Config.SurvivalPvP, resolve the attacker's per-viewer id back to a Player
+   (EntityList.TryGetVisibleID scan), reach-check (6 padded), damage =
+   MeleeDamage(held) on Indev / flat 4 on c0.30 via DamagePlayer (runs the
+   victim's armor absorption), weapon wears. Referees + dead players excluded.
+ * ARROWS: player-fired arrows hitting players were UNGATED before - now they
+   require SurvivalPvP; skeleton arrows always hit. Referees skipped.
+ * Verified: gate off -> health 20 unchanged; /Survival pvp on -> 20->19 (fist).
+
+PLAYER-INVENTORY PERSISTENCE (extra/survival/players/<name>.inv):
+ * SaveInv on OnPlayerDisconnect (shutdown kicks everyone = restart coverage),
+   LoadInv lazily inside Get() on the session's first inventory touch. Persists
+   main+hotbar (0..35) + worn armor (99..102); craft grid + cursor stay
+   session-only (genuine returns/drops those on GUI close). Atomic tmp+move,
+   "s idx id count dmg" lines. Verified: 3 bread survived a full reconnect.
+
+MOB INFIGHTING (Indev, EntityCreature.attackEntityFrom semantics):
+ * HurtMob gained an attackerMob param: last attacker wins - a mob hit sets
+   TargetMob (clearing Target) and vice versa; knockback comes from whichever
+   entity landed the hit. TryArrowHitMob resolves the shooter mob from
+   ownerMobId and passes it, so a skeleton arrow tagging another mob starts the
+   fight. Mobs removed by despawn are marked Dead so TargetMob referrers drop
+   ghosts.
+ * IndevCreatureAI: a live TargetMob takes precedence over player hunting - the
+   AI paths to/faces the victim mob and attacks via IndevAttackMob (creeper fuse
+   extracted+shared as CreeperFuseStep; spider pounce, skeleton bow aim, melee
+   all mirrored at the mob's coordinates). Melee retaliation re-targets the
+   victim back, so fights are mutual. c0.30 AI untouched (no infighting there).
+ * A permanent Debug log marks each retarget: "X #a now targets Y #b (infight)".
+ * Verified live: rig leftovers produced a four-way skeleton war - mutual
+   retargeting chains exactly as genuine (#18->#26, #27->#18, #26->#21, ...).
