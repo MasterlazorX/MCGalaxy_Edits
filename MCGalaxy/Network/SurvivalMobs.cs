@@ -682,9 +682,11 @@ namespace MCGalaxy.Network
         /// <summary> Handles a SURV_ATTACK intent: validates reach + state, then applies
         /// the player's melee to the target mob. Called from SurvivalNet. </summary>
         public static void HandleAttack(Player p, int targetKind, int targetId) {
-            if (targetKind != 0) return; // player targets = PvP, phase-later
             Level lvl = p.level;
             if (lvl == null || !SurvivalNet.Active(p, lvl) || SurvivalNet.IsDead(p)) return;
+            // targetKind 2 = a primed TNT (c0.30 PrimedTnt.hurt melee defuse)
+            if (targetKind == 2) { SurvivalTnt.Defuse(lvl, targetId, p); return; }
+            if (targetKind != 0) return; // player targets = PvP, phase-later
             LevelMobs lm = GetLevel(lvl, false);
             if (lm == null) return;
 

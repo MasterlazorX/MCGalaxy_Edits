@@ -173,6 +173,37 @@ namespace MCGalaxy.Network
             }
         }
 
+        /// <summary> PrimedTnt.hurt with a Player attacker: a melee swing defuses a
+        /// primed TNT without exploding it, dropping it back as a TNT item. c0.30
+        /// only - genuine Indev primed TNT "cannot be punched out". Called from the
+        /// SURV_ATTACK handler (targetKind 2). Reach-validated against the player. </summary>
+        public static void Defuse(Level lvl, int tntId, Player p) {
+            if (lvl == null || p == null) return;
+            if (lvl.Config.SurvivalMode != SurvivalMode.Classic) return; // c0.30 only
+            LevelTnt lt = GetLevel(lvl, false);
+            if (lt == null) return;
+
+            Primed t = null;
+            lock (lt.List) {
+                for (int i = 0; i < lt.List.Count; i++)
+                {
+                    if (lt.List[i].Id != tntId) continue;
+                    Primed cand = lt.List[i];
+                    // reach: same 6-block padded envelope as HandleAttack / USE_ITEM
+                    double px = p.Pos.X / 32.0, py = p.Pos.Y / 32.0, pz = p.Pos.Z / 32.0;
+                    double dx = px - cand.X, dy = py - cand.Y, dz = pz - cand.Z;
+                    if (dx * dx + dy * dy + dz * dz > 6.0 * 6.0) return; // out of reach - ignore
+                    lt.List.RemoveAt(i);
+                    t = cand;
+                    break;
+                }
+            }
+            if (t == null) return;
+
+            foreach (Player pl in Watchers(lvl)) SurvivalNet.SendTntRemove(pl, tntId, 1); // reason 1 = defuse (no burst)
+            SurvivalDrops.SpawnStack(lvl, t.X, t.Y, t.Z, Block.TNT, 1, SurvivalDrops.MinedDelay(lvl));
+        }
+
         // PrimedTnt.tick physics: gravity, a swept move that clips against solid
         // blocks (Entity.move zeroes each clipped axis), then air drag and ground
         // friction. Horizontal drift is tiny, so the visible motion is the pop +

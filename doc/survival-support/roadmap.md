@@ -176,7 +176,13 @@ Server owns inventory, containers, crafting, smelting.
   1/8 seed to inventory pending drops), seeds → crop + consume, food → heal +
   consume (soup → bowl), tool durability (`damageItem`, shatters past
   `32 << tier`). Live-tested server-side (farmland 60 / crop 59 / seed consumed
-  / bread eaten / hoe dmg 1). Flint&steel → fire deferred (server `USE_ITEM`).
+  / bread eaten / hoe dmg 1).
+- ✅ **Flint & steel → fire** (`UseFlintSteel`, `IndevFire_UseFlintSteel`): a
+  right-click steps one cell out of the clicked face and, if that interior cell
+  is air, sets fire there (view 51) — which the fire physics then spreads and
+  uses to catch adjacent TNT; the item wears 1 whether or not fire was placed.
+  Client sends the intent (`heldId==256+3` added to the MP `USE_ITEM` gate).
+  Live-tested (fire placed at the face cell, durability 0→1→2→3, fire → primed TNT).
 - ✅ **Mining-tool durability** (`ItemStack.damageItem`): the held tool wears on
   every block broken (pick/shovel/axe 1, sword 2, others none) and the reverse
   on a melee hit, shattering past `32 << tier` — Indev-only, mirrors the client's
@@ -206,6 +212,10 @@ Server owns inventory, containers, crafting, smelting.
   clears other TNT chain-ignites it with a short randomized fuse. The client
   simulates the hop/smoke/flash from the streamed seed and never explodes locally.
   Live-tested (fire → full-fuse detonation → chain reaction with partial fuses).
+  **Melee defuse (c0.30 only)**: a swing at a primed TNT sends `SURV_ATTACK`
+  targetKind 2; the server (`SurvivalTnt.Defuse`, gated on `SurvivalMode.Classic`)
+  reach-validates, removes it with `TNT_REMOVE` reason 1 (no blast) and drops one
+  TNT block back — genuine `PrimedTnt.hurt`. Live-tested on a c0.30 map.
 - ✅ **Map persistence** (`SurvivalPersistence` sidecar `extra/survival/<lvl>.sur`):
   mobs + chest/furnace contents saved on unload/save, restored on load; time of
   day + grown terrain persist on their own (level config + `.lvl`). Player
@@ -214,8 +224,9 @@ Server owns inventory, containers, crafting, smelting.
 ## ⬜ Backlog (post-phase-5 polish)
 
 - ⬜ Player-inventory persistence across unload.
-- ⬜ Flint & steel → fire via the server `USE_ITEM` path.
-- ⬜ PvP (`SurvivalPvP`), mob-vs-mob arrow aggro, MP primed-TNT defuse.
+- ⬜ PvP (`SurvivalPvP`), mob-vs-mob arrow aggro.
+- ✅ Flint & steel → fire (server `USE_ITEM`) — see Phase 5.
+- ✅ MP primed-TNT melee defuse (c0.30) — see Phase 5.
 
 ---
 

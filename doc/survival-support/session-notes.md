@@ -1773,3 +1773,46 @@ fuse=80), detonation ~4s later (SURV_TNT_REMOVE), the blast re-primed both
 neighbour TNT blocks with partial fuses (fuse=25 and 14), each detonating on
 its own fuse, 402 blocks destroyed to air. ENTITY+FUSE / DETONATION / CHAIN all
 OBSERVED. Mining-ignition shares the same Ignite() path (build-verified).
+
+## Flint & steel + MP primed-TNT defuse (SurvivalInventory / SurvivalTnt / SurvivalMobs)
+
+Two backlog items, both Indev/c0.30-faithful and live-tested.
+
+FLINT & STEEL -> FIRE (ItemFlintAndSteel.onItemUse / IndevFire_UseFlintSteel):
+ * Client (SurvivalTest.c ~7530): added `heldId == 256+3` to the MP `itemUse`
+   gate so a right-click with flint&steel leaves as SURV_USE_ITEM (heldSlot,
+   target xyz, face = Game_SelectedPos.closest) instead of doing nothing.
+ * Server (SurvivalInventory.UseFlintSteel, dispatched after UseHoe/UseSeeds in
+   HandleUseItem - Indev-only, non-creative, reach-checked upstream): steps ONE
+   cell out of the clicked face (FACE_* XMIN0 XMAX1 ZMIN2 ZMAX3 YMIN4 YMAX5),
+   and if that interior cell (>0 and <dim-1 each axis) is air, writes FIRE
+   (SurvivalBlocks.FIRE=51) via lvl.UpdateBlock(Player.Console,...) - which the
+   fire physics then spreads / uses to catch TNT. The item wears 1 (DamageHeldTool,
+   shatters past 64) whether or not fire was actually placed - genuine.
+ * TNT ignition is NOT special-cased: flint&steel just places fire, and the
+   existing FireTryCatch -> SurvivalTnt.Ignite path handles the catch.
+ * Verified live (physop on gt1, /Give 259): server debug confirmed face->cell
+   air check, fire placed at the face cell, durability 0->1->2->3, and fire above
+   a placed TNT caught it -> primed TNT (1,80). NOTE: a lone fire on a
+   non-flammable block retires before the block queue flushes (coalesced), so the
+   observable proof is the TNT catch / a flammable-neighbour burn, not the raw 51.
+
+MP PRIMED-TNT DEFUSE (PrimedTnt.hurt with a Player attacker, c0.30 ONLY):
+ * Client: FindNetTntHit ray-casts the net st_tnt entries; in ServerDriven +
+   !IndevTest_Enabled, a melee swing that hits one sends SurvivalNet_SendAttack(2,
+   netId) - targetKind 2 = primed TNT. The SP local defuse (TryDefuseTnt) is now
+   gated `!SurvivalNet_ServerDriven()` and already skips net entries, so MP never
+   double-acts locally.
+ * Server: HandleAttack dispatches targetKind==2 (before the mob path, no
+   lock(lm.Mobs) needed) to SurvivalTnt.Defuse(lvl, tntId, p). Defuse is gated on
+   SurvivalMode.Classic (c0.30 only - Indev primed TNT "cannot be punched out"),
+   reach-validates against p.Pos (6-block padded, like HandleAttack/USE_ITEM),
+   removes the entry under lock(lt.List), sends SURV_TNT_REMOVE reason=1 (defuse,
+   no burst) to watchers, and drops one TNT block (SurvivalDrops.SpawnStack).
+   SendTntRemove already carried the reason byte (0 detonate / 1 defuse); the
+   client's NetTntRemove maps reason 0 -> particle burst, 1 -> silent remove.
+ * Verified live (physop on a Classic gt2, /Give 46): mine TNT -> SPAWN (id 1,
+   fuse 40) -> SURV_ATTACK(2,1) -> REMOVE (1, reason 1) at +0.05s + DROP (46,1) at
+   +0.09s, NO detonation (reason 0) and no blast. Clean defuse.
+
+Wire: SURV_ATTACK (0x80) targetKind now 0 mob / 1 player / 2 primed TNT.

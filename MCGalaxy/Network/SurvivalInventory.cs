@@ -368,9 +368,10 @@ namespace MCGalaxy.Network
                     return;
                 }
 
-                // Item.onItemUse: hoe tilling, seed planting (flint&steel deferred)
+                // Item.onItemUse: hoe tilling, seed planting, flint&steel ignition
                 if (UseHoe(p, lvl, inv, held, heldId, x, y, z)) return;
                 if (UseSeeds(p, lvl, inv, held, heldId, x, y, z)) return;
+                if (UseFlintSteel(p, lvl, inv, held, heldId, x, y, z, face)) return;
             }
 
             // TryEat: a held food is eaten with or without a target block
@@ -393,6 +394,30 @@ namespace MCGalaxy.Network
                 int roll; lock (dropRng) roll = dropRng.Next(8);
                 if (roll == 0 && AddOne(p, inv, SurvivalItems.SEEDS, 0)) SendAll(p);
             }
+            return true;
+        }
+
+        // ItemFlintAndSteel.onItemUse (IndevFire_UseFlintSteel): step one cell out
+        // of the clicked face and, if that interior cell is air, set fire there -
+        // the fire physics then spreads it and catches adjacent TNT. The item wears
+        // 1 durability whether or not fire was actually placed (shatters past 64).
+        static bool UseFlintSteel(Player p, Level lvl, PlayerInv inv, int held, ushort heldId, int x, int y, int z, int face) {
+            if (!SurvivalItems.IsFlintSteel(heldId)) return false;
+            switch (face) {          // Constants.h FACE_*: XMIN0 XMAX1 ZMIN2 ZMAX3 YMIN4 YMAX5
+                case 0: x--; break;
+                case 1: x++; break;
+                case 2: z--; break;
+                case 3: z++; break;
+                case 4: y--; break;
+                case 5: y++; break;
+            }
+            // interior cells only (genuine >0 and <dim-1 on every axis)
+            if (x > 0 && y > 0 && z > 0 &&
+                x < lvl.Width - 1 && y < lvl.Height - 1 && z < lvl.Length - 1 &&
+                RawAt(lvl, x, y, z) == Block.Air) {
+                lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.FromRaw(SurvivalBlocks.FIRE));
+            }
+            DamageHeldTool(p, inv, held, 1);
             return true;
         }
 
