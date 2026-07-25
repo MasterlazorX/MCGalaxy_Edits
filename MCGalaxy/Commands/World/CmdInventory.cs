@@ -37,7 +37,7 @@ namespace MCGalaxy.Commands.World
             get { return new[] {
                 new CommandPerm(LevelPermission.Admin, "can move/edit the inventory"),
                 new CommandPerm(LevelPermission.Admin, "can view players on other maps"),
-                new CommandPerm(LevelPermission.Admin, "can view offline players (needs inventory saving)"),
+                new CommandPerm(LevelPermission.Admin, "can view offline players' saved inventories"),
             }; }
         }
 
@@ -46,15 +46,18 @@ namespace MCGalaxy.Commands.World
                 p.Message("Use: &T/Inventory [player]"); return;
             }
 
-            Player target = PlayerInfo.FindMatches(p, message);
-            if (target == null) {
-                // (future) offline inventory viewing is an admin capability (extra
-                // perm 3) that hooks in here once survival inventories persist across
-                // sessions - there is no saved inventory to read yet, so for now an
-                // offline name simply falls through the "not found" that FindMatches
-                // already messaged.
+            // Offline viewing (admin, extra perm 3): inventories persist as
+            // extra/survival/players/<name>.inv, so an exact offline name with a
+            // saved file dumps read-only - checked BEFORE FindMatches so its
+            // "not found" message doesn't fire for a legitimately offline player.
+            if (PlayerInfo.FindExact(message) == null &&
+                HasExtraPerm(p, data.Rank, 3) && SurvivalInventory.HasSavedInv(message)) {
+                SurvivalInventory.DebugDumpOffline(p, message);
                 return;
             }
+
+            Player target = PlayerInfo.FindMatches(p, message);
+            if (target == null) return;
 
             // Cross-map gate: an Operator may only view a player on their OWN map
             // (live + in-map). Viewing a player on another map is an admin
@@ -86,7 +89,7 @@ namespace MCGalaxy.Commands.World
             p.Message("&HOpens a live view of a player's survival inventory.");
             p.Message("&HOperators view; admins may move/edit items (drag to/from your own).");
             p.Message("&HOperators can only view players on their own map; admins can");
-            p.Message("&Hview across maps (and offline players once inventory saving lands).");
+            p.Message("&Hview across maps and offline players' saved inventories (read-only).");
             p.Message("&HNon-survival clients see a text dump instead.");
         }
     }

@@ -96,23 +96,57 @@ namespace MCGalaxy.Network
 
         static void LoadInv(Player p, PlayerInv inv) {
             try {
-                string path = InvPath(p);
-                if (!System.IO.File.Exists(path)) return;
-                foreach (string line in System.IO.File.ReadAllLines(path))
-                {
-                    if (line.Length == 0 || line[0] == '#') continue;
-                    string[] parts = line.Split(' ');
-                    if (parts.Length < 5 || parts[0] != "s") continue;
-                    int idx; ushort id; byte count; short dmg;
-                    if (!int.TryParse(parts[1], out idx) || !ushort.TryParse(parts[2], out id) ||
-                        !byte.TryParse(parts[3], out count) || !short.TryParse(parts[4], out dmg)) continue;
-                    bool valid = (idx >= 0 && idx < MAIN_SLOTS) || (idx >= ARMOR_BASE && idx < ARMOR_BASE + ARMOR_SLOTS);
-                    if (!valid || count == 0) continue;
-                    inv.Slots[idx].Id = id; inv.Slots[idx].Count = count; inv.Slots[idx].Damage = dmg;
-                }
+                LoadInvFile(InvPath(p), inv);
             } catch (Exception ex) {
                 Logger.LogError("Error loading survival inventory for " + p.name, ex);
             }
+        }
+
+        static void LoadInvFile(string path, PlayerInv inv) {
+            if (!System.IO.File.Exists(path)) return;
+            foreach (string line in System.IO.File.ReadAllLines(path))
+            {
+                if (line.Length == 0 || line[0] == '#') continue;
+                string[] parts = line.Split(' ');
+                if (parts.Length < 5 || parts[0] != "s") continue;
+                int idx; ushort id; byte count; short dmg;
+                if (!int.TryParse(parts[1], out idx) || !ushort.TryParse(parts[2], out id) ||
+                    !byte.TryParse(parts[3], out count) || !short.TryParse(parts[4], out dmg)) continue;
+                bool valid = (idx >= 0 && idx < MAIN_SLOTS) || (idx >= ARMOR_BASE && idx < ARMOR_BASE + ARMOR_SLOTS);
+                if (!valid || count == 0) continue;
+                inv.Slots[idx].Id = id; inv.Slots[idx].Count = count; inv.Slots[idx].Damage = dmg;
+            }
+        }
+
+        /// <summary> Whether an OFFLINE player has a persisted survival inventory
+        /// (extra/survival/players/&lt;name&gt;.inv). Exact-name match only. </summary>
+        public static bool HasSavedInv(string name) {
+            return System.IO.File.Exists("extra/survival/players/" + name.ToLower() + ".inv");
+        }
+
+        /// <summary> Text-dumps an offline player's persisted inventory to the viewer
+        /// (/Inventory's admin offline-viewing path). Read-only - the file is the
+        /// authority until the player reconnects. </summary>
+        public static void DebugDumpOffline(Player viewer, string name) {
+            PlayerInv inv = new PlayerInv();
+            try {
+                LoadInvFile("extra/survival/players/" + name.ToLower() + ".inv", inv);
+            } catch (Exception ex) {
+                Logger.LogError("Error reading saved inventory for " + name, ex);
+                viewer.Message("&WCould not read {0}'s saved inventory.", name);
+                return;
+            }
+            int shown = 0;
+            viewer.Message("Saved inventory of &b{0}&S (offline, read-only):", name);
+            for (int i = 0; i < TOTAL_SLOTS; i++)
+            {
+                if (inv.Slots[i].Count == 0) continue;
+                string kind = i < MAIN_SLOTS ? (i < 9 ? "hotbar" : "main") : "armor";
+                viewer.Message("  slot &b{0}&S ({1}): id &b{2}&S x&b{3}&S dmg &b{4}",
+                               i, kind, inv.Slots[i].Id, inv.Slots[i].Count, inv.Slots[i].Damage);
+                shown++;
+            }
+            if (shown == 0) viewer.Message("  (all slots empty)");
         }
 
         static void SaveInv(Player p) {

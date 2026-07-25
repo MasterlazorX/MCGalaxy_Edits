@@ -29,15 +29,17 @@ namespace MCGalaxy.Commands.World
         public override LevelPermission defaultRank { get { return LevelPermission.Operator; } }
 
         public override void Use(Player p, string message, CommandData data) {
-            if (p.level == null) {
-                // the clock is per-map now: console has no level to read or set
-                p.Message("&WThe survival clock is per-map - use this command in-game on the target level.");
-                return;
-            }
+            // the clock is per-map: console (no current level) reads/sets main,
+            // matching the other survival commands' console fallback
+            Level lvl = p.level ?? Server.mainLevel;
+            if (lvl == null) { p.Message("No level to inspect."); return; }
+            if (p.level == null) p.Message("(console: using the main level {0}&S)", lvl.ColoredName);
+            if (lvl.Config.SurvivalMode == SurvivalMode.Off)
+                p.Message("&WNote: {0} &Wis not a survival map - its clock never advances.", lvl.ColoredName);
             if (message.Length == 0) {
-                int t = SurvivalNet.WorldTimeOf(p.level);
+                int t = SurvivalNet.WorldTimeOf(lvl);
                 p.Message("World time: &b{0}&S ({1}&S), sky light &b{2}&S/15",
-                          t, SurvivalMobs.DescribeTime(t), SurvivalNet.CurrentSkyLightPublic(p.level));
+                          t, SurvivalMobs.DescribeTime(t), SurvivalNet.CurrentSkyLightPublic(lvl));
                 p.Message("Cycle: 0 sunrise, 6000 noon, 12000 sunset, 18000 midnight (20 min/day).");
                 p.Message("Set with &T/SurvTime [day/noon/sunset/night/midnight/sunrise/<ticks>]");
                 return;
@@ -55,15 +57,16 @@ namespace MCGalaxy.Commands.World
                     }
                     break;
             }
-            SurvivalNet.SetWorldTime(p.level, time);
+            SurvivalNet.SetWorldTime(lvl, time);
             p.Message("World time set to &b{0}&S ({1}&S) - pushed to all survival players.",
-                      SurvivalNet.WorldTimeOf(p.level), SurvivalMobs.DescribeTime(SurvivalNet.WorldTimeOf(p.level)));
+                      SurvivalNet.WorldTimeOf(lvl), SurvivalMobs.DescribeTime(SurvivalNet.WorldTimeOf(lvl)));
         }
 
         public override void Help(Player p) {
             p.Message("&T/SurvTime &H- shows the survival world clock");
             p.Message("&T/SurvTime [day/noon/sunset/night/midnight/sunrise/<ticks>]");
-            p.Message("&HSets the shared day/night clock (pushed to all survival players).");
+            p.Message("&HSets THIS map's day/night clock (each survival map keeps its own;");
+            p.Message("&Hpushed live to the map's survival players; console acts on main).");
         }
     }
 }

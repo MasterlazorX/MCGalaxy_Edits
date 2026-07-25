@@ -1954,3 +1954,21 @@ DEFERRED AUDIT FIXES, all landed:
  * Verified live: /Export rtx gt1 -> /Import rtx -> /Load rtx: 15 mobs through
    NBT and back (positions float32-exact, fur preserved), TimeOfDay carried,
    sidecar consumed on load, zero errors.
+
+## Command tidy-up pass (console gating + offline inventories)
+
+ * /SurvTime: console now falls back to the MAIN level (the house pattern all
+   other survival commands use) with an explicit "(console: using the main
+   level X)" note, instead of rejecting; a non-survival level gets a "clock
+   never advances" warning; the stale "shared clock" help text now says each
+   map keeps its own.
+ * /Inventory: the declared-but-unimplemented admin capability (extra perm 3,
+   "view offline players") is real now that inventories persist - an exact
+   offline name with a saved extra/survival/players/<name>.inv dumps read-only
+   (checked before FindMatches so its not-found error doesn't fire).
+   SurvivalInventory.HasSavedInv/DebugDumpOffline + LoadInvFile refactor.
+ * Audited the rest: /Give, /Export, /Mobs, /Spawner, /SurvSpawn, /Survival,
+   /Spectate all already null-guard console (mainLevel fallback or
+   SuperUseable=false) and validate their targets - no changes needed.
+   Console-tested live: SurvTime read/set on main, offline dump, mobs/spawner
+   reports, zero errors.
