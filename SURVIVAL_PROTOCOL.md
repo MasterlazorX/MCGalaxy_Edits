@@ -407,6 +407,11 @@ Server validation (reference implementation):
 - damage is computed **server-side** from the server-known held item
   (c0.30: flat 4; Indev: fist 1, tools by tier, swords 4+tier×2), then armor
   absorption, invulnerability windows, knockback, aggro.
+- knockback on a **landed** hit (melee, PvP, arrows, mob melee alike) is
+  delivered to the victim via the standard CPE **VelocityControl** extension,
+  not this channel: horizontal ADD away from the attacker + vertical SET pop,
+  ~0.4 blocks/tick per axis (wire value 1.1 in VelocityControl's jump-height
+  units). Hits absorbed by the invulnerability window or armor do not shove.
 
 ### 0x81 `SURV_USE_ITEM`
 `[1] heldSlot u8, [2] x i16, [4] y i16, [6] z i16, [8] face u8`

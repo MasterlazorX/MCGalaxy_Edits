@@ -388,7 +388,10 @@ namespace MCGalaxy.Network
                 double fx = p.Pos.X / 32.0, fy = (p.Pos.Y - Entities.CharacterHeight) / 32.0, fz = p.Pos.Z / 32.0;
                 if (BoxHit(x, y, z, fx, fy, fz, 0.3, 1.8)) {
                     string who = a.OwnerPlayer != null ? a.OwnerPlayer.name : "an arrow";
-                    SurvivalNet.DamagePlayer(p, a.Damage, "@p was shot by " + who);
+                    // a landing arrow shoves along its flight direction (genuine
+                    // hurt()-driven knockBack from the projectile's motion)
+                    if (SurvivalNet.DamagePlayer(p, a.Damage, "@p was shot by " + who))
+                        SurvivalNet.KnockbackPlayer(p, a.VX, a.VZ);
                     return true;
                 }
             }

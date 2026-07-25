@@ -795,7 +795,10 @@ namespace MCGalaxy.Network
 
             bool indev = lvl.Config.SurvivalMode == SurvivalMode.Indev;
             int dmg = indev ? SurvivalItems.MeleeDamage(SurvivalInventory.HeldItemId(p)) : 4;
-            SurvivalNet.DamagePlayer(victim, dmg, "@p was slain by " + p.name);
+            // knockback away from the attacker on a LANDED hit only (genuine
+            // hurt() skips knockBack when the invuln window absorbs the hit)
+            if (SurvivalNet.DamagePlayer(victim, dmg, "@p was slain by " + p.name))
+                SurvivalNet.KnockbackPlayer(victim, vx - px, vz - pz);
             if (indev) SurvivalInventory.WearHeldForMelee(p);
         }
 
@@ -908,7 +911,8 @@ namespace MCGalaxy.Network
             m.AttackDelay  = 10 + rng.Next(20);
             m.NoActionTime = 0;
             int damage = (int)((rng.NextDouble() + rng.NextDouble()) / 2.0 * info.Damage + 1.0);
-            SurvivalNet.DamagePlayer(target, damage, "@p was slain by a " + info.Name);
+            if (SurvivalNet.DamagePlayer(target, damage, "@p was slain by a " + info.Name))
+                SurvivalNet.KnockbackPlayer(target, target.Pos.X / 32.0 - m.X, target.Pos.Z / 32.0 - m.Z);
 
             // CreeperAI.attack: headbutting hurts the creeper WITH ITS VICTIM AS
             // CAUSE; the self-damage death triggers the c0.30 death-explosion.
@@ -995,7 +999,8 @@ namespace MCGalaxy.Network
             if (strength == 0 || dist >= 2.5 || m.AttackDelay > 0) return false;
             m.AttackDelay  = 10;
             m.NoActionTime = 0;
-            SurvivalNet.DamagePlayer(target, strength, "@p was slain by a " + Types[m.Type].Name);
+            if (SurvivalNet.DamagePlayer(target, strength, "@p was slain by a " + Types[m.Type].Name))
+                SurvivalNet.KnockbackPlayer(target, target.Pos.X / 32.0 - m.X, target.Pos.Z / 32.0 - m.Z);
             return false; // melee mobs keep striding at the victim mid-swing
         }
 

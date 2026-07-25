@@ -727,9 +727,12 @@ namespace MCGalaxy.Network
         }
 
         /// <summary> Deals graduated damage to a survival player (mob melee, explosions).
-        /// Lethal damage flows into HandleDeath, so the death-screen dwell applies. </summary>
-        public static void DamagePlayer(Player p, int damage, string deathMsg) {
-            if (!Active(p, p.level) || IsDead(p) || damage <= 0) return;
+        /// Lethal damage flows into HandleDeath, so the death-screen dwell applies.
+        /// Returns whether the hit actually LANDED (reduced health / killed) - false
+        /// when absorbed by the invulnerability window or armor, so callers can gate
+        /// knockback on it (genuine hurt() knocks back only on a landing hit). </summary>
+        public static bool DamagePlayer(Player p, int damage, string deathMsg) {
+            if (!Active(p, p.level) || IsDead(p) || damage <= 0) return false;
 
             int invinc = p.Extras.GetInt(INVINC_KEY, 0);
             int health = GetHealth(p);
@@ -741,14 +744,14 @@ namespace MCGalaxy.Network
                 // hit simply misses (and armor is untouched). Otherwise armor
                 // absorbs in 25ths (wearing every worn piece by the raw damage)
                 // before the hit lands and re-arms the window.
-                if (invinc > 10) return;
+                if (invinc > 10) return false;
                 damage = SurvivalInventory.AbsorbArmor(p, damage);
-                if (damage <= 0) return; // fully absorbed (armor still wore)
+                if (damage <= 0) return false; // fully absorbed (armor still wore)
                 p.Extras[LASTHP_KEY] = health;
                 p.Extras[INVINC_KEY] = 20;
                 health -= damage;
             } else if (invinc > 10) {
-                if (last - damage >= health) return; // absorbed by the fresh window
+                if (last - damage >= health) return false; // absorbed by the fresh window
                 health = last - damage;
             } else {
                 p.Extras[LASTHP_KEY] = health;
@@ -764,6 +767,32 @@ namespace MCGalaxy.Network
             } else {
                 SetHealth(p, health); // the drop plays the client's hurt tilt/sound
             }
+            return true;
+        }
+
+        // Genuine Mob.knockBack strength is 0.4 blocks/tick on each axis. The CPE
+        // VelocityControl wire unit is JUMP HEIGHT in blocks (the client converts
+        // through CalcJumpVelocity; its anchor: 1.233 -> the default 0.42 jump), so
+        // ~1.1 lands at ~0.4 blocks/tick after conversion.
+        const float KNOCK_UNIT = 1.1f;
+
+        /// <summary> Knocks a survival player back (a landed melee/arrow hit),
+        /// away along the given horizontal direction plus the genuine upward pop.
+        /// Rides the standard CPE VelocityControl extension - a client without it
+        /// (never our fork, which always negotiates it) just takes the hit
+        /// without the shove. </summary>
+        public static void KnockbackPlayer(Player p, double dirX, double dirZ) {
+            if (p.Session == null || !p.Session.Supports(CpeExt.VelocityControl, 1)) return;
+            double len = Math.Sqrt(dirX * dirX + dirZ * dirZ);
+            float kx = 0, kz = 0;
+            if (len > 0.0001) {
+                kx = (float)(dirX / len * KNOCK_UNIT);
+                kz = (float)(dirZ / len * KNOCK_UNIT);
+            }
+            // X/Z ADD onto the victim's current motion (genuine xd/zd +=); Y SET -
+            // genuine adds then caps yd at 0.4, and set reproduces that cap so
+            // rapid repeat hits can't stack into a launch.
+            p.Send(Packet.VelocityControl(kx, KNOCK_UNIT, kz, 0, 1, 0));
         }
 
         /// <summary> Score credit for a player-credited mob kill (c0.30 mode only). </summary>
