@@ -51,6 +51,10 @@ namespace MCGalaxy.Network
 
     /// <summary> Server side of the "SurvivalTest" sub-protocol spoken by survival-test ClassiCube clients. </summary>
     /// <remarks>
+    /// The complete wire specification (every message id, byte layout, validation rule, and a
+    /// build-order for implementing a compatible server from scratch) is SURVIVAL_PROTOCOL.md
+    /// at the repo root - keep it in sync with any wire change here.
+    ///
     /// This is the <b>foundation</b> only, mirroring the client-side foundation documented in
     /// ClassiCube's doc/survival-handshake.md. It:
     ///   1. relies on the SurvivalTest CPE extension for the per-connection capability (see CPESupport.cs),
