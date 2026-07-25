@@ -392,7 +392,8 @@ changes and when an entity spawns into view; deduplicated server-side.
 A player took a **landed** hit (one absorbed by the invulnerability window or
 armor is not broadcast). The client rocks that entity with the standard hurt
 body-roll — `sin((t/10)⁴·π) × 14°` about the model Z axis over 10 ticks, the
-same wobble mob puppets use — and voices the hit at their body. Broadcast to
+same wobble mob puppets use — and, in Indev mode, voices the hit at their
+body (c0.30 has no entity voices, so the roll is silent there). Broadcast to
 every *other* survival watcher on the victim's level; the victim's own client
 is never sent it (its hurt presentation — camera tilt + sound — derives from
 the `SURV_HEALTH` drop). Additive message: clients that predate it ignore the
