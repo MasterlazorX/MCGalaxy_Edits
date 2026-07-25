@@ -538,6 +538,7 @@ namespace MCGalaxy.Network
         /// <summary> Starts the survival day/night clock. Called once from CorePlugin. </summary>
         public static void Start() {
             SurvivalBlocks.SyncLoadedLevels(); // levels loaded before our hooks registered
+            SurvivalPersistence.QueueLoadedLevels(); // ...their sidecars too (the MAIN level)
             SurvivalMobs.Start();
             if (timeTask != null) return;
             timeTask = Server.MainScheduler.QueueRepeat(TimeTick, null, TIME_INTERVAL);
@@ -545,6 +546,11 @@ namespace MCGalaxy.Network
 
         /// <summary> Stops the survival day/night clock. </summary>
         public static void Stop() {
+            // shutdown saves levels only AFTER plugins unload (Server.cs unloads
+            // plugins, then SaveAllLevels), so our OnLevelSave hook is gone by the
+            // time levels save - persist every survival sidecar + settings NOW,
+            // while the registries are still alive.
+            SurvivalPersistence.SaveAllLoaded();
             SurvivalMobs.Stop();
             if (timeTask == null) return;
             Server.MainScheduler.Cancel(timeTask);
@@ -793,6 +799,10 @@ namespace MCGalaxy.Network
         /// so a player who leaves a level while dead is restored to full health rather than arriving
         /// on the new map at 0 HP. Registered on OnJoinedLevelEvent. </summary>
         public static void OnJoinedLevel(Player p, Level prevLevel, Level level, ref bool announce) {
+            // ALL clients: the join resent this level's own env colours, so the
+            // env-light dedup from the previous map is stale - forget it so the
+            // day/night fallback re-applies on the next tick (stock viewers too).
+            SurvivalFallbacks.ResetEnvCache(p);
             if (p.Session == null || !p.Session.hasSurvival) return;
             // any container the player had open belonged to the previous level
             SurvivalInventory.OnLeftLevel(p);

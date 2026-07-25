@@ -65,6 +65,15 @@ namespace MCGalaxy.Network
             }
         }
 
+        /// <summary> Forgets the per-player env-light dedup value. Joining a level
+        /// resends that level's own colours, so a cached darkness value from the
+        /// PREVIOUS map no longer matches what the client displays - without this
+        /// the next TickEnv would dedup against stale state and skip the resend
+        /// (a returning viewer stayed full-bright at night). </summary>
+        public static void ResetEnvCache(Player p) {
+            p.Extras.Remove(ENV_KEY);
+        }
+
         /// <summary> Restores the level's own colours (e.g. after /Survival off). </summary>
         public static void RestoreEnv(Player p) {
             if (p.Extras.GetInt(ENV_KEY, -1) == -1) return;

@@ -136,18 +136,24 @@ namespace MCGalaxy.Network
             if (lvl.Config.SurvivalMode != SurvivalMode.Indev) return;
             LevelPhys lp = Get(lvl, true);
 
-            if (newV == FIRE) { SetAge(lp, lvl, Pack(lvl, x, y, z), 0); ScheduleFire(lp, Pack(lvl, x, y, z)); }
-            else if (oldV == FIRE) SetAge(lp, lvl, Pack(lvl, x, y, z), 0);
+            // Notify is reachable from PLAYER receive threads (OnBlockChanged) as
+            // well as the tick thread (Set -> SetView -> Notify); the schedules are
+            // plain Queue/List/HashSet, so every mutation serializes on the LevelPhys
+            // monitor (re-entrant, so tick-thread nesting is fine).
+            lock (lp) {
+                if (newV == FIRE) { SetAge(lp, lvl, Pack(lvl, x, y, z), 0); ScheduleFire(lp, Pack(lvl, x, y, z)); }
+                else if (oldV == FIRE) SetAge(lp, lvl, Pack(lvl, x, y, z), 0);
 
-            if (newV == Block.Water || newV == Block.Lava) ScheduleFluid(lp, Pack(lvl, x, y, z), newV == Block.Water, false);
+                if (newV == Block.Water || newV == Block.Lava) ScheduleFluid(lp, Pack(lvl, x, y, z), newV == Block.Water, false);
 
-            // neighbours react: re-check adjacent fires, wake adjacent still fluids
-            NotifyNeighbour(lp, lvl, x - 1, y, z);
-            NotifyNeighbour(lp, lvl, x + 1, y, z);
-            NotifyNeighbour(lp, lvl, x, y - 1, z);
-            NotifyNeighbour(lp, lvl, x, y + 1, z);
-            NotifyNeighbour(lp, lvl, x, y, z - 1);
-            NotifyNeighbour(lp, lvl, x, y, z + 1);
+                // neighbours react: re-check adjacent fires, wake adjacent still fluids
+                NotifyNeighbour(lp, lvl, x - 1, y, z);
+                NotifyNeighbour(lp, lvl, x + 1, y, z);
+                NotifyNeighbour(lp, lvl, x, y - 1, z);
+                NotifyNeighbour(lp, lvl, x, y + 1, z);
+                NotifyNeighbour(lp, lvl, x, y, z - 1);
+                NotifyNeighbour(lp, lvl, x, y, z + 1);
+            }
         }
 
         /// <summary> OnBlockChangedEvent: a player edit finished. Route it to the
@@ -196,9 +202,11 @@ namespace MCGalaxy.Network
         /// genuine World.tick cap) and the due fluid schedule entries. </summary>
         public static void Tick(Level lvl) {
             LevelPhys lp = Get(lvl, true);
-            EnsureLoaded(lp, lvl);
-            TickFire(lp, lvl);
-            TickFluids(lp, lvl);
+            lock (lp) { // serialize against player-thread Notify (see Notify)
+                EnsureLoaded(lp, lvl);
+                TickFire(lp, lvl);
+                TickFluids(lp, lvl);
+            }
         }
 
 
@@ -241,7 +249,7 @@ namespace MCGalaxy.Network
         internal static void RandomTickFire(Level lvl, int x, int y, int z) {
             LevelPhys lp = Get(lvl, true);
             if (View(lvl, x, y, z) != FIRE) return;
-            FireUpdate(lp, lvl, x, y, z);
+            lock (lp) FireUpdate(lp, lvl, x, y, z); // vs player-thread Notify
         }
 
         static readonly byte[] fireChance  = BuildFireTable(true);
@@ -371,7 +379,7 @@ namespace MCGalaxy.Network
 
         internal static void RandomTickFluid(Level lvl, int x, int y, int z, ushort v) {
             LevelPhys lp = Get(lvl, true);
-            FluidUpdate(lp, lvl, Pack(lvl, x, y, z), v);
+            lock (lp) FluidUpdate(lp, lvl, Pack(lvl, x, y, z), v); // vs player-thread Notify
         }
 
         // BlockSource.updateTick: an infinite spring - fill each of the 4

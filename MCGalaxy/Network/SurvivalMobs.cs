@@ -1504,6 +1504,12 @@ namespace MCGalaxy.Network
 
         /// <summary> Writes the level's live mobs as "mob type x y z yaw pitch health
         /// hasFur fuseState fire" lines for the map sidecar. </summary>
+        /// <summary> Whether this level still has a live mob registry (false once the
+        /// prune sweep dropped it - a Save then must not write an empty snapshot). </summary>
+        internal static bool HasRegistry(Level lvl) {
+            return GetLevel(lvl, false) != null;
+        }
+
         internal static void SaveMobs(Level lvl, System.IO.TextWriter w) {
             LevelMobs lm = GetLevel(lvl, false);
             if (lm == null) return;
@@ -1547,6 +1553,10 @@ namespace MCGalaxy.Network
         }
 
         static void TickCore() {
+            // restores run HERE (not on the loader thread) so they serialize with
+            // the prune sweeps below - a freshly restored registry can't be dropped
+            SurvivalPersistence.ProcessPending();
+
             Level[] loaded = LevelInfo.Loaded.Items;
             List<Level> dead = null;
 

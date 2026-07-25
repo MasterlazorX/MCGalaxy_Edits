@@ -1874,3 +1874,50 @@ MOB INFIGHTING (Indev, EntityCreature.attackEntityFrom semantics):
  * A permanent Debug log marks each retarget: "X #a now targets Y #b (infight)".
  * Verified live: rig leftovers produced a four-way skeleton war - mutual
    retargeting chains exactly as genuine (#18->#26, #27->#18, #26->#21, ...).
+
+## Systematic audits: level parity, per-map light/clocks, unload saves (outcome + fixes)
+
+A 4-lens verified audit (per-level isolation, per-map light, per-map clocks,
+unload/save correctness) raised 23 findings; 14 agent-confirmed + 2 hand-
+confirmed. FIXED in this pass:
+
+ * CRITICAL - shutdown wrote NO sidecars: Server.cs unloads plugins BEFORE
+   SaveAllLevels, so OnLevelSave was unregistered by save time. SurvivalNet.Stop
+   now calls SurvivalPersistence.SaveAllLoaded() first: every loaded survival
+   level's sidecar + settings (SurvivalTime) written while registries are alive.
+ * CRITICAL - the MAIN level's sidecar was never restored (it loads before
+   CorePlugin registers OnLevelLoaded) and the next save then overwrote it EMPTY.
+   Fixes: (a) SurvivalNet.Start queues all already-loaded survival levels for
+   restore (catch-up, mirrors SurvivalBlocks.SyncLoadedLevels); (b) restores now
+   run on the SURVIVAL TICK thread (pending queue drained in TickCore before the
+   prune sweeps) - which also kills the OnLevelLoaded-before-LevelInfo.Add prune
+   race; (c) Load consumes the sidecar (deleted after restore, exactly-once);
+   (d) Save refuses to write when NEITHER registry exists (pruned level) so an
+   "empty" lie can never clobber a real sidecar - this also covers
+   LevelActions.Replace, which removes the level from Loaded long before its
+   unload-save runs. Verified live: restore->consume on startup, sidecar with 15
+   live mobs written at shutdown, full loop twice, clean log.
+ * HIGH - SurvivalPhysics fire/fluid schedules were mutated lock-free from
+   player receive threads (OnBlockChanged -> Notify) racing the tick thread.
+   All LevelPhys mutations now serialize on the LevelPhys monitor (re-entrant;
+   Notify, Tick, RandomTickFire/Fluid).
+ * HIGH - random-tick coordinate masks used dim-1 on possibly-non-power-of-two
+   dimensions, knocking holes in the pick space (most cells never ticked on
+   imported odd-size maps). Masks now span the next power of two with the
+   bounds check rejecting overflow (and Y got its own shift).
+ * MEDIUM - idle SurvivalTime was lost on unload/shutdown (SaveSettings only ran
+   when blocks Changed): the unload hook + shutdown sweep now SaveSettings
+   unconditionally for survival maps.
+ * MEDIUM - flint&steel fire was never scheduled (Console UpdateBlock raises no
+   OnBlockChangedEvent): UseFlintSteel now calls SurvivalPhysics.Notify.
+ * MEDIUM - stock viewers went permanently full-bright after a map change (the
+   per-player env-light dedup was never reset): OnJoinedLevel now clears it for
+   ALL clients (SurvivalFallbacks.ResetEnvCache).
+ * Sidecar writes use File.Replace (crash can't lose both copies).
+
+DEFERRED (documented, lower priority): RefloodBlockLight full-volume rescan
+once/second (perf, medium); spider lose-interest still uses the old sky-exposure
+approximation (low); farmland at the top layer reverts (GetBlock(y+1) reads
+Invalid, nit); McLevelImporter discards TimeOfDay (low); /SurvTime from console
+reports success without a level (nit); sidecars orphaned on level rename/copy
+(medium - needs rename hooks); stale "shared clock" comments.

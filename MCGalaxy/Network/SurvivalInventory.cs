@@ -474,6 +474,10 @@ namespace MCGalaxy.Network
                 x < lvl.Width - 1 && y < lvl.Height - 1 && z < lvl.Length - 1 &&
                 RawAt(lvl, x, y, z) == Block.Air) {
                 lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.FromRaw(SurvivalBlocks.FIRE));
+                // Console-authored changes don't raise OnBlockChangedEvent, so
+                // schedule the new fire explicitly - else it only comes alive on
+                // a lucky random tick instead of the genuine 10-tick cadence.
+                SurvivalPhysics.Notify(lvl, x, y, z, Block.Air, SurvivalBlocks.FIRE);
             }
             DamageHeldTool(p, inv, held, 1);
             return true;
@@ -762,6 +766,12 @@ namespace MCGalaxy.Network
 
         /// <summary> Writes the level's chest/furnace tile entities as "cont x y z kind
         /// burn cook curBurn nslots id:count:dmg..." lines for the map sidecar. </summary>
+        /// <summary> Whether this level still has a container registry entry (false
+        /// once pruned - a Save then must not write an empty snapshot). </summary>
+        internal static bool HasContainers(Level lvl) {
+            lock (contLock) return contRegistry.ContainsKey(lvl);
+        }
+
         internal static void SaveContainers(Level lvl, System.IO.TextWriter w) {
             lock (contLock) {
                 Dictionary<long, Container> map;

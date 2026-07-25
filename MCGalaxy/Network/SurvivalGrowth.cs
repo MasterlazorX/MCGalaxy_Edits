@@ -298,12 +298,15 @@ namespace MCGalaxy.Network
                 g.FloodCountdown = FLOOD_INTERVAL;
             }
 
-            // genuine power-of-two coordinate masks (biased picks on odd sizes
-            // are skipped by the bounds check, exactly as the client does)
-            int shiftX = 1, shiftZ = 1;
+            // genuine power-of-two coordinate masks. The masks must span the NEXT
+            // power of two (out-of-range picks are then skipped by the bounds
+            // check): masking with dim-1 on a non-power-of-two dimension knocks
+            // holes in the bit patterns, so most cells would never be picked.
+            int shiftX = 1, shiftZ = 1, shiftY = 1;
             while ((1 << shiftX) < w) shiftX++;
             while ((1 << shiftZ) < d) shiftZ++;
-            int maskX = w - 1, maskZ = d - 1, maskY = h - 1;
+            while ((1 << shiftY) < h) shiftY++;
+            int maskX = (1 << shiftX) - 1, maskZ = (1 << shiftZ) - 1, maskY = (1 << shiftY) - 1;
 
             long volume = (long)w * h * d;
             g.UpdateLCG += volume;
