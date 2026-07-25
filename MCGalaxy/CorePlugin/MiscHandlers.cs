@@ -48,7 +48,9 @@ namespace MCGalaxy.Core {
             OnChangedZoneEvent.Call(p);
             p.SendCurrentTextures();
             p.SendCurrentBlockPermissions();
-            
+            // Per-map survival handshake (no-op for Classic clients / non-survival maps)
+            Network.SurvivalNet.SendHandshake(p, level);
+
             // TODO: unshow old zones here??
             Zone[] zones = level.Zones.Items;
             foreach (Zone zn in zones) { zn.Show(p); }

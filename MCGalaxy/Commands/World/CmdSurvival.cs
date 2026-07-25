@@ -1,0 +1,185 @@
+/*
+    Copyright 2015-2024 MCGalaxy
+
+    Dual-licensed under the Educational Community License, Version 2.0 and
+    the GNU General Public License, Version 3 (the "Licenses"); you may
+    not use this file except in compliance with the Licenses. You may
+    obtain a copy of the Licenses at
+
+    https://opensource.org/license/ecl-2-0/
+    https://www.gnu.org/licenses/gpl-3.0.html
+
+    Unless required by applicable law or agreed to in writing,
+    software distributed under the Licenses are distributed on an "AS IS"
+    BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the Licenses for the specific language governing
+    permissions and limitations under the Licenses.
+ */
+using System;
+using MCGalaxy.Network;
+
+namespace MCGalaxy.Commands.World
+{
+    /// <summary> Configures a level's SurvivalTest settings live and re-sends the handshake to
+    /// survival-test clients on that level, so changes take effect without a rejoin. </summary>
+    public sealed class CmdSurvival : Command2
+    {
+        public override string name { get { return "Survival"; } }
+        public override string type { get { return CommandTypes.World; } }
+        public override bool museumUsable { get { return false; } }
+        public override LevelPermission defaultRank { get { return LevelPermission.Operator; } }
+
+        public override void Use(Player p, string message, CommandData data) {
+            Level lvl = p.level ?? Server.mainLevel; // console has no current level -> configure main
+            if (lvl == null) { p.Message("No level to configure."); return; }
+            if (message.Length == 0) { PrintInfo(p, lvl); return; }
+
+            string[] args = message.SplitSpaces();
+            string opt = args[0].ToLower();
+            LevelConfig cfg = lvl.Config;
+
+            switch (opt) {
+                case "off":     cfg.SurvivalMode = SurvivalMode.Off;     break;
+                case "classic": cfg.SurvivalMode = SurvivalMode.Classic; EnableHazards(p, lvl); break;
+                case "indev":   cfg.SurvivalMode = SurvivalMode.Indev;   EnableHazards(p, lvl); break;
+                case "theme":
+                    if (args.Length < 2 || !SetTheme(cfg, args[1])) {
+                        p.Message("Themes: Normal, Hell, Paradise, Woods, Floating"); return;
+                    }
+                    break;
+                case "visitors":
+                    if (args.Length < 2 || !SetVisitors(cfg, args[1])) {
+                        p.Message("Use: &T/Survival visitors [visitor/allow/deny]");
+                        p.Message("&Hvisitor = join but not build (default), allow = build, deny = no entry");
+                        return;
+                    }
+                    break;
+                case "enhanced": case "creative": case "pvp": case "deathdrops":
+                    if (args.Length < 2 || !SetFlag(cfg, opt, args[1])) {
+                        p.Message("Use: &T/Survival {0} [on/off]", opt); return;
+                    }
+                    break;
+                default:
+                    // The former action subcommands are now standalone commands
+                    // (spawn -> /SurvSpawn, mobs -> /Mobs, spawner -> /Spawner,
+                    // time -> /SurvTime, inv -> /Inventory, give -> /Give,
+                    // export -> /Export). /Survival configures the per-map mode.
+                    Help(p); return;
+            }
+
+            lvl.SaveSettings();
+            SurvivalNet.RefreshLevel(lvl); // apply live to survival-test clients on this level
+            p.Message("Updated survival settings for {0}&S:", lvl.ColoredName);
+            PrintInfo(p, lvl);
+        }
+
+        // Turning a map survival should make its hazards real without a second,
+        // easy-to-miss command: fall/drown/lava death detection is MCGalaxy's
+        // per-level SurvivalDeath option ("/map death"), off by default. And a
+        // default generated spawn floats well above the terrain, which with
+        // death detection on makes every (re)spawn a lethal fall - so the
+        // spawn is grounded too (unless the column is bottomless, e.g. a
+        // Floating-theme void, where moving it would be worse than warning).
+        static void EnableHazards(Player p, Level lvl) {
+            if (!lvl.Config.SurvivalDeath) {
+                lvl.Config.SurvivalDeath = true;
+                p.Message("&SEnabled fall/drown death detection (&T/Map {0} death off &Sto revert).", lvl.name);
+            }
+
+            int x = lvl.spawnx, y = lvl.spawny, z = lvl.spawnz, ground = y;
+            // descend to the first SOLID or LIQUID surface: a liquid stops the
+            // fall too (you don't sink through it), and grounding the spawn onto
+            // the submerged bed underneath would drop the player straight into a
+            // drown/burn respawn loop now that death detection is on.
+            while (ground > 0 && !CollideSolid(lvl, x, ground - 1, z) && !IsLiquidAt(lvl, x, ground - 1, z))
+                ground--;
+
+            // Bottomless column / liquid surface are checked BEFORE the
+            // "close enough to survive" return, so the warning still fires when
+            // the spawn is within FallHeight of a void or a lake.
+            bool bottomless = ground == 0 && !CollideSolid(lvl, x, 0, z) && !IsLiquidAt(lvl, x, 0, z);
+            if (bottomless) {
+                p.Message("&WThe map spawn hangs over a bottomless column - set a safe one with &T/SetSpawn&W.");
+                return;
+            }
+            if (ground > 0 && IsLiquidAt(lvl, x, ground - 1, z)) {
+                bool lava = lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)(ground - 1), (ushort)z))
+                            == Blocks.CollideType.LiquidLava;
+                p.Message("&WThe map spawn sits over {0} - set a safe one with &T/SetSpawn&W.",
+                          lava ? "lava" : "water");
+                return;
+            }
+            if (y - ground <= lvl.Config.FallHeight) return; // close enough to survive
+
+            lvl.spawny  = (ushort)ground;
+            lvl.Changed = true;
+            p.Message("&SGrounded the floating map spawn (y {0} &S-> &b{1}&S) so respawning is survivable.", y, ground);
+            p.Message("&SMove it with &T/SetSpawn &Sif you want it somewhere else.");
+        }
+
+        static bool CollideSolid(Level lvl, int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return false;
+            return Blocks.CollideType.IsSolid(lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z)));
+        }
+
+        static bool IsLiquidAt(Level lvl, int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= lvl.Width || y >= lvl.Height || z >= lvl.Length) return false;
+            byte c = lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)y, (ushort)z));
+            return c == Blocks.CollideType.LiquidWater || c == Blocks.CollideType.LiquidLava ||
+                   c == Blocks.CollideType.SwimThrough;
+        }
+
+        static bool SetVisitors(LevelConfig cfg, string val) {
+            try {
+                SurvivalVisitorPolicy pol = (SurvivalVisitorPolicy)Enum.Parse(typeof(SurvivalVisitorPolicy), val, true);
+                if (!Enum.IsDefined(typeof(SurvivalVisitorPolicy), pol)) return false;
+                cfg.SurvivalVisitors = pol;
+                return true;
+            } catch { return false; }
+        }
+
+        static bool SetTheme(LevelConfig cfg, string val) {
+            try {
+                SurvivalTheme theme = (SurvivalTheme)Enum.Parse(typeof(SurvivalTheme), val, true);
+                if (!Enum.IsDefined(typeof(SurvivalTheme), theme)) return false;
+                cfg.SurvivalTheme = theme;
+                return true;
+            } catch { return false; }
+        }
+
+        static bool SetFlag(LevelConfig cfg, string flag, string val) {
+            bool on;
+            if (val.CaselessEq("on")  || val.CaselessEq("true"))  on = true;
+            else if (val.CaselessEq("off") || val.CaselessEq("false")) on = false;
+            else return false;
+
+            switch (flag) {
+                case "enhanced":   cfg.SurvivalEnhanced   = on; break;
+                case "creative":   cfg.SurvivalCreative   = on; break;
+                case "pvp":        cfg.SurvivalPvP        = on; break;
+                case "deathdrops": cfg.SurvivalDeathDrops = on; break;
+            }
+            return true;
+        }
+
+        static void PrintInfo(Player p, Level lvl) {
+            LevelConfig cfg = lvl.Config;
+            p.Message("Survival on {0}&S: mode &b{1}&S, theme &b{2}", lvl.ColoredName, cfg.SurvivalMode, cfg.SurvivalTheme);
+            p.Message("  flags: enhanced &b{0}&S, creative &b{1}&S, pvp &b{2}&S, deathDrops &b{3}",
+                      cfg.SurvivalEnhanced, cfg.SurvivalCreative, cfg.SurvivalPvP, cfg.SurvivalDeathDrops);
+            p.Message("  hazards: death detection &b{0}&S, fall height &b{1}&S, live mobs &b{2}",
+                      cfg.SurvivalDeath, cfg.FallHeight, SurvivalMobs.CountMobs(lvl));
+            p.Message("  non-survival clients: &b{0}&S (change with &T/Survival visitors&S)", cfg.SurvivalVisitors);
+        }
+
+        public override void Help(Player p) {
+            p.Message("&T/Survival &H- shows this level's survival settings");
+            p.Message("&T/Survival [off/classic/indev] &H- sets the survival mode (the per-map gate)");
+            p.Message("&T/Survival theme [normal/hell/paradise/woods/floating]");
+            p.Message("&T/Survival [enhanced/creative/pvp/deathdrops] [on/off] &H- sets a flag");
+            p.Message("&T/Survival visitors [visitor/allow/deny] &H- what stock clients may do here");
+            p.Message("&HChanges apply live to survival-test clients on this level.");
+            p.Message("&HTools: &T/SurvSpawn /Mobs /Spawner /SurvTime /Inventory /Give /Export");
+        }
+    }
+}

@@ -84,7 +84,17 @@ namespace MCGalaxy {
                 float value;
                 if (NumberUtils.TryParseSingle(heightPart, out value))
                     maxJump = (short)(value * 32);
-            }            
+            }
+
+            // On an active survival map, hack permissions come from the level's survival config
+            // rather than the MOTD, resolved from the same per-map creative decision as
+            // SURV_HELLO's creative bit so the two can never disagree (the survival-test client
+            // defers entirely to HackControl in MP). Referee mode keeps its usual escape hatch.
+            if (!p.Game.Referee && SurvivalNet.Active(p, p.level)) {
+                bool creative = p.level.Config.SurvivalCreative;
+                fly = creative; speed = creative; noclip = false;
+                respawn = false; // death/respawn is server-owned (SURV_RESPAWN), not the respawn hack
+            }
             return Packet.HackControl(fly, noclip, speed, respawn, thirdPerson, maxJump);
         }
     }

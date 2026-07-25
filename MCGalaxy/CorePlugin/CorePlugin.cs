@@ -18,6 +18,8 @@
 using System;
 using MCGalaxy.Events;
 using MCGalaxy.Events.EconomyEvents;
+using MCGalaxy.Events.EntityEvents;
+using MCGalaxy.Events.LevelEvents;
 using MCGalaxy.Events.PlayerEvents;
 using MCGalaxy.Events.ServerEvents;
 
@@ -39,6 +41,23 @@ namespace MCGalaxy.Core {
             
             OnEcoTransactionEvent.Register(EcoHandlers.HandleEcoTransaction, Priority.Critical);
             OnModActionEvent.Register(ModActionHandler.HandleModAction, Priority.Critical);
+            OnPluginMessageReceivedEvent.Register(Network.SurvivalNet.HandlePluginMessage, Priority.Critical);
+            OnPlayerDiedEvent.Register(Network.SurvivalNet.OnPlayerDied, Priority.Low);
+            OnPlayerDyingEvent.Register(Network.SurvivalNet.OnPlayerDying, Priority.Low);
+            OnJoinedLevelEvent.Register(Network.SurvivalNet.OnJoinedLevel, Priority.Low);
+            OnBlockChangingEvent.Register(Network.SurvivalInventory.OnBlockChanging, Priority.Low);
+            OnBlockChangedEvent.Register(Network.SurvivalPhysics.OnBlockChanged, Priority.Low);
+            OnEntitySpawnedEvent.Register(Network.SurvivalInventory.OnEntitySpawned, Priority.Low);
+            OnJoiningLevelEvent.Register(Network.SurvivalInventory.OnJoiningLevel, Priority.Low);
+            OnPlayerDisconnectEvent.Register(Network.SurvivalInventory.OnPlayerDisconnect, Priority.Low);
+            OnLevelLoadedEvent.Register(Network.SurvivalBlocks.OnLevelLoaded, Priority.Low);
+            OnLevelLoadedEvent.Register(Network.SurvivalPersistence.OnLevelLoaded, Priority.Low);
+            OnLevelSaveEvent.Register(Network.SurvivalPersistence.OnLevelSave, Priority.Low);
+            OnLevelUnloadEvent.Register(Network.SurvivalPersistence.OnLevelUnload, Priority.Low);
+            OnLevelRenamedEvent.Register(Network.SurvivalPersistence.OnLevelRenamed, Priority.Low);
+            OnLevelCopiedEvent.Register(Network.SurvivalPersistence.OnLevelCopied, Priority.Low);
+            OnLevelDeletedEvent.Register(Network.SurvivalPersistence.OnLevelDeleted, Priority.Low);
+            Network.SurvivalNet.Start();
         }
         
         public override void Unload(bool shutdown) {
@@ -54,6 +73,22 @@ namespace MCGalaxy.Core {
             
             OnEcoTransactionEvent.Unregister(EcoHandlers.HandleEcoTransaction);
             OnModActionEvent.Unregister(ModActionHandler.HandleModAction);
+            OnPluginMessageReceivedEvent.Unregister(Network.SurvivalNet.HandlePluginMessage);
+            OnPlayerDiedEvent.Unregister(Network.SurvivalNet.OnPlayerDied);
+            OnPlayerDyingEvent.Unregister(Network.SurvivalNet.OnPlayerDying);
+            OnJoinedLevelEvent.Unregister(Network.SurvivalNet.OnJoinedLevel);
+            OnBlockChangingEvent.Unregister(Network.SurvivalInventory.OnBlockChanging);
+            OnBlockChangedEvent.Unregister(Network.SurvivalPhysics.OnBlockChanged);
+            OnJoiningLevelEvent.Unregister(Network.SurvivalInventory.OnJoiningLevel);
+            OnPlayerDisconnectEvent.Unregister(Network.SurvivalInventory.OnPlayerDisconnect);
+            OnLevelLoadedEvent.Unregister(Network.SurvivalBlocks.OnLevelLoaded);
+            OnLevelLoadedEvent.Unregister(Network.SurvivalPersistence.OnLevelLoaded);
+            OnLevelSaveEvent.Unregister(Network.SurvivalPersistence.OnLevelSave);
+            OnLevelUnloadEvent.Unregister(Network.SurvivalPersistence.OnLevelUnload);
+            OnLevelRenamedEvent.Unregister(Network.SurvivalPersistence.OnLevelRenamed);
+            OnLevelCopiedEvent.Unregister(Network.SurvivalPersistence.OnLevelCopied);
+            OnLevelDeletedEvent.Unregister(Network.SurvivalPersistence.OnLevelDeleted);
+            Network.SurvivalNet.Stop();
         }
     }
 }

@@ -318,7 +318,33 @@ namespace MCGalaxy
         public bool SurvivalDeath;
         [ConfigBool("Killer blocks", "Survival", true)]
         public bool KillerBlocks = true;
-        
+
+        // SurvivalTest sub-protocol settings (only sent to survival-test clients on this map).
+        // SurvivalMode also acts as the per-map activation gate: Off means the map plays as plain Classic.
+        [ConfigEnum("SurvivalMode", "Survival", SurvivalMode.Off, typeof(SurvivalMode))]
+        public SurvivalMode SurvivalMode = SurvivalMode.Off;
+        [ConfigEnum("SurvivalTheme", "Survival", SurvivalTheme.Normal, typeof(SurvivalTheme))]
+        public SurvivalTheme SurvivalTheme = SurvivalTheme.Normal;
+        // What non-survival clients may do here while SurvivalMode is on (§16 policy)
+        [ConfigEnum("SurvivalVisitors", "Survival", SurvivalVisitorPolicy.Visitor, typeof(SurvivalVisitorPolicy))]
+        public SurvivalVisitorPolicy SurvivalVisitors = SurvivalVisitorPolicy.Visitor;
+        [ConfigBool("SurvivalEnhanced", "Survival", false)]
+        public bool SurvivalEnhanced;
+        [ConfigBool("SurvivalCreative", "Survival", false)]
+        public bool SurvivalCreative;
+        [ConfigBool("SurvivalPvP", "Survival", false)]
+        public bool SurvivalPvP;
+        [ConfigBool("SurvivalDeathDrops", "Survival", true)]
+        public bool SurvivalDeathDrops = true;
+        // Max mobs the survival spawner keeps alive on this map. 0 = auto (scaled
+        // from the map volume). Lower it to thin out a crowded map.
+        [ConfigInt("SurvivalMobCap", "Survival", 0, 0, 256)]
+        public int SurvivalMobCap;
+        [ConfigBool("SurvivalBlockDamage", "Survival", true)]
+        public bool SurvivalBlockDamage = true; // creeper/TNT blasts destroy terrain (off = entity damage only, for protected builds)
+        [ConfigInt("SurvivalTime", "Survival", 0, 0, 23999)]
+        public int SurvivalTime; // per-map day/night clock (0..23999); persists with the level
+
         // Games settings
         [ConfigInt("Likes", "Game", 0)]
         public int Likes;

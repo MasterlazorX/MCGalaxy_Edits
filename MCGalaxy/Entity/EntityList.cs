@@ -184,6 +184,20 @@ namespace MCGalaxy {
 
         readonly byte maxEntityID;
 
+        /// <summary> Gets the entity id this player currently sees the given entity
+        /// as (if it is spawned/visible to them). Used by the survival /Inventory
+        /// panel to tell the viewer which entity to render as the target's
+        /// paperdoll. Returns false when the entity isn't visible to this player
+        /// (e.g. on another level), in which case the panel shows no model. </summary>
+        public bool TryGetVisibleID(Entity e, out byte id) {
+            lock (locker) {
+                VisibleEntity vis;
+                if (visible.TryGetValue(e, out vis)) { id = vis.id; return true; }
+            }
+            id = 0;
+            return false;
+        }
+
         public EntityList(Player p, byte maxEntityID) {
             this.p = p;
             this.maxEntityID = maxEntityID;

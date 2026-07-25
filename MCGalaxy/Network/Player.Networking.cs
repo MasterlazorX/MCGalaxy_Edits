@@ -210,16 +210,22 @@ namespace MCGalaxy
             int count = Session.MaxRawBlock + 1;
             int size  = extBlocks ? 5 : 4;
             byte[] bulk = new byte[count * size];
-            
-            for (int i = 0; i < count; i++) 
+            // A survival "visitor" map is look-only for non-survival (Classic)
+            // clients: tell the client it can neither place nor delete anything,
+            // so it never shows the flicker-then-revert of an edit the survival
+            // block bridge would cancel. Indev survival clients / Allow maps keep
+            // normal permissions (BlocksReadOnly returns false for them).
+            bool readOnly = Network.SurvivalNet.BlocksReadOnly(this);
+
+            for (int i = 0; i < count; i++)
             {
                 BlockID block = Block.FromRaw((BlockID)i);
-                bool place  = group.CanPlace[block] && level.CanPlace;
+                bool place  = !readOnly && group.CanPlace[block] && level.CanPlace;
                 // NOTE: If you can't delete air, then you're no longer able to place blocks
                 // (see ClassiCube client #815)
                 // TODO: Maybe better solution than this?
-                bool delete = group.CanDelete[block] && (level.CanDelete || i == Block.Air);
-                
+                bool delete = !readOnly && group.CanDelete[block] && (level.CanDelete || i == Block.Air);
+
                 // Placing air is the same as deleting existing block at that position in the world
                 if (block == Block.Air) place &= delete;
                 Packet.WriteBlockPermission((BlockID)i, place, delete, extBlocks, bulk, i * size);

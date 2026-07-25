@@ -1,0 +1,1974 @@
+# Survival-support session notes
+
+**Branch:** `survival-support`
+**Date:** 2026-07-15
+**Scope:** Server-side *foundation* for the ClassiCube "survival-test" client.
+
+Companion to the client-side docs in the ClassiCube fork:
+`doc/survival-handshake.md` and `doc/networking-plan.md`
+(branch `survival-test`). The wire contract is `src/SurvivalNet.h` in that repo.
+
+---
+
+## Goal
+
+Let survival-test ClassiCube clients connect to MCGalaxy, negotiate a survival
+capability, and receive a per-map survival handshake — **without** changing
+anything for stock Classic / CPE-only clients, who must keep connecting and
+playing exactly as before.
+
+This landed the **foundation only**, deliberately mirroring what the client
+foundation implements: capability negotiation + the handshake send path +
+inbound receive/validate/log. The actual state appliers (mobs, inventory,
+drops, health, day/night) and the client's simulation "mode-flip" are
+**deferred** — see `roadmap.md`. Every message id is reserved up front so the
+remaining work is fill-in against a fixed contract, not new protocol design.
+
+---
+
+## The one idea: capability vs. activation are two layers
+
+| Layer | Scope | Set by | Why |
+|---|---|---|---|
+| **Capability** (`hasSurvival`) | whole connection | CPE `SurvivalTest` ext, negotiated once at login | "Can this client speak survival?" |
+| **Activation** (`SurvivalMode`) | per map | level config, sent via `SURV_HELLO` | "Is *this* map survival?" |
+
+MCGalaxy is a **multi-level** server: a player `/goto`s between a plain Classic
+build map and a survival map on the *same connection*. The CPE handshake fires
+once and cannot re-fire per map, so it can only answer the capability question.
+Whether a given map is survival changes on every level switch, so it rides a
+per-map message. Folding both into one flag would make it impossible to turn
+survival on for one level and off for the next.
+
+Consequence: survival traffic is sent **iff** `hasSurvival && SurvivalMode != Off`.
+
+---
+
+## Transport
+
+Survival messages ride the existing CPE **PluginMessages** extension
+(opcode `0x35`) on a single channel:
+
+```
+SURVNET_CHANNEL = 0xB0
+```
+
+Each message is `[id:1][fields...]` inside the fixed 64-byte PluginMessage
+payload (66 bytes on the wire: `[0x35][channel][payload:64]`). Multi-byte
+fields are big-endian; unused tail bytes are zero and ignored. MCGalaxy already
+had `Packet.PluginMessage(...)` and `OnPluginMessageReceivedEvent`, so no new
+opcode or framing was needed — this is the sanctioned escape hatch for custom
+payloads over a known, negotiated opcode.
+
+`0xB0` sits high on purpose to avoid clashing with a channel a plugin might
+casually pick. **Do not reuse `0xB0` for anything else.**
+
+---
+
+## Changes, file by file
+
+| File | Change |
+|---|---|
+| `MCGalaxy/Network/CPESupport.cs` | New `CpeExt.SurvivalTest` constant; advertise `SurvivalTest` v1 in `CpeExtension.All` so the server both offers it and recognises the client's `ExtEntry`. |
+| `MCGalaxy/Network/IGameSession.cs` | New per-session fast-path flag `public bool hasSurvival;`. |
+| `MCGalaxy/Network/ClassicProtocol.cs` | In `AddExtension`, set `hasSurvival = true` when the client negotiates `SurvivalTest`. |
+| `MCGalaxy/Levels/LevelConfig.cs` | Per-map survival options (see "Config" below). `SurvivalMode` doubles as the activation gate. |
+| `MCGalaxy/Network/SurvivalNet.cs` | **New.** The whole survival protocol surface: channel + message-id contract, `SURV_HELLO` / `SURV_WORLDINFO` builders, and the inbound dispatch (bounds-checked, validated, logged; appliers deferred). |
+| `MCGalaxy/CorePlugin/MiscHandlers.cs` | `HandleSentMap` calls `SurvivalNet.SendHandshake(p, level)` alongside the other per-map CPE sends (textures, block permissions). |
+| `MCGalaxy/CorePlugin/CorePlugin.cs` | Register/unregister `SurvivalNet.HandlePluginMessage` on `OnPluginMessageReceivedEvent`. |
+| `MCGalaxy/CorePlugin/ConnectHandler.cs` | On connect, call `SurvivalNet.AnnounceClient(p)` — a **test aid** (see below). |
+| `MCGalaxy/MCGalaxy_.csproj` | Add `Network\SurvivalNet.cs` to the explicit compile list (the classic msbuild project lists every file; the SDK/standalone projects glob). |
+
+### Test aid: connect announcement
+
+`SurvivalNet.AnnounceClient(p)` runs from `ConnectHandler.HandleConnect` (which
+fires after CPE negotiation completes, so `hasSurvival` is already known). It
+tells the joining player, and logs to the server console, whether the client was
+detected as survival or normal:
+
+- survival: `Connected via the survival client (handshake verified)`
+- normal: `Connected via a normal client (no survival handshake)`
+
+This is purely diagnostic — it is the only place that announces detection, so it
+is trivial to gate behind a config flag or remove once wire testing is done.
+
+### Where the handshake is sent
+
+`SendRawMapCore` sends the level, then fires `OnSentMapEvent` →
+`MiscHandlers.HandleSentMap`, which is exactly where per-map CPE state
+(textures, block permissions) is already pushed. The survival handshake is sent
+there, so it goes out right after the level on every join and every `/goto`.
+The send is a no-op unless `hasSurvival && SurvivalMode != Off`, so Classic play
+is untouched.
+
+---
+
+## Wire format (v1)
+
+### `SURV_HELLO` (0x01) — server → client
+| Off | Size | Field | Source |
+|---|---|---|---|
+| 0 | 1 | id = 0x01 | |
+| 1 | 1 | mode | `SurvivalMode` (0 off / 1 classic / 2 indev) |
+| 2 | 1 | flags | bit0 enhanced, bit1 creative, bit2 pvp, bit3 deathDrops |
+| 3 | 1 | protoVer | `SurvivalNet.ProtoVersion` (1) |
+
+### `SURV_WORLDINFO` (0x02) — server → client
+v2 layout (SurvivalTest **ext version 2** — sent when the client negotiated ≥ 2):
+| Off | Size | Field | Source |
+|---|---|---|---|
+| 0 | 1 | id = 0x02 | |
+| 1 | 2 | groundLevel (i16 BE) | `EdgeLevel + SidesOffset` |
+| 3 | 2 | waterLevel (i16 BE) | `EdgeLevel` (map default = height/2) |
+| 5 | 1 | fluid id | `HorizonBlock` (raw) |
+| 6 | 1 | theme | `SurvivalTheme` |
+| 7 | 1 | flags | bit0 floating (`theme == Floating`) |
+| 8 | 1 | sides block | `EdgeBlock` (raw; the "bedrock" sides) |
+| 9 | 1 | edge block | `HorizonBlock` (raw; the horizon water) |
+
+The i16 promotion exists because floating maps genuinely use groundLevel −128
+/ waterLevel −127 (hell −16), which v1's u8 fields clamped to 0 — visible as
+a spurious dirt horizon plane under floating islands (user-diagnosed). Both
+sides branch on the **negotiated** ext version, so a v1 peer still exchanges
+the old u8 layout (offsets 1..7, one byte per level). The remaining
+`.mclevel` env set stays deferred; env colours already reach survival clients
+via the stock CPE `EnvColors` path (`SendCurrentEnv`), so they are not
+duplicated in `SURV_WORLDINFO`.
+
+### `SURV_TIME` (0x04) — server → client
+| Off | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | id = 0x04 | |
+| 1 | 2 | worldTime | big-endian u16; 0 sunrise, 6000 noon, 12000 sunset, 18000 midnight |
+| 3 | 1 | skyLight | 0..15, eased across dawn/dusk |
+
+The server owns the day/night cycle (the client must not run it locally in MP —
+networking-plan §15.2/§17.4). A single clock is advanced on `Server.MainScheduler`
+(20 world ticks/second → a 20-minute day) and pushed to every survival player once
+per second, plus once at handshake to seed the client. The clock is shared across
+survival maps in v1; a per-map clock (each Indev world keeps its own `TimeOfDay`)
+is a future refinement. Lifecycle: `SurvivalNet.Start()`/`Stop()` from `CorePlugin`.
+
+### `SURV_HEALTH` (0x03) — server → client
+| Off | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 1 | id = 0x03 | |
+| 1 | 1 | health | 0..`MAX_HEALTH` (20 = 10 hearts) |
+| 2 | 4 | score | big-endian i32 |
+
+The server owns health and score (stored in `Player.Extras`, so they follow the
+player across a `/goto` within one session). `SURV_HEALTH` is sent at handshake and
+whenever `SetHealth` changes it. Damage sources are deferred, so today health only
+changes on respawn.
+
+### `SURV_RESPAWN` (0x87) — client → server *(handled)*
+The client's respawn intent, only honoured while **dead** (health 0): the server
+clears the dwell, repositions to the map spawn (`PlayerActions.Respawn`), then
+restores full health — the health rise is what removes the client's Game Over
+screen. A respawn intent while alive is rejected (it would otherwise be a free
+teleport to spawn) and answered with an authoritative `SURV_HEALTH` echo.
+
+### Damage / death bridge — death-screen dwell
+`SurvivalNet.OnPlayerDied` is registered on `OnPlayerDiedEvent`, which fires inside
+`Player.HandleDeath` — the single choke point for **all** MCGalaxy deaths (fall,
+drown, lava, killer blocks, weapons, `/kill`, …), so every hazard MCGalaxy already
+detects (respecting the level's `FallHeight` / `DrownTime` / `KillerBlocks` config)
+flows through. For a survival player it **holds health at 0**: the genuine flow is
+
+1. death → `SURV_HEALTH(0)` — client shows the death camera + Game Over screen;
+2. `HandleDeath` **skips its auto-respawn** while `SurvivalNet.HoldsDeathScreen`
+   (survival-active and dead), and `OnPlayerDying` cancels repeat deaths so the
+   killing hazard ticking at the death spot (lava, drowning) can't spam;
+3. revive on the client's `SURV_RESPAWN` intent — or a **30 s safety timeout**
+   (counted down by the `SURV_TIME` scheduler tick) so nobody is stranded;
+4. revive = reposition to spawn, then `SURV_HEALTH(20)` (the rise revives the
+   client). A map change while dead restores full health (`OnJoinedLevel`) since
+   the client tears down its per-map death state.
+
+Graduated Indev damage (partial HP from fall distance, drowning/fire ticks)
+remains the future refinement; MCGalaxy still only detects lethal hazards.
+
+**Map-spawn caveat (found in live testing):** MCGalaxy's default generated spawn
+sits ~16 blocks above the ground; with `/map death on` and the default
+`FallHeight` 9 every (re)spawn is a lethal fall → an infinite death loop (stock
+MCGalaxy loops identically, just faster). Until the phase-1 generator places
+spawns, survival maps need a grounded spawn or a raised `/map fall` threshold.
+
+### Hack permissions follow the survival config
+`Hacks.MakeHackControl` overrides the MOTD-derived flags on an active survival
+map: fly/speed come from the level's `SurvivalCreative` (the *same* decision as
+HELLO's creative bit, so they can never disagree — the survival-test client
+defers entirely to `HackControl` in MP), noclip is off, and the respawn hack is
+off (death/respawn is server-owned via `SURV_RESPAWN`). Referee mode keeps its
+usual all-hacks escape hatch, and the server-side `Hacks.CanUse*` checks read
+the same override. `/Survival` re-sends motd+hacks so live config changes apply.
+
+### Phase 3 — mob streaming (`SurvivalMobs.cs`)
+
+The server runs the whole mob simulation and streams it; the client renders a
+puppet pool (its `st_mobs[]`) fed by these messages. The AI/physics is a C#
+port of the ClassiCube fork's verified c0.30/Indev mob sim (BasicAI /
+BasicAttackAI / EntityMob lineage), ticked at 20 TPS on a dedicated scheduler.
+Only levels with players are simulated.
+
+| msg | dir | layout |
+|---|---|---|
+| `SURV_MOB_SPAWN` 0x10 | S→C | `[id:u16][type][pos:3×i16 fixed(×32)][yaw:u8][pitch:u8][health][flags(b0 helmet, b1 armor, b2 fur)]` |
+| `SURV_MOB_MOVE` 0x11 | S→C | `[id:u16][pos:3×i16][yaw][pitch]` — sent only when the quantised pose changed |
+| `SURV_MOB_STATE` 0x12 | S→C | `[id:u16][health][flags(b0 hurt, b1 fuse, b2 onFire, b3 graze, b4 dead, b5 noFur)]` — sent on change; the hurt bit is a one-tick edge |
+| `SURV_MOB_DESPAWN` 0x13 | S→C | `[id:u16][reason(0 despawn / 1 death)]` |
+| `SURV_ATTACK` 0x80 | C→S | `[targetKind(0 mob)][targetId:u16]` — reach-validated (6 blocks incl. latency pad), applies melee + knockback + aggro; sheep shear rules per mode |
+
+Simulated per mob: wander/chase/attack AI (per-type: creeper 3/7-block fuse →
+30-tick blast, spider light-flee + pounce, zombie 5 / default 2 Indev melee,
+c0.30 damage rolls + creeper headbutt self-damage), `Mob.travel` physics with
+axis-clipped AABB collision against level blocks, fall damage, drowning,
+lava/fire, sheep grazing (grass→dirt through the normal block path, so every
+client sees it), undead sunburn, the c0.30 spawner (initial population + capped
+top-up, min-of-two-uniforms Y bias, 16-block spawn-point exclusion) and the
+600-tick/1-in-800 despawn roll. Players take graduated damage (`DamagePlayer`:
+the same dual-threshold invulnerability window as mobs, ticked at 20 TPS);
+lethal hits route through `HandleDeath`, so the death-screen dwell applies.
+Kill credit awards the c0.30 death scores in Classic mode only.
+
+Test aids: `/Survival spawn [zombie/skeleton/pig/creeper/spider/sheep]` (at
+your feet, ground-snapped) and `/Survival mobs` (live count).
+
+**Live-testing round 2 (user reports) — spawner + boundary fixes:**
+- *"Mobs spawned once when I entered, then never again"*: the top-up spawner
+  rolled map-wide random positions with a 256 cap (the client's puppet-pool
+  limit), so on big maps the cap saturated with mobs nobody ever met. The
+  top-up spawner now picks candidates in a ring **16–48 blocks around a
+  random online survival player** (the Alpha+ spawners made the same change
+  for the same reason); the c0.30 initial population stays map-wide. `area`
+  floors at 1 so sub-64³ maps spawn at all.
+- *"Mobs get pushed out of the map boundaries"*: `BlockAt` clamps
+  out-of-bounds reads to the edge column (genuine `getBlockId` semantics),
+  which reads as open air above ground — knockback punted mobs clean off the
+  map. The map edge is now a wall for mob collision.
+- Debug/test surface (`/Survival ...`): `time` (show or set the world clock —
+  `day/noon/sunset/night/midnight/<ticks>` — pushed to all survival players
+  instantly), `spawner` (tick/roll/attempt/spawn counters with per-reason
+  rejection tallies + clock state), `mobs` (nearest live mobs with id/pos/
+  distance/HP/target), `inv [player]` (server-side slot + cursor dump),
+  `spawn [type]` (force-spawn at your feet). Natural spawns log at Debug
+  level. The mob tick is wrapped in a logging try/catch.
+
+**Live-testing round 3 — visitors play classic, untouched:**
+- *"Classic players shouldn't die from falls"*: `/Survival` auto-enables
+  MCGalaxy's per-level `SurvivalDeath`, whose fall/drown detection applied to
+  every client on the level. On survival-mode maps hazard detection is now
+  gated to survival-capable sessions — stock/plain-CPE visitors walk the map
+  unharmed (mobs already ignore them: the watcher filter only targets
+  survival players). Plain maps using `/map death on` keep the stock
+  behaviour for everyone.
+- Stock-client building on survival maps was verified working by a synthetic
+  no-CPE protocol client (place + delete accepted on the wire); a classic
+  player unable to build is most likely standard realm/level build
+  permissions (`/os allow`, perbuild), not survival code.
+
+### Genuine Indev player damage (`SurvivalHazards.cs`) — the death system, properly
+
+**The problem (user-identified):** player hazards rode MCGalaxy's binary
+`SurvivalDeath` system (lethal-or-nothing fall/drown), so health only ever
+went 20 → 0 — graduated Indev damage never happened and the death system
+didn't sync.
+
+**Now:** a 20 TPS per-player hazard tick (on the `SurvivalMobs` scheduler,
+next to the combat window countdown) simulates the genuine rules from the
+same position stream `PlayerPhysics` consumed, all applied through
+`DamagePlayer` so the invulnerability window + death-screen dwell hold:
+- **fall**: peak-Y tracking, `ceil(dist − 3)` on landing (liquid cushions;
+  teleports/respawns detected by the >8-block single-tick jump and never
+  counted) — verified live: a 12-block fall dealt exactly 9 (20 → 11 HP),
+  a 23-block fall killed into the dwell
+- **drowning**: Indev's air counter with the −20 underflow timer (2 HP,
+  first hit 320 ticks under, then every 20); c0.30's empty-air cadence
+- **lava**: 10/tick through the window; **fire** (Indev): lava arms the
+  600-tick burn, 1 HP per 20 ticks, water fizzes it out (fire-block contact
+  waits on phase 1's custom blocks; no on-fire overlay flag exists for
+  players yet — reserved-bit/`SURV_PLAYER_STATE` handoff item)
+- **void**: 4/tick below y = −16 (floating maps)
+
+The classic binary system is now fully off on survival-mode maps (visitors
+untouched — re-verified with the synthetic stock client); plain maps using
+`/map death on` keep stock behaviour. `OnPlayerDied` remains the bridge for
+killer blocks and `/kill` only. Damage ticks log at Debug level.
+
+**Also open from live testing:** the "classic players can't build" report —
+wire-level evidence says stock building works (synthetic client transcript);
+prime suspect is `/os` realm build permissions (`/os allow`). Awaiting the
+exact client-side message before treating it as a survival bug.
+
+### Visitor policy — survival worlds are survival-client-only (§16)
+
+The networking-plan §16 invariant is now enforced: *a client that has not
+negotiated `SurvivalTest` must never place or break blocks in a survival map*
+(it bypasses tools, consumption, drops and physics — its edits would corrupt
+the authoritative world). New per-level `SurvivalVisitors` policy
+(`/Survival visitors ...`), consulted only while `SurvivalMode` is on:
+
+- **visitor** (default) — non-survival clients may join and look; their block
+  changes are cancelled + reverted, with a rate-limited explanation.
+- **allow** — they build normally (owner's choice to accept desync).
+- **deny** — they may not even join the map (`OnJoiningLevelEvent`).
+
+Creative-flag maps stay free-build for everyone (no sim to corrupt), referees
+keep their staff escape hatch, and draw commands are unaffected (the gate
+covers manual changes). Verified with the synthetic stock client: place +
+delete cancelled with the policy message; the survival client's mine→pickup
+loop unaffected.
+
+### Fallbacks for non-survival clients (§21 env + §15.1 mob mirror) + spawner pace
+
+`SurvivalFallbacks.cs` — strictly per-session views for clients that did NOT
+negotiate SurvivalTest, on survival maps (survival clients keep the genuine
+sub-protocol streams):
+- **Day/night via EnvColors (§21):** the survival clock scales the level's
+  sky/cloud/fog/shadow/sunlight colours (quadratic ease, floored at 0.15 so
+  night stays readable), sent only when the eased sky-light level changes.
+  Wire-verified: noon = the level's own colours, midnight = the darkened set;
+  colours restore on `/Survival off` and any normal map join.
+- **Mob mirror (§15.1 fallback):** the level's mobs appear to spectators as
+  plain Classic entities with CPE ChangeModel set to the mob's model (stock
+  ClassiCube ships all six c0.30 models; sheared sheep use `sheep_nofur`;
+  pre-CPE clients see humanoids). Entity ids allocate 254 downward (far above
+  MCGalaxy's low player/bot range), up to 48 mobs per viewer, positions at
+  **10 Hz** - the same cadence MCGalaxy relays player positions at, so stock
+  clients' own entity interpolation smooths mobs exactly like other players
+  (raised from the original 5 Hz after user feedback). No bespoke animations
+  (hurt flash, swell) - visible + moving is the goal. Wire-verified: 48
+  models + a ~10 Hz-per-mob teleport stream.
+- **The sim stays alive for classic-only maps:** the mob tick runs whenever
+  ANY player is on the level - survival clients remain the only AI targets,
+  hazard tickees and puppet-stream receivers, but wandering/grazing/physics,
+  the despawn "is anyone near" check, and the spawner's player-ring centres
+  all count classic spectators too. Previously the sim required a survival
+  client, so mobs froze mid-step the moment the last one left even with
+  spectators watching (user report). Mobs still freeze on maps with nobody
+  on them at all (the server-cost deviation). Verified live: with only a
+  stock client on the map, the spawner kept placing and 48 mirrored mobs
+  streamed at 10 Hz.
+
+**Spawner pace fix ("awfully slow"):** the old attempt rolled a fully random
+Y (~97% landed underground/in air) and pre-rolled the type (the light rule
+then rejected most of the rest). Now each attempt scans its column for every
+standable spot (surface and caves), picks one uniformly, and the spot's
+darkness picks the type pool (dark→monsters, lit→animals - the same Indev
+outcome with none of the waste). Attempts per roll dropped 10 → 2 since they
+nearly always land. Measured: 29 spawns in the first ~6 s of a fresh map vs
+3 per 10 s before, zero rejections. The population cap (area×20, ≤256)
+provides the equilibrium.
+
+**V1 deviations (deliberate, revisit later):**
+- Indev's A* creature pathfinding is not ported — both modes use the c0.30
+  direct-steer chase (mobs bump into obstacles rather than pathing around).
+- Skeletons melee like zombies: arrows need their own wire messages (phase 5).
+- No server-side light engine: "brightness" (darkness spawn rule, spider
+  light-flee, monster fast-aging, sunburn) = sky-exposure × day/night level.
+- Explosions damage players (approximate linear falloff) but never blocks —
+  most MCGalaxy maps are protected builds; block damage needs opt-in config.
+- No drops (phase 5): mob deaths and shears yield nothing yet.
+- Mobs freeze on maps with no players at all (any player - survival or
+  classic - keeps the sim running) and do not persist across restarts.
+- Spawn clusters trimmed to 1–3 (genuine rolls up to 9) to tame populations.
+
+### Phase 4 (first slice) — the server-owned inventory (`SurvivalInventory.cs`)
+
+The server owns every inventory slot and the cursor; the client renders the
+streamed view and sends click intents (echo-only, per the client plan's §27:
+TCP ordering makes the server a simple deterministic sequencer — no Beta-style
+transaction dance). Slot layout mirrors the client's `SurvivalTest.h` exactly:
+0..35 main (0..8 hotbar), 36..44 craft, 45..98 container (reserved), 99..102
+armor. State lives in `Player.Extras`, so it follows a `/goto` within a session.
+
+| msg | dir | layout |
+|---|---|---|
+| `SURV_INV_FULL` 0x20 | S→C | `[baseSlot][runLen]` then runLen × `{id:u16, count:u8, dmg:i16}` (≤12/frame; main+craft then armor at handshake) |
+| `SURV_INV_SLOT` 0x21 | S→C | `[slot][id:u16][count][dmg:i16]` — the echo for every mutation |
+| `SURV_CURSOR` 0x25 | S→C | `[id:u16][count][dmg:i16]` — the server-owned held stack |
+| `SURV_HELD_SLOT` 0x85 | C→S | `[hotbarIndex]` — tracked for place-consume preference |
+| `SURV_SLOT_CLICK` 0x82 | C→S | `[slotIdx:u16][button]` — the GuiContainer click model (pickup all/half, merge to max stack, right-place-one, swap) runs on server state; container range rejected until streamed; armor accepts nothing yet |
+| `SURV_RESULT_CLICK` 0x83 | C→S | validated no-op (no server-side recipes yet) |
+| `SURV_CONT_CLOSE` 0x84 | C→S | refunds cursor + craft grid into the inventory (hotbar-first `storePartialItemStack` order), full resync; also closes the open container view |
+| `SURV_USE_ITEM` 0x81 | C→S | `[heldSlot][x:i16][y:i16][z:i16][face]` — v1 opens container GUIs (reach-validated; chest lid-block rule; large-chest pairing); eating/tools land with items |
+| `SURV_CONT_OPEN` 0x22 | S→C | `[kind][slotCount]` — 0 force-close, 1 chest(27), 2 furnace(3), 3 large chest(54), 4 workbench (3×3 over the streamed craft slots) |
+| `SURV_CONT_SLOT` 0x23 | S→C | `[slot(0..53 container-relative)][id:u16][count][dmg:i16]` — client zeroes on OPEN, only occupied slots streamed, click echoes go to every viewer of the entity |
+| `SURV_FURN_PROG` 0x24 | S→C | `[burn(0..12)][cook(0..24)]` pre-scaled; 0 until item smelting exists |
+
+**Containers** (rest of the phase-4 GUI, landed): session-scoped tile
+entities keyed by level+position (chest 27 / furnace 3 slots), lazily
+created on first open; genuine large-chest pairing (the -X/-Z neighbour is
+the upper 27 slots) and the BlockChest lid-block rule; the GuiContainer
+click model resolves slots 45..98 through the player's open view. Mining a
+container discards its tile entity and force-closes any viewer's screen
+(CONT_OPEN kind 0). Not opened on creative maps (client-local palette
+there). V1 deviations: contents vanish on destruction (scatter needs
+phase-5 drops), no restart persistence, no smelting/recipes until items.
+
+**The block bridge** (`OnBlockChangingEvent`): survival players' manual edits
+feed the inventory. Mining adds the broken classic block (raw ≤ 49; liquids
+yield nothing) straight to the inventory — the drop-entity hop is phase 5;
+placing consumes one (held slot preferred) or is cancelled + `RevertBlock` +
+resync when the player doesn't have the block. Dead players' edits are
+cancelled. Creative-flag maps build free (no pickup/consume). *(Phase 1
+extended the bridge past raw 49 to the Indev block set on Indev maps — see
+the `SurvivalBlocks.cs` section below.)*
+
+**V1 deviations:** no crafting recipes, no containers/furnace streaming
+(0x22–0x24), no `USE_ITEM`, flat max stacks (99 c0.30 / 64 Indev — per-id
+tables land with item definitions), armor slots accept nothing, death keeps
+the inventory until phase-5 drops honour `SurvivalDeathDrops`, no persistence
+across restarts (session-scoped like health).
+
+### Phase 1 (step 1) — the Indev block set (`SurvivalBlocks.cs`)
+
+Indev-mode survival maps now carry the full Indev block set as **level-scoped
+BlockDefinitions** — a 1:1 port of the client fork's `IndevBlocks_Define` table
+(`src/IndevTest.c`): torch 50, fire 51, water/lava source 52/53, chest 54,
+gears 55, diamond ore/block 56/57, workbench 58, furnace 61 / lit 62, chest
+facing views 71–74, furnace views 75–78 idle / 79–82 lit, farmland 83 / wet 84
+(15/16 tall), crop stages 85–92, wall torches 94–97. Names, per-face tiles
+(fronts land on the −Z/+Z/−X/+X face matching Indev metadata 2–5), collide,
+sounds, lamp brightness (torch 14, fire 15, lit furnace 14) and classic
+fallback ids all match the client. **No new wire messages and no ext bump** —
+this rides stock CPE `DefineBlock`/`DefineBlockExt v2`/`UndefineBlock`.
+
+The id/metadata model (networking-plan §18): the level array stores the
+client's flattened **view ids** (each visible metadata state = its own id);
+`SurvivalBlocks.ToIndev/FromIndev/DataMeta/ApplyDataMeta` are the ported
+bijection between view ids and genuine `(id, Data nibble)` pairs — the
+authoritative encoding for the upcoming map generator (step 2) and `.mclevel`
+I/O (step 3).
+
+Lifecycle: `SurvivalBlocks.Sync(lvl)` applies the set when
+`SurvivalMode == Indev` and strips it otherwise — called from
+`OnLevelLoadedEvent`, `SurvivalNet.Start` (already-loaded levels) and
+`SurvivalNet.RefreshLevel` (live `/Survival` flips, verified: 37 undefines on
+`off`, full re-apply on `indev`). The defs are **runtime-only** (never saved to
+`blockdefs/lvl_*.json`); removal only strips reference-equal instances, so a
+map owner's own `/lb` override at the same id survives. Pre-BlockDefs clients
+get the fallback ids and a map reload on flips.
+
+Who sees what: the **fork client** redefines these blocks locally on
+`SURV_HELLO(mode=Indev)` (its `IndevTest_NetworkModeChanged` →
+`IndevBlocks_Define` — genuine torch stick model, fire mesh, wall-torch tilt),
+overriding the server defs, so no client change was needed. **Stock CPE
+clients** render the server defs (sprite torches/crops, textured cubes).
+**Pre-CPE clients** see fallbacks (torch→sapling, chest→crate, furnace→cobble,
+lit→magma, farmland→dirt, diamond ore/block→iron ore/block, fire→CPE fire).
+Tile indices 96+ target the fork's patched texture pack; a plain default pack
+shows placeholder art there until §19 texture-pack serving lands.
+
+The block bridge now accepts the set on Indev maps: mining a view id yields
+its normalized pickup (`PickupFor` — facing views → canonical chest/furnace,
+lit furnace → idle, wall torch → torch, farmland → dirt, crops/fire/sources →
+nothing) and placing consumes `PlaceCost` (canonical id; unowned → revert).
+**V1 deviations:** diamond ore drops itself (no diamond item yet), crops drop
+nothing (seeds are an item), placement always produces the canonical facing
+(placement-rotation + `SURV_BLOCKMETA` come later in phase 1), fire/sources
+are obtainable only via `/Survival give`.
+
+Debug aid: `/Survival give [block] <count> <player>` puts blocks straight into
+a survival player's server inventory (names resolve against the level's custom
+defs, so `torch`, `workbench`, `diamondore` work; console must name a player).
+
+Verified live (fork client + synthetic BlockDefs client + console): all 37
+defs stream on join with correct fields; give → INV echo (genuine item icons +
+held torch model); in-reach place consumed a torch (x4→x3) and breaking it
+picked it back up (x3→x4); placing an unowned lit furnace reverted without
+consuming; a reach-rejected far place consumed nothing; classic dirt mining
+still yields its pickup.
+
+### Phase 1 (step 2) — the Indev world generator (`Generator/IndevGenerator.cs`)
+
+A C# port of the client fork's `src/IndevGen.c` - itself a
+statement-for-statement, oracle-verified port of in-20100223's
+`LevelGenerator.java`. The load-bearing details the client's parity work
+identified are preserved: java.util.Random's exact LCG with its **three
+streams** (the generator stream; `World.random` recreated at the end of
+Assembling with one burned `nextInt()`; findSpawn's own fresh Random),
+MathHelper's 65536-entry float sine table built from double `Math.Sin`,
+double-vs-float expression precision, and the `WR_*` World replica (clamped
+out-of-range reads, interior-only `setBlock`, falling sand, still-liquid
+wake-ups, flower pops that burn 4 `World.random` draws, the Assembling y-skip
+quirk). Same seed/theme/type/size should reproduce the client generator's
+output block-for-block (not re-verified against the Java oracle server-side -
+the C port it mirrors is the verified one).
+
+Usage: `/NewLvl <name> <w> <h> <l> indev [theme] [type] [seed]` - themes
+`normal/hell/paradise/woods`, types `inland/island/floating/flat`. Width and
+length must be powers of two, height ≥ 64 (the genuine size grid). Pipeline:
+raise/erode heightmap (distorted noise) → soil → surface grow → cave worms →
+coal/iron/gold/diamond ore worms → lava pockets → theme springs → edge-water
+flood → assemble floor/borders → light+heightmap snapshot → find spawn →
+generate the 7×5×7 spawn house (obsidian slab, doorway, **wall torches 94/95
+mounted like genuine BlockTorch.onBlockAdded**, stored as extended custom
+blocks) → grass → trees (woods ×51) → flowers/mushrooms (paradise ×10).
+
+Generated maps come out survival-ready: `SurvivalMode=Indev`,
+`SurvivalDeath=true`, the Indev block set applied, spawn inside the house
+(yaw 180), and the theme environment in the level config - sky/fog/cloud
+colours from the genuine constants, `EdgeLevel`=waterLevel,
+`SidesOffset`=groundLevel−waterLevel, `CloudsHeight` (−16 on floating),
+`HorizonBlock` water/lava + `EdgeBlock` grass/dirt as the OOB horizon-plane
+approximation - which is exactly what `SURV_WORLDINFO` reads, so the client
+now gets genuine per-map ground/water/fluid values.
+
+Verified live: six worlds (normal inland / island / floating / hell /
+paradise island / woods) generated in ~0.2-0.3 s each at 128×64×128;
+block-histogram signatures match each theme (island ~6% ocean + beaches,
+hell zero water + lava edge flood + the grass-on-beaches quirk, paradise ×10
+flowers + high beaches, woods ×10 logs, floating 96% air multi-layer islands,
+diamond ore present, exactly two extended-block wall torches at spawn±2);
+fork-client joins show genuine-looking terrain with the mob sim populating
+it, the spawn inside the house, and hell's dark red ambience.
+
+Deviations (documented): per-theme sky brightness (hell 7, woods 12,
+paradise 16 = always-day) only shapes the generation-time light snapshot and
+env colours - the live server light model still uses the shared day/night
+clock; `SurvivalTheme.Floating` folds the floating TYPE into the theme enum,
+so a floating hell map's config reads Floating (world content is still hell);
+findSpawn's 1M-attempt sky fallback drops to the sampled surface column
+instead (same graceful deviation as the client port).
+
+**Follow-up fix (same session): `SURV_WORLDINFO` v2.** Floating worlds
+exposed that the v1 u8 ground/water fields clamp the genuine negative levels
+to 0 (a dirt horizon plane appeared under the islands). The SurvivalTest CPE
+ext is now **version 2** on both sides and `SURV_WORLDINFO` carries the
+levels as i16 BE (see the wire table above); the env config the generator
+writes (EdgeLevel −127 etc.) was verified correct on disk - the wire was the
+only truncation. Verified live: the floating map now shows open sky + the
+genuine below-island clouds (CloudsHeight −16) instead of the dirt plane.
+Also fixed while there (client): `Server.SupportsSurvival` was never reset in
+`Server_ResetState` on reconnect (despite a comment claiming it was) - both
+it and the new `SurvivalExtVersion` now reset.
+
+### `.mclevel` import/export (phase-1 step 3) + the furnace output guard
+
+**Furnace output is take-only** (user-reported): `HandleSlotClick` refuses any
+click on furnace container slot 2 while the cursor holds a stack (placing AND
+merging), like genuine `SlotFurnace`; the client's singleplayer click path
+carries the same rule. Taking from the output is the unchanged cursor-empty
+pickup path. Verified live: with the furnace open, a click on the output with
+coal held left the slot empty; the next click dropped the coal into the fuel
+slot normally.
+
+**`.mclevel` I/O** (`McLevelImporter` extended + new `McLevelExporter`,
+`Levels/IO/`): the server now round-trips Indev's native format through the
+same `SurvivalBlocks` bijection the generator uses.
+
+- *Import* (`/Import`, files in `extra/import/`): after the stock
+  Blocks/Spawn/env read, genuine ids ≥ 50 expand through
+  `FromIndev` + the `Data` array's metadata **high nibble** (`ApplyDataMeta`)
+  into the view-id space - chest/furnace facings 71-82, farmland 83/84, crop
+  stages 85-92, wall torches 94-97 - and ids > 65 become extended custom
+  blocks (`ConvertCustom`). Imported maps come out survival-ready
+  (`SurvivalMode=Indev`, `SurvivalDeath=true`); the theme is recognised from
+  the genuine sky colours (below-zero water level ⇒ Floating), and the OOB
+  horizon planes normalise exactly like the generator (still fluid,
+  grass/dirt sides).
+- *Export* (`/Survival export <name> <level>` → `extra/import/<name>.mclevel`,
+  immediately `/Import`-able): hand-rolled gzip NBT writer emitting the
+  client's `MCLevel_Save` schema - `About`, the `Environment` set (colours,
+  signed `Surrounding*Height`, always-grass `SurroundingGroundType`, genuine
+  fluid id, `TimeOfDay` from the global clock), `Map` with
+  `Blocks`=`ToIndev(view)` and `Data`=`DataMeta(view)<<4 | 0x0F` (full light),
+  a minimal `LocalPlayer` entity at the spawn (genuine Indev expects one),
+  and chest/furnace `TileEntities` with live contents via
+  `SurvivalInventory.SnapshotContainers` - one entry per container *block*
+  (genuine Indev NPE-crashes opening a chest with no tile entity), empty for
+  never-opened containers.
+
+Verified live: export gt1 → `/Import` → per-cell view-id comparison of the
+two `.lvl` files = **0 of 1,048,576 cells differ**, env/survival properties
+identical, the imported map re-applies the block set on load, and the client
+spawns inside the round-tripped house (chest/furnace/workbench/wall-torch
+views intact); a furnace loaded with coal exports its tile entity with the
+stack in fuel slot 1. Deliberate v1 gaps: imported `TileEntities` contents
+are NOT restored (the container registry is session-scoped - persistence is
+a known deviation), player inventory/mob entities are not exported, and
+`TimeOfDay` imports as nothing (global clock).
+
+### Placement shaping + block-def polish (user request)
+
+The server now mirrors the client's SP placement handling
+(`IndevTest_BlockChanged` + `IndevTest_CanPlaceBlockAt`) in the block
+bridge, so multiplayer placements come out shaped authoritatively
+(`ValidateIndevPlace` in `SurvivalInventory.cs`; the canonical place is
+cancelled and the directional view broadcast via `lvl.UpdateBlock`, which
+also confirms - or corrects - the fork client's local guess):
+
+- **Furnaces and chests face the placer** (BlockFurnace.setDefaultDirection):
+  the placer's yaw quadrant picks Indev facing metadata 3/4/2/5 - the exact
+  client formula, with yaw as the wire byte (`(RotY*4+128)>>8 & 3`).
+- **Torches wall-mount** off their support (BlockTorch.onBlockAdded's
+  -X/+X/-Z/+Z/floor order); an unsupported torch placement is refused
+  before anything is consumed. "Normal cube" is approximated as solid
+  collide + light-blocking (glass/leaves/plants/slabs excluded), matching
+  genuine's isBlockNormalCube closely. Deviation: the clicked-face override
+  (onBlockPlaced) needs face info the classic place packet doesn't carry -
+  when several supports exist the auto pick wins and the echo corrects the
+  client (quality-pass candidate: ride the face byte on a placement intent).
+- **Chest triples/L-shapes are refused** (BlockChest.canPlaceBlockAt: at
+  most one neighbouring chest, never one already half of a double) - stock
+  clients could previously build shapes the large-chest pairing can't open.
+- The shaping also runs on **creative maps** and for **permitted stock
+  builders** (visitors=allow / referees), so the world stays consistent
+  regardless of who builds.
+
+Block-set finishing (`SurvivalBlocks.cs`):
+
+- **The CPE leftovers are gone from Indev maps**: turquoise wool(59),
+  ice(60), pillar(63), crate(64), stone brick(65) hold no genuine Indev
+  block (the client's nonGenuine list). They are now defined with their CPE
+  default appearance but hidden from the block menu (`InventoryOrder 0`,
+  owner /lb defs respected), and the bridge refuses placing any 50-65 id
+  that isn't part of the set - previously they placed FREE (cost 0
+  passthrough) on survival maps.
+- **Torch defs are proper thin columns** for stock clients: the old
+  full-size X sprite is now a cube def whose bounds crop the tile to the
+  genuine 2/16-wide, 10/16-tall stick (top tile 117 shows the ember),
+  standing and wall views alike. The def model can't express the genuine
+  wall tilt, and offsetting the column would move the crop off the torch
+  pixels - so wall views render centred (the fork draws the real tilted
+  geometry locally). Farmland 15/16, crops' 4/16 pick box, sources, gears
+  and the container facings were audited against the client table - already
+  faithful.
+
+Verified live (fork client + gdb-driven placements on the round-tripped
+map): standing torch on open floor; floating torch refused (cell reverts,
+nothing consumed); furnace -> faced view 76 and chest -> 72 matching the
+placer's yaw; second chest forms a double; third chest refused (the cell
+reverted to the wall planks it replaced); a torch beside the placed furnace
+wall-mounts onto it (94, -X first); pillar(63) refused; inventory counts
+exact (refusals consume nothing); the def stream shows the torch mini
+columns + the five hidden leftovers.
+
+**NEXT SESSION (user-requested): an in-depth bug & quality pass** over the
+whole survival stack - both repos, all phases landed so far. Known candidates
+to start from: buried-spawn death loops (grounding only fixes floating
+spawns), the round-2 gdb multi-call inventory anomaly from the block-set
+session (unreproduced), per-map skylight, container-click range checks, and
+a sweep for stale comments like the `Server_ResetState` one above.
+
+### Reserved message ids (`SurvivalNet.cs`)
+
+Server → client: `HELLO 0x01`, `WORLDINFO 0x02`, `HEALTH 0x03`, `TIME 0x04`,
+`MOB_SPAWN 0x10`, `MOB_MOVE 0x11`, `MOB_STATE 0x12`, `MOB_DESPAWN 0x13`,
+`INV_FULL 0x20`, `INV_SLOT 0x21`, `CONT_OPEN 0x22`, `CONT_SLOT 0x23`,
+`FURN_PROG 0x24`, `CURSOR 0x25`, `DROP_SPAWN 0x30`, `DROP_PICKUP 0x31`,
+`DROP_REMOVE 0x32`, `BLOCKMETA 0x40`, `PLAYER_EQUIP 0x50`.
+
+Client → server: `ATTACK 0x80`, `USE_ITEM 0x81`, `SLOT_CLICK 0x82`,
+`RESULT_CLICK 0x83`, `CONT_CLOSE 0x84`, `HELD_SLOT 0x85`, `DROP_ITEM 0x86`,
+`RESPAWN 0x87`.
+
+Implemented so far: server→client `0x01` HELLO, `0x02` WORLDINFO, `0x03` HEALTH,
+`0x04` TIME, `0x10–0x13` MOB_* (phase 3), `0x20`/`0x21`/`0x25` inventory
+(phase 4 slice); client→server `0x87` RESPAWN, `0x80` ATTACK, `0x82–0x85`
+inventory clicks (handled). The rest are reserved and, for inbound intents,
+bounds-checked, capability-gated, and logged (handlers deferred).
+
+---
+
+## Config (per level, `Survival` section of `*.properties`)
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `SurvivalMode` | `Off` / `Classic` / `Indev` | `Off` | Survival mode **and** the per-map activation gate |
+| `SurvivalTheme` | `Normal` / `Hell` / `Paradise` / `Woods` / `Floating` | `Normal` | Indev world theme; `Floating` also sets the WORLDINFO floating bit |
+| `SurvivalEnhanced` | bool | `false` | HELLO flag bit0 |
+| `SurvivalCreative` | bool | `false` | HELLO flag bit1 |
+| `SurvivalPvP` | bool | `false` | HELLO flag bit2 |
+| `SurvivalDeathDrops` | bool | `true` | HELLO flag bit3 |
+
+To make a map survival: set `SurvivalMode = Indev` (or `Classic`) in that level's
+properties file, **or** use the `/Survival` command live (below).
+
+### `/Survival` command
+
+`MCGalaxy/Commands/World/CmdSurvival.cs` (rank Operator) edits the current level's
+survival settings and applies them live — it saves the config and re-sends the
+handshake (or a mode-off `SURV_HELLO`) to survival-test clients on the level, so
+no rejoin is needed. Registered in `Command.RegisterAllCore()`.
+
+- `/Survival` — show this level's survival settings
+- `/Survival [off/classic/indev]` — set the mode (the per-map gate)
+- `/Survival theme [normal/hell/paradise/woods/floating]`
+- `/Survival [enhanced/creative/pvp/deathdrops] [on/off]` — set a flag
+
+From console (no current level) it operates on the main level.
+
+---
+
+## Backward compatibility
+
+- Stock Classic / CPE-only clients never advertise `SurvivalTest`, so
+  `hasSurvival` stays `false` — they receive **zero** `SURV_*` bytes.
+- Singleplayer / internal server never negotiates CPE exts → gate closed.
+- On a non-survival map (`SurvivalMode = Off`) even a capable client gets no
+  survival traffic; the map plays as plain Classic.
+- Inbound: every message on `0xB0` is bounds-checked and dropped if the sender
+  never negotiated `SurvivalTest`. A negotiated capability is a capability, not
+  a permission — appliers, when added, must still re-validate reach / cooldown /
+  slot / container access and correct the client authoritatively.
+
+---
+
+## Verification performed
+
+- `dotnet build` of the core library and the CLI server: **0 errors**.
+- CLI server **boots** cleanly on Linux (SQLite backend), generates + saves the
+  main level, and listens on `25565` with no exceptions.
+- Generated `properties/cpe.properties` shows `SurvivalTest = True` (advertised).
+- Level config round-trips: setting `SurvivalMode = Indev`, `SurvivalTheme = Hell`
+  parses and re-serialises with no warnings.
+- **Socket-level end-to-end test** (a minimal Classic-protocol client driving the
+  real running server, name verification off, main level `SurvivalMode = Indev`):
+  - A **normal** client (no CPE) receives the "normal client" message and **no**
+    `SURV_*` bytes.
+  - A **survival** client (advertising `SurvivalTest` v1 in its CPE `ExtEntry`)
+    receives the "survival client" message **and** the `SURV_HELLO` (`35 B0 01`)
+    + `SURV_WORLDINFO` (`35 B0 02`) plugin messages on the wire.
+  - The server console logs both connections with the correct classification.
+- **Not** yet exercised: a real survival-test ClassiCube build (only a synthetic
+  protocol client was used here). Pointing the actual client at the server is the
+  natural next check.
+
+---
+
+## Build tooling added this session
+
+- **`Makefile`** — `make` (core), `make cli`, `make all`, `make run`,
+  `make clean`, `make hooks`, `make help`. Auto-detects the `dotnet` SDK.
+- **`.githooks/pre-commit`** — builds the core library before each commit and
+  aborts the commit on failure (skips gracefully when no SDK is present; bypass
+  with `git commit --no-verify`). Install with `make hooks`
+  (sets `core.hooksPath = .githooks`).
+- **`.github/workflows/survival-support.yml`** — CI that runs on every push/PR to
+  this branch (the stock `build.yml` only runs on master/ConsoleDriver). It
+  produces the lean classic .NET Framework build via msbuild + Mono — the same
+  layout as Visual Studio and the official releases (`MCGalaxy_.dll`,
+  `MCGalaxy.exe`, `MCGalaxyCLI.exe` + bundled `MySql.Data.dll` /
+  `System.Data.SQLite.dll`, no NuGet dependency tree) — and uploads `bin/Release`
+  as an artifact.
+
+Note on build flavors: the local `Makefile` and the pre-commit hook use the fast
+`dotnet` build (net6/net8); CI uses the Framework build. Same source, two
+packagings — the dotnet output additionally bundles MySql.Data 8.1.0's NuGet
+dependency tree (BouncyCastle, Protobuf, LZ4, Zstd, …), which the Framework build
+avoids by referencing the small bundled `MySql.Data.dll`.
+
+### Command refactor: /Survival tools split into standalone commands
+
+The operational tools were moved out of `/Survival` into their own commands
+(the per-map config - `off/classic/indev`, `theme`, `visitors`, the
+`enhanced/creative/pvp/deathdrops` flags - stays on `/Survival`, which is a
+config command like `/Map`). Names that collide with existing core commands
+(`/Spawn`, `/Time`, `/Give`, `/Inv`) take a `Surv` prefix; the rest are bare:
+
+| was | now |
+|---|---|
+| `/Survival spawn`   | `/SurvSpawn` |
+| `/Survival mobs`    | `/Mobs` |
+| `/Survival spawner` | `/Spawner` |
+| `/Survival time`    | `/SurvTime` |
+| `/Survival inv`     | `/SurvInv` |
+| `/Survival give`    | `/SurvGive` |
+| `/Survival export`  | `/Export` |
+
+Each is a self-contained `Command2` in `MCGalaxy/Commands/World/` (logic moved
+verbatim from `CmdSurvival`, arg indices shifted down one since the subcommand
+token is gone), registered in `Command.RegisterAllCore` and listed in
+`MCGalaxy_.csproj`. `/Survival` with an unknown/removed subcommand now falls
+through to its help, which points at the new tool commands. All Operator+,
+type World - permissions unchanged from the parent.
+
+Verified live: `/help` for all seven; `/SurvTime noon` sets the clock;
+`/Spawner`/`/Mobs`/`/SurvSpawn zombie`/`/Export roundtrip2 gt1` run against
+the console's main level; the console-arg guards fire; and the arg shift is
+correct - `/SurvGive iron_pickaxe 1 CCUser` + `/SurvGive coal 32 CCUser`
+landed id 257 x1 and id 263 x32 (confirmed via `/SurvInv CCUser`).
+
+### Server-side review pass: 13 confirmed bugs fixed
+
+An adversarial multi-agent review of the whole server survival stack (each
+finding verified against the ClassiCube client oracle before it survived)
+surfaced 19 real findings -> 13 distinct bugs, all fixed this pass:
+
+**Concurrency / lifecycle**
+- **Container.Slots data race (item dup/loss).** `contLock` only guarded the
+  registry dictionary; the furnace tick (scheduler thread) and HandleSlotClick
+  (network threads, incl. two players sharing one chest) read-modify-wrote the
+  same `Container.Slots` array with no common lock. Now every container-slot
+  path locks `contLock`: TickFurnaces mutates + streams under it (block flips
+  collected and applied after release), HandleSlotClick's container branch does
+  its read/apply/write/echo under it (click math factored into `ApplyClick`),
+  StreamContainer snapshots under it. Deadlock-safe - nothing takes a send lock
+  then contLock. Live-verified: a furnace still smelts end-to-end (iron ore ->
+  ingot) with items loaded via the locked click path.
+- **contRegistry leaked unloaded levels.** The `Dictionary<Level,...>` was never
+  pruned, pinning every unloaded map's block array forever. New
+  `PruneRegistry(loaded)` called from the mob tick's prune sweep.
+- **Cross-level chest looting.** A player's open-container `OpenRef` survived a
+  `/goto`, so a SLOT_CLICK from another level looted the container they left.
+  Fixed both ways: HandleSlotClick/HandleResultClick refuse a ref whose
+  `open.Lvl != p.level`, and SurvivalNet.OnJoinedLevel clears it on level change.
+- **ClearMirror vs SyncMirror race.** `/Survival off` iterated a spectator's
+  mirror `Ids` on the command thread while the mob tick mutated it. Added a
+  per-MirrorState lock taken by both.
+
+**Fidelity to the client oracle**
+- **Chest lid used IsSolid, not the normal-cube rule** - glass/leaves/slabs
+  above a chest wrongly blocked it. Now uses the shared `NormalCube` predicate.
+  Live-verified: glass above -> opens, stone above -> blocked.
+- **Furnace output capped at 99, oracle caps at 64** (matters for block results
+  glass/stone). Now a fixed `FURNACE_OUTPUT_MAX = 64`.
+- **Lava cushioned fall damage** - only water should. Reset changed to `if (inWater)`.
+- **Void: -16 vs oracle -32, and applied on c0.30 maps.** VOID_Y -> -32 and the
+  void branch gated on `indev`.
+- **Liquid box missing the 0.4 vertical shrink** (ST_InLiquid). BoxTouches now
+  insets minY/maxY by 0.4.
+- **Creeper fuse latched** when it lost its target mid-swell (stayed swollen
+  forever, re-detonated instantly on re-aggro). AttackAI now winds the fuse down
+  every tick a creeper has no target.
+- **Mining TNT gave a free TNT block** (infinite-TNT dupe, TNT is craftable).
+  MiningDrops now drops nothing for TNT (the primed explosion is a phase-5 item).
+- **Runtime Indev block defs could persist to blockdefs.json** via a stray /lb,
+  then linger after the map went non-survival + a restart. Sync now strips any
+  Indev-template-matching def from a non-survival map on load.
+
+**Logic**
+- **EnableHazards grounded the spawn under water/lava** (drown/burn respawn
+  loop), and skipped the bottomless-column warning within FallHeight of the
+  void. The descent now stops at the first solid OR liquid surface, warns
+  (never grounds) over liquid/void, and checks that before the early return.
+
+Six findings were adversarially REJECTED as not-real (e.g. a claimed nextMobId
+cross-level race - ids segregate by level; a WORLDINFO == vs >= version gate -
+no current desync at ext v2).
+
+### Right-click item intents: hoe / seeds / food (phase-4 tail)
+
+The `SURV_USE_ITEM` intent now carries held-ITEM uses, not just container opens:
+
+- **Client** (`SurvivalTest.c`): `TryUseBlock`'s MP branch sends `USE_ITEM` for a
+  held hoe or seeds (targeted at the clicked block), and `TryEat`'s MP branch
+  sends a TARGETLESS `USE_ITEM` (sentinel x=y=z=-1, face 0xFF) for a held food.
+  Both were previously no-ops in MP (deferred to the server).
+- **Server** (`SurvivalInventory.HandleUseItem`): restructured around a
+  `hasTarget` flag (a sentinel/out-of-reach coord = no target). With a target it
+  runs container opens (unchanged), then `UseHoe` / `UseSeeds`; targetless (or
+  after a non-matching target) it runs `EatFood`. New helpers, all matching the
+  client oracle:
+  - `UseHoe`: grass (no solid above) or dirt → farmland (`FromRaw(FARMLAND)`);
+    the hoe wears 1 via `DamageHeldTool`; tilling grass has a 1/8 chance to yield
+    a seed (v1: straight to inventory — the drop entity is phase 5).
+  - `UseSeeds`: seeds on farmland (air above) → stage-0 crop in the cell above;
+    one seed consumed.
+  - `EatFood`: heal the food's `param` value (`SetHealth(cur+heal)`), consume one;
+    an eaten soup leaves its empty bowl (soups don't stack).
+  - `DamageHeldTool`: `ItemStack.damageItem` — shatter (empty the slot) once
+    damage exceeds `32 << tier` (64 for flint&steel).
+- `SurvivalItems` gained `IsHoe` / `IsFlintSteel` / `FoodHeal` / `MaxDurability`
+  and the `SEEDS`/`SOUP`/`BOWL` id constants.
+
+Deferred: **flint&steel → fire** (fire needs the phase-5 spread/burnout tick
+system) and **mining-tool durability** (wear on block break, in the mine path).
+
+Verified live (server-authoritative, via `/Export` + `/SurvInv` since gdb-injected
+block placements desync the client's local view): tilling grass produced genuine
+farmland (60) and cost the hoe 1 durability; planting seeds produced a genuine
+crop (59) and consumed a seed (10→9); eating bread consumed the stack.
+
+### Read-only for Classic clients on survival "visitor" maps (BlockPermissions)
+
+User request: stop the flicker-then-revert when a non-survival (Classic) client
+right/left-clicks on a survival map they can't build on - while Indev survival
+clients keep full build/break.
+
+The survival block bridge already CANCELS a visitor's edit server-side, but the
+client shows the change locally first and only snaps it back when the revert
+arrives (the "weird look"). The fix pushes the CPE BlockPermissions state up
+front so the client never shows the edit:
+
+- `SurvivalNet.BlocksReadOnly(p)`: true for a non-survival client on a survival
+  map that isn't creative/Allow and isn't a referee - i.e. exactly the block
+  bridge's "visitor" case (mirrors OnBlockChanging so wire perms and server
+  enforcement agree). Indev survival clients, creative maps, Allow maps and
+  referees return false (build normally).
+- `Player.SendAllBlockPermissions` now forces place=delete=false for every block
+  when `BlocksReadOnly` is true, so a Classic visitor gets a genuinely read-only
+  map (no place, no delete) instead of the cancel-and-revert.
+- `SurvivalNet.RefreshLevel` re-sends block permissions to everyone on the level,
+  so toggling `/Survival off` / `visitors allow` flips the read-only state live.
+
+No new config: it enforces the existing `visitors visitor` policy (the default)
+more cleanly, client-side too. The block bridge stays the authoritative backstop.
+
+Build-clean; live confirmation pending (the test rig was unstable this session).
+
+---
+
+## HANDOFF — next session pickup (write-up of in-chat plans)
+
+Everything below was designed/decided in conversation but not yet built, so it's
+recorded here as the durable bridge.
+
+> **BRANCH — do NOT create a new one.** Keep committing and pushing to the
+> existing feature branch **`claude/mock-survival-server-33jx1q`** on BOTH repos
+> (`UmbreoClaw/ClassiCube` and `UmbreoClaw/mcgalaxy`). All prior work lives there;
+> continue it, don't fork a fresh branch. Only start over from the default branch
+> if that branch's pull request has already been merged (then reuse the same
+> branch name from the latest default).
+
+> **TOOLCHAIN / RIG — reinstall on a fresh container.** A new session gets a clean
+> container, so the build/test toolchain (`.NET 8 SDK`, gcc/make + X11/GL dev libs,
+> Xvfb, gdb, ImageMagick, python3) must be reinstalled. Exact install + build +
+> rig-launch commands are in **`doc/survival-support/rig-setup.md`**, and the
+> headless synthetic protocol clients (server testing without the graphical
+> client) are committed under **`doc/survival-support/test-clients/`**.
+
+### Live verification — DONE (rig recovered later in the session)
+The rig briefly wedged (`ss` couldn't see :25565 - a sandbox network-namespace
+quirk, the server WAS listening), then recovered. Both changes verified live:
+- **Read-only visitor maps** ✅ — `test-clients/perm_client.py` (a non-survival
+  CPE client) on gt1 got all 50 blocks `place=0/delete=0`; the fork survival
+  client on the same map showed `Blocks.CanPlace/CanDelete = 1` (stone + Indev
+  range). Classic = read-only, Indev = builds. Exactly as intended.
+- **`/SurvivalGive [player] [item] <amount>`** ✅ — `diamond 3` gave 3, `coal`
+  gave 1 (default), and the `/SurvGive` alias resolved. Player-first + default 1.
+
+### Command rework #2 — `/inventory <player>` GUI (APPROVED, ready to build)
+A GUI inventory viewer/editor, built on the existing container-GUI plumbing
+(CONT_OPEN/CONT_SLOT/SLOT_CLICK). Locked design:
+- New CONT_OPEN **kind = 5 (player inventory)**, slotCount 40 = **36 main + 4 armor**.
+- Server: a variant OpenRef that targets a `PlayerInv` (not a Container tile
+  entity). GetContSlot/SetContSlot/EchoContSlot branch on the kind so the view
+  reads/writes the TARGET's inventory; echo to every viewer of that target.
+- Permission tiers (MCGalaxy ranks): **Operator (80)+ = view** (SLOT_CLICK on the
+  view rejected); **Admin (100)+ = edit** via an Admin extra-perm - chest-style
+  drag model (items move between the target's inventory and the admin's own;
+  a leftover cursor refunds to the admin on close).
+- `/inventory <player>` becomes the command; supersede `/SurvInv` (keep as alias).
+  A non-survival (Classic) viewer can't render a GUI -> fall back to the text dump.
+- Client: handle CONT_OPEN kind 5 (title "<player>'s inventory", 40-slot layout).
+  This is the part that NEEDS the graphical rig to verify.
+- Risk note: this generalizes the tested container OpenRef system, so build it
+  with the rig UP and re-test chests/furnaces after.
+
+### Command rework #3 — `/spectate <player>` (design only)
+Passive follow (like `/possess` but view-only) + mirror the target's open GUI to
+the spectator read-only (reuses the #2 inventory/container streaming). Open
+questions to settle first: first-person vs third-person; spectator hidden/frozen
+to others; whether to mirror the target's HUD (health/hotbar). Do AFTER #2 since
+it reuses the inventory-view streaming. Usable by Operator+.
+
+### Block drops (phase 5) — design approach (researched, not built)
+Client already has the full SP system (`SurvivalTest.c`: `DropItem` array,
+`SpawnDropAtEx` with the genuine pop velocity, `DropPhysics`, `DropTryPickup`,
+5-min despawn, death/mob/TNT drops) - all SP-gated (`if (ServerDriven) return`),
+and there are NO MP handlers yet (SurvivalNet.c switch ends at CURSOR 0x25).
+Reserved wire (ClassiCube SurvivalNet.h): `SURV_DROP_SPAWN 0x30` (dropId, item,
+count, pos, vel, rot0), `SURV_DROP_PICKUP 0x31` (dropId, pickerEntity),
+`SURV_DROP_REMOVE 0x32` (dropId, reason), intent `SURV_DROP_ITEM 0x86`.
+Recommended design: **server owns drops** (spawn/pickup/despawn authoritative);
+send DROP_SPAWN with initial pos+velocity and let the CLIENT run its existing
+deterministic DropPhysics locally (drops settle to the same resting spot, so exact
+sync isn't needed) while the server sends PICKUP/REMOVE. Un-gate the client's drop
+render/physics for MP but make pickup/despawn server-driven; add MP appliers
+HandleDropSpawn/Pickup/Remove. Rewire the mine path (currently straight-to-
+inventory) + death drops + mob drops + TNT + the hoe-grass 1/8 seed to spawn drop
+entities instead. Then landed-arrow pickups reuse this for projectiles (#3 of the
+big three). NEEDS the graphical rig (entity physics/rendering) to verify.
+
+### The three big features, recommended order
+right-click intents ✅ done -> **block drops** -> **projectiles (arrows)**
+(projectiles reuse drops for the landed-arrow item). All need the graphical rig.
+
+## /Inventory GUI (#2) — DONE (server-only, no protocol change)
+
+`/inventory <player>` opens a live view of another player's survival inventory.
+Implemented entirely server-side by opening a **virtual chest** backed by the
+target's slots — the client already renders chests, so there is **no client
+change and no SurvivalTest ext-version bump** (reuses CONT_OPEN kind 1 / CONT_SLOT
+/ SLOT_CLICK / CONT_CLOSE / CURSOR).
+
+Design (SurvivalInventory.cs):
+ * `CONT_PLAYERINV = 5` open kind; `OpenRef` gains `Player Target; bool CanEdit`.
+ * A 36-cell chest view: cells 0..26 = target main storage (slots 9..35),
+   cells 27..35 = target hotbar (slots 0..8) — the genuine inventory layout
+   (storage on top, hotbar on the bottom row). `PlayerInvSlot`/`PlayerInvCell`
+   map both ways. Armor (unimplemented in MP) is not shown yet.
+ * `GetContSlot`/`SetContSlot`/`OpenSlotCount` proxy the target's own PlayerInv.
+ * Bidirectional live echo: `EchoContSlot` (admin edit) routes through the
+   target's `SendSlot`; `SendSlot`/`SendAll` fan the target's OWN changes out to
+   every open view via `EchoPlayerViews`/`EchoAllPlayerViews` (O(online), guarded
+   by cell mapping; player-inv views are rare).
+ * `HandleSlotClick` gates the container path on `CanEdit` — Operator view-only
+   (clicks rejected, no echo), Admin edits (items move to/from the admin's own
+   inventory via the normal cursor model).
+ * `OpenPlayerInventory(viewer, target, canEdit)` + `OnPlayerDisconnect`
+   force-closes viewers when their target leaves (registered in CorePlugin).
+
+Command: `CmdInventory` (name Inventory, alias SurvInv, defaultRank Operator,
+ExtraPerm[0]=Admin "can move/edit"). Replaced CmdSurvInv (removed). A non-survival
+viewer or the console falls back to the old text dump (`DebugDump`).
+
+Concurrency: admin edits run under contLock; the target's own click/block-bridge
+mutations don't — a simultaneous same-slot edit can lose one update (self-heals
+on resync). Same accepted race as /SurvivalGive; documented on OpenPlayerInventory.
+
+Live-verified (two synthetic survival clients, doc/survival-support/test-clients/inv_test.py):
+ * Owner viewer: CONT_OPEN(1,36); target's stone→cell 27, dirt→cell 28; "editable";
+   pickup cell 27 → cursor 30 + cell cleared + TARGET's slot 0 cleared live;
+   deposit into the admin's own slot 9; close resyncs.
+ * Operator viewer: same stream, "view-only", SLOT_CLICK rejected (no echo).
+
+FUTURE POLISH (not v1): a bespoke player-inventory panel/title on the client
+(currently it renders as a chest) + showing/editing the target's armor slots.
+
+Test rig notes: the server enforces `verify-admin-perm` (admin-verification) —
+elevated ranks must `/pass` before elevated commands; for headless synthetic
+tests set `verify-admin-perm = 127` in properties/server.properties (reverted
+after). The console FIFO must be a REGULAR file followed by `tail -n0 -f`
+(a named pipe blocks on open-for-write with no reader); guard every `pkill`
+with `|| true` (the rig shell has errexit).
+
+## /Inventory GUI (#2) — UPGRADE: dedicated 40-slot panel + armor + dual-inventory (SurvivalTest v3)
+
+The chest-fallback view was replaced by a bespoke player-inventory panel. This is
+a WIRE change: SurvivalTest ext v2 -> v3, new CONT_OPEN kind 5 (CONT_PLAYERINV).
+
+Server (mcgalaxy):
+ * CPESupport.cs: SurvivalTest ext version 2 -> 3.
+ * SurvivalNet.cs: added `SurvVer(p)` (Session.Supports is EXACT-match, so probe
+   high->low for a `>=` gate) and migrated the WORLDINFO v2-layout check to
+   `SurvVer(p) >= 2` (a bare `Supports(_,2)` would go false for a v3 client and
+   regress floating-map levels).
+ * SurvivalInventory.cs: PLAYERINV_SLOTS 36 -> 40. Cell map now: 0..26 target
+   main storage (9..35), 27..35 hotbar (0..8), 36..39 armor (100..103, cell 36=
+   boots .. 39=helmet). PlayerInvCell handles armor; SendSlot fans armor changes
+   out too. OpenPlayerInventory sends kind 5/40 to v3 clients, kind 1/36 (chest
+   fallback) to v2.
+
+Client (ClassiCube):
+ * Protocol.c: SurvivalTest advertised v3 (client gate at SurvivalNet.c is already
+   a `>=` so no other change).
+ * IndevTest.h: new INDEV_CONTAINER_PLAYERINV = 3 (internal; wire kind 5 maps to
+   it in SurvivalNet_HandleContOpen). The rest of IndevTest.c already generalises
+   to a 40-cell net-container (NetContOpen/NetContSlot/ContainerSlot/SlotCount).
+ * Screens.c: ContainerCells returns 40; ContainerSlotXY lays the 40 cells onto
+   the genuine inventory.png pocket layout (storage (8,84), hotbar (8,142), armor
+   column (8, 8/26/44/62) helmet-on-top); guiTex -> InvGuiTex; a new panel branch
+   composites inventory.png (top, target's 40) + the container.png player strip
+   (bottom, viewer's own 36) = the dual-inventory window; Layout sizes panelH to
+   166+96 and puts the viewer's own strip at 166+14 / 166+72; a label branch puts
+   the "Inventory" caption above the own strip. The target paperdoll window is
+   left empty (the client isn't told whose inventory it is). A v2 client still
+   gets the chest fallback.
+
+Docs: networking-plan.md CONT_OPEN kind list (kind 5 = player-inv, 40 cells, v3);
+survival-handshake.md ext-version line -> v3.
+
+Verified:
+ * WIRE (test-clients/inv_test.py, viewer advertises SurvivalTest v3): CONT_OPEN
+   (5,40); target stone->cell 27, dirt->cell 28; edit path picks up cell 27 and
+   drops into ARMOR cell 39 -> target slot 102 (armor) set live + slot 0 cleared.
+ * RENDER (graphical rig, gdb-injected NetContOpen(3,40)+NetContSlot samples,
+   screenshot): armor column (helmet top / boots bottom), 3x9 storage grid, hotbar
+   row, and the viewer's own empty inventory strip below all render in the correct
+   positions - the two textures composite cleanly.
+
+Minor cosmetic follow-ups (not blocking): the composited panel is tall (two
+stacked textures) so at large inventory-scale settings the own hotbar row nears
+the window edge; the target paperdoll window is empty; a small seam sits between
+the two textures. Also a future nicety: send the target's name in CONT_OPEN so
+the panel can title itself.
+
+## /Inventory panels: rework to two side-by-side screens + target model
+
+Two follow-up refinements after the first panel cut:
+ 1. The stacked inventory.png-over-strip composite read as broken; replaced with
+    TWO inventory panels side by side (target left, viewer right). The real cause
+    of the "one combined panel" look was the NON-TEXTURED fallback path (the rig
+    and likely the client lack gui/inventory.png), which had no PLAYERINV case and
+    drew a single panel spanning both halves - Screens.c now draws two separate
+    flat panels there too. Both the textured and fallback paths render two panels.
+ 2. The target paperdoll (left panel) now shows the TARGET player's model.
+
+Server (mcgalaxy):
+ * EntityList.TryGetVisibleID(entity, out id) - new public getter for the id a
+   viewer currently sees an entity as.
+ * SurvivalNet.SendPlayerInvOpen(viewer, slots, targetEntityId) - CONT_OPEN kind 5
+   now carries [3]=target entity id.
+ * OpenPlayerInventory sends viewer.EntityList.TryGetVisibleID(target) (0xFF when
+   the target isn't visible to the viewer - a different level - so no model).
+
+Client (ClassiCube):
+ * IndevTest: indev_netContTargetId + NetContTarget()/NetContTargetId(), reset on
+   NetContOpen/CloseContainer. SurvivalNet_HandleContOpen kind 5 reads data[3].
+ * Screens.c: SurvivalInv_RenderDoll refactored into RenderDollAt(entity, box) +
+   a local-player wrapper. The doll gate renders the local player in the right
+   panel and, for PLAYERINV, the target entity (Entities.List[targetId]) in the
+   left panel when visible. Its two hardcoded panelX+51 model anchors became the
+   box-relative boxX+25 (identical for the single panel). The left doll box gets
+   its own recessed frame in the fallback path.
+
+Verified in the graphical rig with TWO real clients (Adm viewer + Tgt2 target, so
+Tgt2 spawns as a real entity - synthetic clients do NOT spawn as entities): the
+clean real flow `/inventory Tgt2` -> OpenKind=PLAYERINV, TargetId=0, two panels
+with BOTH player models in their doll windows. (Injection tests mislead here: a
+prior gdb-injected panel left over the real command confuses the screen state -
+always test the real flow from a fresh client.)
+
+## /Inventory: cross-map + offline gates
+
+CmdInventory now gates by locality/rank (all via ExtraPerms, so configurable):
+ * perm 1 = edit (Admin) - existing.
+ * perm 2 = view players on OTHER maps (Admin). Operators may only view a target
+   on their OWN map: `if (target.level != p.level && !HasExtraPerm(p, rank, 2))`
+   -> denied with "operators can only view inventories on their own map". Console
+   (no map) is exempt.
+ * perm 3 = view OFFLINE players (Admin) - forward declaration for when survival
+   inventories persist; FindMatches is online-only today, so an offline name still
+   falls through its "not found". Documented in Help + a hook comment.
+
+Cross-map admin views work because the panel is the viewer's; the target's items
+stream regardless of map, and the target paperdoll is simply absent (the target
+isn't spawned to a viewer on another map - server already sends 0xFF then).
+
+Verified live (Op viewer on gt1, Bob /goto'd to map2): operator cross-map ->
+denied (no CONT_OPEN); Owner cross-map -> CONT_OPEN(5,40) + editable; operator
+same-map -> allowed.
+
+## Command rename: economy /Give -> /Payout, survival give -> /Give
+
+Freed the short /Give for the survival item-give command (the one people reach
+for most on a survival server):
+ * Economy give (Commands/Economy/CmdGive.cs) -> renamed class+file CmdPayout,
+   name "Payout", shortcut "Gib" kept. Registration (Command.cs) + csproj updated.
+ * CmdSurvivalGive: name "SurvivalGive" -> "Give"; old names kept as aliases
+   (SurvivalGive, SurvGive) so existing usage/scripts still work. defaultRank
+   stays Operator. /Survival tools help updated to list /Give.
+
+No collision: economy give's old name is vacated before the survival command
+claims it. Economy transaction logic is unchanged (EcoTransactionType.Give enum).
+Verified live: server boots with no registration errors; /help give -> survival
+give, /help payout -> economy give.
+
+## /Spectate (#3) - follow + live read-only inventory mirror
+
+CmdSpectate (Commands/World/CmdSpectate.cs, name "Spectate" / shortcut "Spec",
+World type, Operator, SuperUseable=false). Thin orchestrator over two tested
+pieces:
+ * Movement = /Follow (Command.Find("Follow").Use) - it hides the spectator,
+   rank-checks (can't follow a higher rank), and TPs cross-map to the target.
+ * Live inventory = OpenPlayerInventory(p, target, canEdit:false) - the read-only
+   /Inventory panel, live via EchoPlayerViews.
+
+Gating (matches /Inventory): survival-map only (SurvivalMode != Off) so it reads
+as a survival tool; operators spectate on their own map, admins cross-map (extra
+perm 1). Classic clients are allowed - OpenPlayerInventory returns false for a
+non-survival client so they just follow ("follow only" in the message).
+
+Flow: `/spectate <player>` follows + opens the mirror; `/spectate` or
+`/spectate stop` unfollows (Follow toggles off) + ForceCloseView closes the panel
+(new SurvivalInventory.ForceCloseView -> CONT_OPEN kind 0). Re-running on the same
+target keeps the follow and just re-opens the panel (SPEC_KEY guards the toggle).
+
+Verified (synthetic v3 Op, test-clients/spectate_test.py): /spectate Bob ->
+CONT_OPEN(5,40) + "Now spectating Bob (inventory mirrored)" (the panel opening
+proves p.following was set, i.e. follow engaged); /spectate stop -> CONT_OPEN(0,0)
++ "Stopped spectating". The panel render + follow are the already-verified
+/Inventory panel and stock /Follow.
+
+FUTURE: a dedicated single-panel spectate view (today it reuses the two-panel
+/Inventory layout, so the spectator's own empty inventory shows on the right);
+optionally mirror the target's OPEN containers/crafting in sync (the "full GUI
+mirror" option), and a per-map-owner /os spectate for owners who aren't operators.
+
+## /Spectate single-panel polish (solo flag)
+
+/Spectate now opens a single-panel view (just the target) instead of the two-panel
+/Inventory layout. Implemented as a `solo` flag on the existing CONT_OPEN kind 5
+(no new kind): SendPlayerInvOpen gained msg[4]=solo; OpenPlayerInventory gained a
+`solo` param (default false); CmdSpectate passes solo:true, /Inventory stays false.
+
+Client (all branch on IndevTest_NetContIsSolo(), set from data[4]): layout draws
+one 176-wide panel (not 176+16+176); render draws one inventory.png panel (or one
+flat panel in the fallback) with only the TARGET's doll box; DisplayCount/
+DisplaySlot/HitSlot show ONLY the target's 40 container cells (no viewer's-own
+slots); the doll gate skips the viewer doll and keeps the target's. /Inventory
+(solo=0) is untouched.
+
+Verified (graphical rig, gdb-injected NetContOpen(3,40)+NetContTarget+NetContSolo(1)
++samples): a single centered panel with the target's model, armor/storage/hotbar,
+and no viewer inventory.
+
+
+## Block drops (phase 5a) - DONE: mine/toss -> drop entity -> proximity pickup
+
+Mining a block (and the Q-toss) now spawns a real physical drop entity that the
+player walks over to collect, instead of teleporting the yield straight into the
+inventory. New server file **`Network/SurvivalDrops.cs`**; new client appliers +
+MP tick in `SurvivalTest.c`/`SurvivalNet.c`. Wire ids were already reserved
+(`SURV_DROP_SPAWN 0x30`, `_PICKUP 0x31`, `_REMOVE 0x32`); no ext bump (still v3).
+
+**Division of labour** (the server can't run ClassiCube's collision engine):
+- SERVER owns the LOGICAL drop. `SurvivalDrops` keeps a per-level registry
+  (`Dictionary<Level,LevelDrops>` + a lock, pruned on unload next to the mob/
+  container registries). Each `Drop` has an id (u16 wire key), block/item id,
+  count, a settled feet-space X/Y/Z, an Age and a PickupDelay counter, and rot0.
+- `SpawnMined(p,lvl,x,y,z,view,held)` replaces the old `AddOne` loop in
+  `SurvivalInventory.OnBlockChanging`'s mine branch. Indev rolls the genuine
+  `SurvivalItems.MiningDrops` table (harvest gating, grass->dirt, ore->item, seed
+  rolls) and spawns one drop entity per item; c0.30 drops the block itself.
+- `Spawn(...)` settles Y by scanning straight down for the first solid block
+  (`SettleY`, using `CollideType.IsSolid`) and streams `SURV_DROP_SPAWN` with the
+  SPAWN pos + a genuine pop velocity (Item ctor: xd/zd +/-2 b/s, yd +4 b/s) purely
+  for the client's visual arc. The settle point is the pickup centre.
+- `Toss(p,slot,whole)` handles `SURV_DROP_ITEM`: `SurvivalInventory.TakeForToss`
+  removes the item + echoes the slot, then the drop is flung along the player's
+  look vector (Vec3_GetDirVector replicated server-side from p.Rot bytes) with a
+  40-tick self-pickup delay (mined uses 10).
+- `Tick(lvl)` runs on the 20 TPS mob tick (added next to `TickFurnaces`): ages
+  every drop, counts down PickupDelay, awards it, despawns at 6000t.
+
+**Player-to-player semantics** (what the user asked about):
+- WHICH player wins a contested pickup: `FindPicker` walks the level's survival
+  watchers IN ORDER and returns the FIRST within `bb.grow(1,0,1)` reach (h^2 <=
+  1.35^2, feet dy in [-0.5,2.0]) with inventory room - matching genuine
+  `Player.tick`'s `findEntities` sweep (tick order, no distance tiebreak).
+- PICKUP DELAY: the `delayBeforeCanPickup` counter lives on the DROP, so during
+  the window NOBODY may collect it. That is exactly what lets a player toss a
+  stack to a friend (40t) without instantly re-vacuuming it.
+- Pickup is whole-stack only (`SurvivalInventory.PickUp` checks `HasRoomFor`
+  first, no partial-remainder re-count over the wire); a full inventory leaves the
+  drop for someone else / later.
+- `SURV_DROP_PICKUP` is fanned PER-VIEWER: the picker gets pickerEntityId=255
+  (ENTITIES_SELF_ID -> its own body), every other watcher gets the picker's Classic
+  entity id AS THEY see it (via `EntityList.TryGetVisibleID`), so their client
+  animates the item flying into the right body. Server-authoritative: no client
+  ever self-awards (anti-dupe / anti-reach-hack).
+
+**Client** (`SurvivalTest.c`): `struct DropItem` gained `net`/`netId`/`pickupTarget`.
+`SurvivalTest_NetDropSpawn/Pickup/Remove` feed the existing `st_drops` pool;
+`SurvivalTest_TickNetDrops(delta)` runs in the ServerDriven branch (next to the
+puppet-mob tick) - it runs the drop's LOCAL physics + spin/bob + Indev lava/water
+visuals, but NEVER local pickup, lifetime despawn, or fire-destroy (the server owns
+those, and burning a net drop locally would desync). Pickup eases toward the picker
+body captured on `DROP_PICKUP`. `SurvivalNet.c` decodes 0x30/0x31/0x32 (pos coord*32,
+vel coord/sec*512). Rendering is the unchanged SP `SurvivalTest_RenderDrops` (gated
+only on `SurvivalTest_Enabled`, called unconditionally in `Render3DFrame`).
+
+**Verified** (synthetic protocol clients, `test-clients/drops_test.py` +
+`drops_pvp.py`):
+- Single miner: break grass (80,30,34) -> `DROP_SPAWN {id 1, item 3 (dirt), pos
+  (80.5,30.5,34.5), vel vy=4.0}`; walk on -> `DROP_PICKUP {id 1, picker 255}` +
+  `INV_FULL [(0, 3, 1)]`. Full mine->drop->pickup->inventory round trip.
+- Two players on one spot: both get the shared `DROP_SPAWN`; Alice (first in tick
+  order) wins with picker=255 + the inventory echo; Bob sees the SAME drop id
+  picked up by picker=0 (Alice's id from his view) and gets NO inventory; exactly
+  ONE player collects (no dupe). Pickup fired ~514 ms after spawn = ~10 ticks,
+  confirming the mined delay gate.
+- Client render path proven live: a graphical client on the survival map (so
+  ServerDriven=true) + gdb-injected `NetDropSpawn`s -> a gdb probe of `st_drops`
+  showed all drops active with `net=1`, correct ids/counts, and physics running
+  (spawned at y=33.3, settled to the floor y=32.0). `SurvivalTest_Enabled=1` and
+  `RenderDrops` is unconditional, so they draw. A beauty-shot of them on-screen was
+  blocked only by the headless rig (the client spawned enclosed and gdb can't
+  redirect its interpolated camera down to the floor) - not a code issue.
+
+Test-client note: fixed a latent size-table bug shared with the older clients -
+Classic opcode 0x0a (relative position update, no orientation) is 4 payload bytes,
+not 5; it only bites once mobs/players are actually moving (mob streaming triggers
+it), which is why the earlier static tests never desynced.
+
+Still pending in phase 5: mob-death drops (`indevDeathDrop`), chest scatter, TNT
+drops (all just call `SurvivalDrops.Spawn`), player death scatter
+(`SurvivalDeathDrops`), and then projectiles (arrows).
+
+
+## Phase 5b - the rest of the drop sources - DONE
+
+Wired every remaining drop source onto the proven `SurvivalDrops.Spawn` path
+(`SpawnScatter` = N single-item drops each with a pop; `SpawnStack` = one drop
+carrying a whole stack; `MinedDelay(lvl)` = 10t Indev / 0 c0.30):
+- Mob death (`SurvivalMobs.KillMob`): Indev 0-2 of the mob's death item
+  (`indevDeathDrop`: zombie feather 256+32, skeleton arrow 256+6, pig porkchop
+  256+63, creeper gunpowder 256+33, spider string 256+31; sheep none); c0.30
+  pig/sheep 1-2 brown mushrooms (Block.Mushroom).
+- Sheep shear (`HandleAttack`): Indev 1+rand(3) GRAY cloth at head height + takes
+  the hit; c0.30 1-3 WHITE cloth, shear replaces the hit.
+- Container scatter (`SurvivalInventory.ContainerRemoved`): a mined chest/furnace
+  drops each stored stack as one drop at the block centre.
+- Player death (`SurvivalNet.OnPlayerDied`): SurvivalDeathDrops (and not creative)
+  scatters main+craft+armor+cursor at the corpse then clears them (`DeathScatter`).
+- Explosion drops deferred: server explosions (`CreeperExplode`) only damage
+  entities - no block-destruction trigger exists yet.
+
+Verified live (synthetic clients): pig death -> item 319 (raw porkchop) x1-2 per
+rand(3); sheep shear -> item 35 (gray wool) x2 at head height; sheep death drops
+nothing.
+
+
+## Phase 5c - PROJECTILES (arrows) - DONE
+
+New server file **`Network/SurvivalArrows.cs`** + client MP appliers. A player
+Tab-fire (c0.30) / bow use (Indev) and a skeleton's shot become server-owned
+Arrow entities that fly the genuine c0.30 `Arrow.tick` model, stick into blocks,
+and hit players/mobs for authoritative damage. New wire (no ext bump, ids were
+free): `SURV_ARROW_SPAWN 0x33`, `_STICK 0x34`, `_REMOVE 0x35`, `_AMMO 0x36`,
+intent `SURV_FIRE_ARROW 0x88`.
+
+Division of labour mirrors drops: the SERVER owns each arrow's flight authority
+(block-stick + every hit) and the ammo; the client seeds an `st_arrows` entry and
+simulates the SAME c0.30 flight (`SurvivalTest_TickNetArrows`, MP-only, no local
+collision) so the arc stays in lock-step until a STICK (snap+freeze) or REMOVE.
+- Velocity is per-TICK (genuine Arrow units); wire vel = blocks/tick × 1024 (i16),
+  pos = coord × 32. Spawn also carries `type` (0 player / 1 mob) + `gravity` (=1/
+  force, u8×100) so the client's flight matches exactly.
+- `FireFromPlayer` (SURV_FIRE_ARROW): c0.30 spends a counted quiver arrow
+  (`Ammo` in Extras, 20..99, streamed as SURV_ARROW_AMMO); Indev spends an arrow
+  item from the inventory (`SurvivalInventory.ConsumeArrow`, id 256+6). Aim is sent
+  as i16 hundredths-of-degrees (yaw as u16 0..36000, pitch signed) for precision.
+- `FireFromMob` + skeleton AI: a targeted skeleton (dist<24, on ground) has a 1/30
+  per-tick chance to loose an arrow (type 1, damage 3, force 1.0) with the genuine
+  asymmetric spread (yaw +/-22.5, pitch biased upward).
+- `Tick`: c0.30 drag(0.998) + speed-scaled gravity, substep sweep (0.2/step) for
+  block-stick (`SolidOverlap`) and entity-hit (`HitEntity` -> players via
+  `DamagePlayer`, mobs via new `SurvivalMobs.TryArrowHitMob` -> HurtMob + aggro).
+  The shooter is ALWAYS excluded from its own arrow (no blanket grace window - a
+  close target still hits). Stuck player arrows are pickable within ~1.35 blocks
+  (c0.30 refunds ammo, Indev gives an arrow item), then REMOVE reason 2. Player
+  stuck arrows despawn after 300t at 1% / tick; mob arrows after 20t.
+
+Client: `struct ArrowEntity` gained `net`/`netId`; `SurvivalTest_NetArrowSpawn/
+Stick/Remove` + `NetSetArrowCount` feed `st_arrows`/`st_playerArrows`;
+`TickNetArrows` runs the flight in the ServerDriven branch (next to the puppet/
+drop net ticks). `SurvivalTest_TryShootArrow` (c0.30 Tab) and `TryUseBow` (Indev)
+now send SURV_FIRE_ARROW in MP instead of early-returning. Rendering is the
+unchanged SP `SurvivalTest_RenderArrows` (gated only on Enabled).
+
+Verified live (synthetic clients on a temporarily-c0.30 gt1 for the free quiver):
+- Fire straight down: ARROW_AMMO 20->19, ARROW_SPAWN {type 0, grav 0.83, vel
+  (0,-1.2,-0.02)}, the arrow flew down and ARROW_STICK at the floor (y 33.5->32.3),
+  then the player picked it up -> ARROW_AMMO back to 20 + ARROW_REMOVE reason 2.
+- Two players: Archer's level shots hit Victim -> Victim HP 20 -> 0 (7 dmg each),
+  each ARROW_REMOVE reason 1 (hit). Confirms HitEntity -> DamagePlayer.
+- Skeleton fire observed: stray ARROW_SPAWNs originating away from the player were
+  skeletons shooting at the clients (FireFromMob path).
+
+Rig / test-setup notes (not product bugs): the console can't invoke the survival
+`/give` (its Use never runs from console), so ammo for an Indev-map test can't be
+granted that way - tested the quiver path on a temporarily-Classic gt1 instead
+(reverted after). Synthetic clients spawn inside the gt1 spawn structure, so
+level shots hit the wall until both players are lifted into open air. An early
+bug where a blanket 5-tick owner-grace skipped ALL entity collision (letting the
+arrow fly past a close target) was fixed to only ever exclude the shooter.
+
+Still pending in phase 5+: block-destroying explosions (+ their 0.3-chance
+drops), and the PLAYER_EQUIP (0x50) armor/held-item streaming for other players.
+
+
+## Phase 5c fix - Indev arrow behaviour (Indev is the primary target)
+
+The first arrow pass ran the c0.30 model in BOTH modes. Corrected so Indev is
+faithful (genuine EntityArrow / EntitySkeleton / ItemBow), keyed on the map mode
+on both sides:
+- **Flight model** now branches (`Arrow.Indev`, client `IndevTest_Enabled`):
+  c0.30 = drag 0.998 + speed-scaled gravity BEFORE the move; Indev = move FIRST,
+  then drag (0.99 air / 0.8 water) + a flat 0.03 gravity. Server `Tick` and client
+  `TickNetArrows` apply the identical order so the arc stays in lock-step.
+- **Player firing**: Indev has NO Tab-fire - the server rejects a kind 0 (Tab)
+  intent on an Indev map and only accepts the BOW (kind 1), consuming an arrow
+  item; the bow arrow is SpawnIndev(speed 1.5, spread 1.0, damage 4, type 0) from
+  the 0.16-sideways / 0.1-down offset eye. c0.30 keeps the counted-quiver Tab-fire
+  (force 1.2, damage 7). The client already gated Tab out of Indev.
+- **Skeleton firing** is now mode-split (was c0.30-params-in-both):
+  - Indev (`IndevAttack`, genuine EntitySkeleton.attackEntity): bow within 10
+    blocks on a 30-tick cooldown, stands still, NO melee. The RAW unnormalized aim
+    (target feet for x/z, target-eye-0.2 for y, + horizontal×0.2 lob) goes into
+    SpawnIndev(speed 0.6, spread 12.0, damage 4, type 0). NO death fire-burst -
+    Indev skeletons drop 0-2 arrow ITEMS on death (already in KillMob).
+  - c0.30 (`ClassicAttack`, Mob_ShootArrow): 1/30 per-tick arrow at any range on
+    top of melee, force 1.0, damage 3, type 1, asymmetric spread.
+- **Despawn**: Indev stuck arrows die at 1200t (any type); c0.30 keeps player
+  300t+1%/tick, mob 20t. Spawn spread uses a Box-Muller gaussian server-side (the
+  final velocity is streamed, so the client doesn't re-roll it).
+
+Verified live on Indev gt1: a skeleton camped within range loosed arrows - all
+type 0, grav 1.0 (Indev's unused field), speed 0.57-0.68 (=0.6 with the gaussian
+spread), on the ~30-tick cadence. Confirms the Indev skeleton path + SpawnIndev.
+The Indev player bow reuses the same verified SpawnIndev + Indev flight; it wasn't
+independently live-tested only because the console can't grant arrow items for a
+synthetic client (the c0.30 quiver path was fully tested earlier).
+
+
+## Mob pushback + per-map spawn cap
+
+Two mob-sim fixes (both server-side in SurvivalMobs; the client just renders the
+streamed positions):
+
+- **Pushback (Entity.push / applyEntityCollision)**: after Travel, every mob is
+  shoved apart from overlapping PLAYERS (skipping `p.hidden` staff/spectators) and
+  from other mobs, using the genuine formula (absMax->sqrt normalize, 1/dist boost
+  clamped to 1, ×0.05, added to velocity so it lands next tick). Only the mob is
+  pushed - players own their movement in Classic - which reads as "walk into a mob
+  and it gets nudged aside". Fixes mobs stacking into one column and clipping into
+  the player. `PushApart` + `HorizOverlap` (bb.grow(0.2)) + `PushVec` helpers.
+  Verified: a pig I stood on was shoved 0.41 -> 1.15 blocks and settled right at
+  the collision radius (no push once clear).
+- **Spawn cap**: the old cap was `min(area*20, 256)` = ~80 on a 128^2 map, which
+  swarmed. New per-map `SurvivalMobCap` LevelConfig (0 = auto = clamp(area*4, 8,
+  40)); gt1 (area 4) -> 16. Stored on `LevelMobs.Cap`, recomputed each tick, and
+  used by every spawner gate (InitialSpawnerRun / TopUpSpawnerRun / TrySpawnCluster)
+  instead of the raw pool ceiling. `/Survival spawn` (DebugSpawn) still bypasses to
+  the 256 pool. Verified: gt1 population climbed to 16 and held (was ~80).
+
+
+## Other players' equipment (SURV_PLAYER_EQUIP 0x50) - armor + wire done, held render pending
+
+Streams a remote player's worn armor + held item so their body renders it. Answer
+to "do we need models on the server?": NO - the wire is pure item ids
+([entityId][heldId:u16][armor[4]:u16 boots..helmet]); the CLIENT owns every armor
+model (Armor1/2Model built in-code), texture (armor_*.png) and the render path,
+keyed by item id. The server just reads 5 ushorts from the inventory it already
+owns and fans them to viewers.
+
+SERVER (done): SurvivalNet.SendPlayerEquip; SurvivalInventory.BroadcastEquip
+(ComputeEquip = held from the selected hotbar slot + 4 armor ids; deduped on the
+visible set via Extras[EQUIP_KEY] so it can ride the central SendAll echo without
+spamming; per-viewer entity id via EntityList.TryGetVisibleID). Change triggers:
+SendAll (pickup/give/craft/death), HandleHeldSlot, HandleSlotClick (self armor +
+admin /Inventory edit of a target), place-consume, DeathScatter. NEW-viewer case:
+the handshake CAN'T send equip (entity ids aren't resolvable yet - Entities.Spawn
+fires OnEntitySpawnedEvent BEFORE SpawnRaw registers the id), so
+SurvivalInventory.OnEntitySpawned queues the (viewer, equipped) pair and
+SurvivalMobs.TickCore flushes it next tick (id now resolvable). This covers both
+join directions (each side is spawned to the other).
+
+CLIENT (armor done): SurvivalNet_HandlePlayerEquip -> SurvivalTest_NetPlayerEquip
+stores held + armor[4] in st_netEquip[] per Classic entity id (cleared on map
+change). IndevArmor_Render refactored to IndevArmor_RenderIds(e, ids) (id-driven,
+non-zero = worn since counts aren't streamed); the local wrapper feeds it from
+st_armor. The render pass (SurvivalTest_RenderMobs) loops Entities.List[0..SELF-1]
+and draws armor on each entity we've been sent equip for.
+
+Verified (synthetic two-client wire test, both join orderings): Bob sees Alice's
+held id become 3 (dirt) when she picks a block up mid-session, AND on join when she
+was already holding it (the OnEntitySpawned->flush path) - each with Alice's
+per-viewer entity id. Armor rendering reuses the proven local-player IndevArmor
+path (only parameterized by ids).
+
+PENDING: the third-person HELD-ITEM renderer. A genuine third-person held-item
+render does not exist in the engine yet (HeldBlockRenderer is first-person only);
+SurvivalTest_RenderHeldItem is currently a documented no-op. The held id is
+streamed + stored; drawing it (block mini-cube / items.png billboard at the
+entity's right-hand transform) is the next piece.
+
+## World growth + lighting (server-authoritative) — SurvivalGrowth.cs
+
+Indev worlds now grow on the SERVER, streamed to every viewer as ordinary
+SetBlock (0x06) — no new wire. New file MCGalaxy/Network/SurvivalGrowth.cs, a
+C# port of the client's src/IndevTest.c growth handlers, ticked from the 20 TPS
+survival mob loop (SurvivalMobs.TickLevel, Indev-only, under lock(lm.Mobs)) and
+pruned on level unload alongside the drop/arrow registries.
+
+Random-tick engine: the genuine World.tick payout (volume/200 random block
+updates per tick, remainder carried) with the genuine `randId*3 + 1013904223`
+LCG picker and power-of-two coordinate masks (biased picks on odd-sized maps are
+skipped, as the client does). Handlers, all faithful ports:
+ * TickGrass    — covered grass decays to dirt (1-in-4); lit grass seeds a
+                  random nearby lit dirt block (whole-volume: any grass cell the
+                  loop lands on can spread).
+ * TickCrops    — the canBlockStay pop check (drops 1 wheat via SurvivalDrops if
+                  a mature crop pops), then farmland-weighted / crowding-halved
+                  growth advancing the CROPS_0..7 view ids.
+ * TickFarmland — 1-in-5: solid cover reverts to dirt; water within x/z +-4 at
+                  y..y+1 hydrates (FARMLAND->FARMLAND_WET); else moisture decays
+                  and dry-with-nothing-planted reverts to dirt.
+ * TickSapling  — the flower stay check, then light(x,y+1,z) >= 9 and the genuine
+                  1-in-5 cadence; the 16-step metadata counter (no per-cell meta
+                  server-side) is collapsed into one 1-in-16 roll — same mean
+                  time-to-grow — then World.growTrees (trunk rand(3)+4, clearance
+                  envelope, diamond canopy with corner trim, trunk logs).
+
+Lighting model (what every growth light-gate reads):
+ * Sky light — a top-down column scan finds the highest sky blocker; IsLit(x,y,z)
+   == y > heightmap. Normal opaque cubes shade-from-below (heightmap parks one
+   cell under them, so the surface block itself reads lit — grass must count as
+   lit to spread); leaves and water clear that offset (shadow their own cell),
+   matching IndevTest.c. Sprites/crops/torch/glass/air pass the sky. No stored
+   heightmap or invalidation — growth queries are sparse enough to rescan.
+ * Block light — a stored per-level flood cache (1 byte/cell), BFS from emitters
+   (torch/wall-torch 14, fire/lava/lava-source 15, lit furnace 13) attenuating 1
+   per cell into light-passing cells only. Re-flooded lazily (first tick, then
+   once a second) so a placed torch lights crops within ~1s without hooking
+   every block change. Eased sky value (day 15 / night 4) from SurvivalNet.
+ * light(x,y,z) = max(IsLit ? easedSky : 0, blockLight) — the genuine
+   getBlockLightValue, so crops/saplings grow at night beside a torch/lava.
+
+Client gate (no double-growth): IndevTest_TickRandomBlocks now computes
+`serverGrowth = SurvivalNet_ServerDriven()` once and skips grass/crops/farmland/
+sapling locally in MP (Indev_ServerOwnsGrowth) — the server owns those. The
+deferred client-only systems (leaf decay, fire, flowers/mushrooms, fluid
+sources) still tick locally; the server doesn't handle them yet.
+
+Verified (test-clients/growth_test.py, synthetic client on gt1, SurvivalCreative
+temporarily on to plant): a dense sapling patch grew into trees — 123 Log/Leaves
+blocks streamed as SetBlock — and grass spread onto exposed dirt (700+ dirt->grass)
+and decayed under the new canopies (grass->dirt), all with a clean server log.
+A placed farmland+crop+water bed ticked its handlers with no exceptions (crop
+stage / farmland-moisture changes are custom view ids, invisible as fallbacks to
+a client without BlockDefinitions, so they aren't distinguishable on the wire in
+that test — but the shared light gate is the same one the observed sapling growth
+proves working).
+
+DEFERRED (backlog, unchanged): third-person held-item render; leaf decay, fire
+and finite-fluid ticks server-side (still client-local); block-destroying
+explosions.
+
+## Server-side Indev block physics: leaf decay, fire, finite fluids — SurvivalPhysics.cs
+
+The deferred client-only world sim is now server-authoritative too. New file
+MCGalaxy/Network/SurvivalPhysics.cs (fire + finite fluids), plus a leaf-decay
+handler in SurvivalGrowth, all ticked from the survival mob loop (Indev only,
+under lock(lm.Mobs)) and pruned on unload. Every change streams as an ordinary
+SetBlock (no new wire).
+
+Notify model (the key server adaptation): the client drives fire/fluids by inline
+recursion through its block-change hook; the server can't (a waking lake or a
+collapsing fire field would blow the stack). Instead SurvivalGrowth.SetView
+announces every server-authored change to SurvivalPhysics.Notify, which ONLY
+ENQUEUES work (schedule fire, schedule/activate fluid, re-check neighbours) -
+never sets a block inline. TickFire/TickFluids drain the queues next tick, which
+IS the genuine scheduled-update model, so cascades spread over ticks instead of
+recursing. Player edits reach the same Notify via OnBlockChangedEvent
+(registered in CorePlugin); a map-load scan (setTickOnLoad) schedules pre-existing
+fire + moving fluid the first time a level ticks.
+
+ * Leaf decay (SurvivalGrowth.TickLeaves): a leaf with a non-solid block below
+   and no log within x+-2,y-1..y,z+-2 decays, dropping a sapling on a 1-in-10
+   roll - a chopped canopy peels from the bottom up.
+ * Fire (BlockFire port): the age nibble store, the <=200/tick scheduled queue
+   (tickRate 20), spread/ability tables (planks/log/leaves/bookshelf/tnt/cloth),
+   updateTick (age, retire when nothing burns, consume neighbours down 100/up
+   200/sides 300, jump to air cells to y+4), fireSpread from flowing lava,
+   flint&steel-style ignition via placement. TNT is consumed but not detonated
+   (block-destroying explosions still unported, same limit as CreeperExplode).
+ * Finite fluids (BlockFlowing/Stationary port): spread-down-then-one-random-
+   horizontal with volume-conserving donor removal (World.floodFill +
+   fluidFlowCheck ported with the genuine x+(z<<10) layer packing), infinite
+   springs from water/lava sources (-9999 sourced => never donates),
+   stagnation (1/3 -> 1/3 retry, else water evaporates / lava petrifies to
+   stone), water extinguishes fire + petrifies adjacent lava, lava ignites
+   flammable neighbours, still<->moving wake on neighbour change. tickRate
+   5 water / 25 lava.
+
+Client (ClassiCube): the whole local Indev world sim is now gated off under
+server drive - Physics_Tick returns early when SurvivalNet_ServerDriven() before
+IndevFire_Tick/IndevTest_TickFluids/IndevTest_TickRandomBlocks, so nothing runs
+twice or diverges. Ambient display ticks (fire crackle, lava embers, water foam)
+are a separate path (IndevTest_RandomDisplayTicks) and keep running. The earlier
+per-block growth gate inside TickRandomBlocks was removed in favour of this one
+clean gate.
+
+Verified (test-clients/physics_test.py + iso probes, synthetic Owner client on
+gt1, SurvivalCreative+verify-admin-perm=127 for headless building):
+ * FLUID: a water SOURCE floods thousands of cells (infinite spring, correct);
+   a SINGLE water block stays one cell, falls, and dissipates - volume bounded,
+   no runaway duplication. Water washing over fire extinguished it (incidental
+   WaterContact confirmation).
+ * LEAF: 9/9 floating (log-less) leaves decayed to air within ~16s.
+ * FIRE: a wood platform + fire progressively burned 4/11 wood to air.
+ * clean server log throughout.
+
+Test rig gotcha (re-confirmed): promoting the synthetic account to build restricted
+blocks (water/lava/fire) trips verify-admin-perm - the client gets "verify with
+/Pass before you can modify blocks" and every edit reverts. The RIGHT fix is to
+give the op account a password, not to weaken the server: once (from console or
+the client) `/SetPass <pw>`, then each session the synthetic client sends
+`/SetPass <pw>` (idempotent, or `/Pass <pw>` if already set) as its first chat
+line before any edit. (Globally lowering verify-admin-perm = 127 also works for a
+throwaway box but leaves the box unverified - prefer the password.) SurvivalCreative
+= true on the map is still needed so the client may place freely. Any op-ranked test
+account left in the DB needs its password set (or demote it back to Guest) before it
+can touch blocks again.
+
+DEFERRED (backlog): third-person held-item render; block-destroying explosions
+(TNT detonation, creeper block damage).
+
+## Mob AI: Indev A* pathfinding + creature AI (SurvivalMobs.cs)
+
+The last mob-AI gap - Indev mobs used the c0.30 stride-forward chase (the
+"pending the A* port" TODO). Now the server runs the genuine Indev navigation:
+a port of level/path/Pathfinder.java (A* over walkable columns, step-up 1 /
+drop-down 3, 16-block cap, single-block getVerticalOffset quirk preserved) plus
+EntityCreature.updatePlayerActionState (Mob_IndevCreatureAI): resolve/acquire a
+player target within 16 (spider only while its own cell is dark), attack it when
+line-of-sight is clear (rayTrace port), then A* toward it (re-path 1-in-20) or
+wander to the best of 200 getBlockPathWeight-weighted points (monsters prefer
+dark, animals prefer grass), steering along the waypoints. Pathless -> the
+existing BasicAI random wander. c0.30 keeps WanderAI + AttackAI unchanged.
+
+ * SurvMob gains PathX/Y/Z + PathCount/PathIndex; the A* scratch (900 nodes,
+   binary heap, 2048-slot hash) is shared static, safe under the single-threaded
+   lock(lm.Mobs) tick.
+ * IndevAttack now returns hasAttacked (skeleton bow-shot / creeper swell stand
+   their ground; melee mobs keep striding) so the creature AI can hold position.
+ * SheepAI split so SheepGrazeStep is an overlay both paths reuse.
+ * Yaw uses the SERVER basis (atan2(dx,-dz)), not the client's atan2(-dz,dx) -
+   the two conventions differ and mixing them would face mobs 90 degrees off.
+ * Brightness reuses the growth light model via new SurvivalGrowth.LightAt.
+ * Player hurt-aggro was already in HurtMob (a hit sets Target = attacker). Mob-
+   vs-mob aggro from stray arrows is still a minor gap (arrows would need to
+   carry the owner mob into HurtMob) - noted, not blocking.
+
+Verified live (test-clients/mob_ai_test.py, /SurvSpawn at a synthetic Owner
+client's feet on a flat lane): a creeper pathed 7.1 -> 2.7 blocks and detonated
+on reaching the player; a zombie pathed 7.2 -> 2.9 into melee range (then
+drifted off after killing the non-respawning synthetic target); a pig roamed the
+terrain up to 22 blocks (grass-weighted passive wander). Clean mob-tick log
+throughout. (Test-rig note: /SurvSpawn drops the mob at the caller's FEET, which
+the classic position packet reports as eye-level - send the client's Y ~2 blocks
+high so the mob lands on the surface instead of embedded in terrain.)
+
+DEFERRED (backlog): mob-vs-mob aggro from arrows; block-destroying explosions;
+third-person held-item render.
+
+## Armor damage absorption (EntityPlayer.attackEntityFrom) — Indev
+
+Worn armor now reduces incoming player damage (mob melee, arrows, environmental
+- everything routes through SurvivalNet.DamagePlayer). A port of the client's
+SP formula (oracle-verified), Indev-only:
+
+ * ArmorValue (InventoryPlayer.getPlayerArmorValue): wear-weighted sum of the
+   worn pieces' damageReduceAmount - (reduce-1)*remain/max + 1. Reduce is
+   tier-independent (helmet 3 / chestplate 8 / leggings 6 / boots 3); durability
+   is base{11,16,15,13}[piece]*3 << tier (cloth 0 / chain 1 / iron 2 / diamond 3
+   / gold=chain 1). Added to SurvivalItems: ArmorMaxDamage / ArmorReduce.
+ * DamagePlayer Indev branch (SurvivalInventory.AbsorbArmor): scaled = raw *
+   (25 - armorValue) + carriedRemainder; HP lost = scaled/25, remainder carried
+   between hits (Player.Extras). Every worn piece wears by the RAW damage even
+   when the result rounds to zero; a piece past its max shatters (removed +
+   BroadcastEquip). Also made the Indev invuln window a full miss inside the
+   fresh half (no c0.30 delta damage), matching attackEntityFrom.
+
+Verified live (armor_dmg.py, zombie melee on gt1): BARE took 5/hit and died in
+~4 hits; FULL IRON took 1-2/hit (climbing as the pieces wore) and survived ~12,
+the four pieces still worn - clean server log.
+
+Test-rig note: the op account now has a password (physop / claudetest1). Tests
+send "/Pass claudetest1" as their first chat line to verify the session before
+any /Give or /SurvSpawn.
+
+## Block-destroying explosions (World.createExplosion) — SurvivalExplosions.cs
+
+Creeper/TNT blasts now carve terrain, not just damage entities. A port of the
+client's Indev_CreateExplosion:
+
+ * SurvivalExplosions.DestroyBlocks: 16^3 boundary rays seed a destroy set,
+   each paying (resistance+0.3)*0.3 per occupied cell + a flat 0.225/step; cells
+   passed while power>0 are cleared in genuine descending order with the 30%
+   Indev drop roll (Block.getExplosionResistance table ported by view id -
+   water/still-lava blast-proof at 100, flowing lava 1.2, bedrock 3.6M, stone
+   group 6, dirt/sand 0.5, leaves 0.2, ...). Blasted chests/furnaces scatter
+   (ContainerRemovedIfAny); drops route through SurvivalDrops.
+ * SurvivalExplosions.Density / RayBlocked: the getBlockDensity shielding raycast
+   used by the entity-damage half.
+ * SurvivalMobs.ExplodeAt: the genuine density-falloff damage to every player +
+   mob in 2*radius ((f^2+f)/2*8*diam+1, f=(1-d)*density) plus a velocity kick to
+   mobs, then DestroyBlocks. CreeperExplode routes here (creeper radius 3 Indev /
+   4 c0.30). SurvivalPhysics fire->TNT detonates via ExplodeAt (radius 4).
+ * Opt-in: new per-map SurvivalBlockDamage config (default true). Off = entity
+   damage still lands but terrain is spared, for protected builds. Removed blocks
+   go through SetView -> lvl.UpdateBlock so they're streamed + BlockDB-recorded
+   (undoable) and wake adjacent fluids.
+
+Verified live (explosion_test.py, /SurvSpawn creeper at a synthetic client's
+feet on gt1): the blast set 51 nearby blocks to air, spawned 19 drops, and
+killed the point-blank player - clean server log.
+
+UPDATE: the primed-TNT ENTITY + chain reaction is now implemented - see the
+"Primed TNT entity + chain reaction (SurvivalTnt.cs)" section at the end. (This
+paragraph described the v1 that detonated fire-caught TNT immediately.)
+
+## Survival map persistence (SurvivalPersistence.cs)
+
+A survival map's live simulation state now survives unload/reload. Four parts:
+
+ * TIME OF DAY: per-map now (Level.Config.SurvivalTime), so it auto-persists in
+   the level .properties - the shared static worldTime is gone; every survival
+   level runs its own day/night clock and CurrentSkyLight/WorldTime/SetWorldTime
+   take a Level. Verified: gt1 saved "SurvivalTime = 420" on /save.
+ * GROWTH: free - the growth tick writes real blocks, which save in the .lvl.
+ * MOBS + CONTAINERS: a per-level sidecar extra/survival/<lvl>.sur, written on
+   OnLevelSave + OnLevelUnload, read on OnLevelLoaded. "mob type x y z yaw pitch
+   health hasFur fuseState fire" lines (SurvivalMobs.SaveMobs/RestoreMob) and
+   "cont x y z kind burn cook curBurn nslots id:count:dmg..." lines
+   (SurvivalInventory.SaveContainers/RestoreContainer, chest/furnace tile
+   entities incl. furnace smelt state). Restored mobs stream to players via the
+   existing SendLevelMobs join sync; restored containers repopulate the TE
+   registry (their blocks are already in the .lvl). Atomic-ish write (tmp+move).
+ * PLAYER INVENTORIES: deferred (user choice) - session-only for now.
+
+Verified live: 19 mobs saved to gt1.sur; after a full server restart (unload
+saves, startup loads+restores) a joining client was streamed 16 restored mobs
+(vs 0 without persistence), clean log. Container save/restore is the symmetric
+path (build-verified; live GUI round-trip is a follow-up).
+
+Wired in CorePlugin (OnLevelSave/Unload/Loaded). extra/survival/*.sur are
+runtime data (gitignored bin tree).
+
+## Tool durability + held-weapon melee (SurvivalItems / SurvivalInventory / SurvivalMobs)
+
+`ItemStack.damageItem` ported server-side (Indev-only; c0.30 tools have no
+durability). `SurvivalItems.ToolUseWear(id, entityHit)` mirrors the client's
+`IndevTest_ToolUseWear`: a sword wears 1 per entity hit / 2 per block broken,
+a shovel/pickaxe/axe the reverse, everything else (hoes, flint&steel) from
+NEITHER (they only wear through their own onItemUse). Two hooks:
+
+ * BLOCK BREAK: in `OnBlockChanging`'s mining branch, every non-air removal wears
+   the held slot by `ToolUseWear(held, false)` (PlayerControllerSP.sendBlockRemoved
+   runs onBlockDestroyed for EVERY removal, mined or instant). `DamageHeldTool`
+   already shatters past `32 << tier` and echoes the slot; now guards amount<=0.
+ * MELEE HIT: `HandleAttack` now deals genuine held-weapon damage
+   (`SurvivalItems.MeleeDamage` = getDamageVsEntity: fist 1, tool base+tier,
+   sword 4+tier*2) instead of a flat fist, and wears the weapon by
+   `ToolUseWear(held, true)` via `SurvivalInventory.WearHeldForMelee`.
+
+Build-verified; shares the already-live `DamageHeldTool` path (hoe wear).
+
+## Primed TNT entity + chain reaction (SurvivalTnt.cs)
+
+The DEFERRED primed-TNT entity is now real. A server-owned per-level sim
+(mirrors SurvivalDrops/SurvivalArrows) with a new streamed entity:
+
+ * WIRE: `SURV_TNT_SPAWN 0x37` [tntId:u16][pos:3xi16 *32][vel:3xi16 blocks/tick*1024]
+   [fuse:u16] and `SURV_TNT_REMOVE 0x38` [tntId:u16][reason 0 detonate/1 defuse].
+   Like arrows, the client seeds an `st_tnt` entry and simulates the SAME
+   PrimedTnt hop/smoke/flash from the streamed seed - it never explodes locally
+   (`SurvivalTest_TickNetTnt` in the ServerDriven branch; local SP defuse skips
+   net entries). Streamed to joiners at handshake (`SendLevel`).
+ * IGNITION (all call `SurvivalTnt.Ignite`, which clears the block + spawns the
+   entity with the PrimedTnt ctor pop): mining a TNT block (full fuse, both
+   modes - TNTBlock.getDropCount()==0 so no item drop), fire consuming TNT
+   (`FireTryCatch`, full fuse - replaced the v1 immediate blast), and a blast
+   clearing a TNT block (`SurvivalExplosions.DestroyBlocks`, short randomized
+   chain fuse: Indev 10+rand(20), c0.30 5+rand(10)).
+ * PHYSICS: gravity 0.04, AABB clip-collision (clipY/X/Z) against solid blocks,
+   drag 0.98 + ground friction 0.7 - faithful to PrimedTnt.tick for the common
+   pop+fall. Fuse post-decrements; at expiry `SurvivalMobs.ExplodeAt` runs the
+   full blast (entity damage + `DestroyBlocks`), which chain-ignites more TNT.
+   Ticked after the mob loop under lock(lm.Mobs); the descending iteration leaves
+   chain-armed entries (appended) for the next tick, the genuine one-tick delay.
+ * Fuse=80 Indev / 40 c0.30 (`DefaultFuse`); pool capped at 128/level.
+   Transient, so NOT persisted across unload.
+
+Verified live (fire -> TNT on a creative Indev gt1): full-fuse SPAWN (id=1,
+fuse=80), detonation ~4s later (SURV_TNT_REMOVE), the blast re-primed both
+neighbour TNT blocks with partial fuses (fuse=25 and 14), each detonating on
+its own fuse, 402 blocks destroyed to air. ENTITY+FUSE / DETONATION / CHAIN all
+OBSERVED. Mining-ignition shares the same Ignite() path (build-verified).
+
+## Flint & steel + MP primed-TNT defuse (SurvivalInventory / SurvivalTnt / SurvivalMobs)
+
+Two backlog items, both Indev/c0.30-faithful and live-tested.
+
+FLINT & STEEL -> FIRE (ItemFlintAndSteel.onItemUse / IndevFire_UseFlintSteel):
+ * Client (SurvivalTest.c ~7530): added `heldId == 256+3` to the MP `itemUse`
+   gate so a right-click with flint&steel leaves as SURV_USE_ITEM (heldSlot,
+   target xyz, face = Game_SelectedPos.closest) instead of doing nothing.
+ * Server (SurvivalInventory.UseFlintSteel, dispatched after UseHoe/UseSeeds in
+   HandleUseItem - Indev-only, non-creative, reach-checked upstream): steps ONE
+   cell out of the clicked face (FACE_* XMIN0 XMAX1 ZMIN2 ZMAX3 YMIN4 YMAX5),
+   and if that interior cell (>0 and <dim-1 each axis) is air, writes FIRE
+   (SurvivalBlocks.FIRE=51) via lvl.UpdateBlock(Player.Console,...) - which the
+   fire physics then spreads / uses to catch TNT. The item wears 1 (DamageHeldTool,
+   shatters past 64) whether or not fire was actually placed - genuine.
+ * TNT ignition is NOT special-cased: flint&steel just places fire, and the
+   existing FireTryCatch -> SurvivalTnt.Ignite path handles the catch.
+ * Verified live (physop on gt1, /Give 259): server debug confirmed face->cell
+   air check, fire placed at the face cell, durability 0->1->2->3, and fire above
+   a placed TNT caught it -> primed TNT (1,80). NOTE: a lone fire on a
+   non-flammable block retires before the block queue flushes (coalesced), so the
+   observable proof is the TNT catch / a flammable-neighbour burn, not the raw 51.
+
+MP PRIMED-TNT DEFUSE (PrimedTnt.hurt with a Player attacker, c0.30 ONLY):
+ * Client: FindNetTntHit ray-casts the net st_tnt entries; in ServerDriven +
+   !IndevTest_Enabled, a melee swing that hits one sends SurvivalNet_SendAttack(2,
+   netId) - targetKind 2 = primed TNT. The SP local defuse (TryDefuseTnt) is now
+   gated `!SurvivalNet_ServerDriven()` and already skips net entries, so MP never
+   double-acts locally.
+ * Server: HandleAttack dispatches targetKind==2 (before the mob path, no
+   lock(lm.Mobs) needed) to SurvivalTnt.Defuse(lvl, tntId, p). Defuse is gated on
+   SurvivalMode.Classic (c0.30 only - Indev primed TNT "cannot be punched out"),
+   reach-validates against p.Pos (6-block padded, like HandleAttack/USE_ITEM),
+   removes the entry under lock(lt.List), sends SURV_TNT_REMOVE reason=1 (defuse,
+   no burst) to watchers, and drops one TNT block (SurvivalDrops.SpawnStack).
+   SendTntRemove already carried the reason byte (0 detonate / 1 defuse); the
+   client's NetTntRemove maps reason 0 -> particle burst, 1 -> silent remove.
+ * Verified live (physop on a Classic gt2, /Give 46): mine TNT -> SPAWN (id 1,
+   fuse 40) -> SURV_ATTACK(2,1) -> REMOVE (1, reason 1) at +0.05s + DROP (46,1) at
+   +0.09s, NO detonation (reason 0) and no blast. Clean defuse.
+
+Wire: SURV_ATTACK (0x80) targetKind now 0 mob / 1 player / 2 primed TNT.
+
+## Adversarial review of flint&steel + TNT-defuse (outcome)
+
+A 4-lens verified review (concurrency, abuse/validation, oracle-fidelity, desync)
+ran over the diff. The concurrency (defuse vs detonate double-free), security
+(forged/out-of-reach/Indev ATTACK-2), and desync lenses came back CLEAN. Two
+confirmed findings, both minor + Indev-only:
+ * LOW - flint & steel on a WORLD-BOUNDARY cell: the server wears the tool
+   unconditionally (genuine ItemFlintAndSteel.onItemUse), but the client SP oracle
+   returned false BEFORE wearing on the non-interior early-out, so SP wore 0 while
+   MP wore 1 at map edges. FIXED on the client (IndevFire_UseFlintSteel): the
+   interior/air check now gates only the fire placement; the item wears + the click
+   is consumed unconditionally, so SP == MP == genuine.
+ * NIT (deferred) - MP flint & steel ignition is silent; SP plays "fire.ignite".
+   This is the general server-authoritative trait (a Console UpdateBlock reaches
+   the client as a plain SetBlock with no sound); replaying it would need a sound
+   message. No state divergence - accepted limitation for now.
+
+## PvP, player-inventory persistence, mob infighting (SurvivalMobs / SurvivalArrows / SurvivalInventory)
+
+The last three roadmap features, all live-tested on gt1.
+
+PVP (SurvivalPvP flag, already streamed as HELLO bit2):
+ * Client: SurvivalTest_TryAttackMob now also ray-casts OTHER PLAYER entities
+   (Entities.List, skip self) when ServerDriven && (ActiveFlags & 0x04), closest
+   target under the crosshair winning across mobs/TNT/paintings/players, and
+   sends SURV_ATTACK targetKind 1 with the per-viewer entity id.
+ * Server: HandleAttack targetKind 1 -> HandlePvPAttack: gate on
+   lvl.Config.SurvivalPvP, resolve the attacker's per-viewer id back to a Player
+   (EntityList.TryGetVisibleID scan), reach-check (6 padded), damage =
+   MeleeDamage(held) on Indev / flat 4 on c0.30 via DamagePlayer (runs the
+   victim's armor absorption), weapon wears. Referees + dead players excluded.
+ * ARROWS: player-fired arrows hitting players were UNGATED before - now they
+   require SurvivalPvP; skeleton arrows always hit. Referees skipped.
+ * Verified: gate off -> health 20 unchanged; /Survival pvp on -> 20->19 (fist).
+
+PLAYER-INVENTORY PERSISTENCE (extra/survival/players/<name>.inv):
+ * SaveInv on OnPlayerDisconnect (shutdown kicks everyone = restart coverage),
+   LoadInv lazily inside Get() on the session's first inventory touch. Persists
+   main+hotbar (0..35) + worn armor (99..102); craft grid + cursor stay
+   session-only (genuine returns/drops those on GUI close). Atomic tmp+move,
+   "s idx id count dmg" lines. Verified: 3 bread survived a full reconnect.
+
+MOB INFIGHTING (Indev, EntityCreature.attackEntityFrom semantics):
+ * HurtMob gained an attackerMob param: last attacker wins - a mob hit sets
+   TargetMob (clearing Target) and vice versa; knockback comes from whichever
+   entity landed the hit. TryArrowHitMob resolves the shooter mob from
+   ownerMobId and passes it, so a skeleton arrow tagging another mob starts the
+   fight. Mobs removed by despawn are marked Dead so TargetMob referrers drop
+   ghosts.
+ * IndevCreatureAI: a live TargetMob takes precedence over player hunting - the
+   AI paths to/faces the victim mob and attacks via IndevAttackMob (creeper fuse
+   extracted+shared as CreeperFuseStep; spider pounce, skeleton bow aim, melee
+   all mirrored at the mob's coordinates). Melee retaliation re-targets the
+   victim back, so fights are mutual. c0.30 AI untouched (no infighting there).
+ * A permanent Debug log marks each retarget: "X #a now targets Y #b (infight)".
+ * Verified live: rig leftovers produced a four-way skeleton war - mutual
+   retargeting chains exactly as genuine (#18->#26, #27->#18, #26->#21, ...).
+
+## Systematic audits: level parity, per-map light/clocks, unload saves (outcome + fixes)
+
+A 4-lens verified audit (per-level isolation, per-map light, per-map clocks,
+unload/save correctness) raised 23 findings; 14 agent-confirmed + 2 hand-
+confirmed. FIXED in this pass:
+
+ * CRITICAL - shutdown wrote NO sidecars: Server.cs unloads plugins BEFORE
+   SaveAllLevels, so OnLevelSave was unregistered by save time. SurvivalNet.Stop
+   now calls SurvivalPersistence.SaveAllLoaded() first: every loaded survival
+   level's sidecar + settings (SurvivalTime) written while registries are alive.
+ * CRITICAL - the MAIN level's sidecar was never restored (it loads before
+   CorePlugin registers OnLevelLoaded) and the next save then overwrote it EMPTY.
+   Fixes: (a) SurvivalNet.Start queues all already-loaded survival levels for
+   restore (catch-up, mirrors SurvivalBlocks.SyncLoadedLevels); (b) restores now
+   run on the SURVIVAL TICK thread (pending queue drained in TickCore before the
+   prune sweeps) - which also kills the OnLevelLoaded-before-LevelInfo.Add prune
+   race; (c) Load consumes the sidecar (deleted after restore, exactly-once);
+   (d) Save refuses to write when NEITHER registry exists (pruned level) so an
+   "empty" lie can never clobber a real sidecar - this also covers
+   LevelActions.Replace, which removes the level from Loaded long before its
+   unload-save runs. Verified live: restore->consume on startup, sidecar with 15
+   live mobs written at shutdown, full loop twice, clean log.
+ * HIGH - SurvivalPhysics fire/fluid schedules were mutated lock-free from
+   player receive threads (OnBlockChanged -> Notify) racing the tick thread.
+   All LevelPhys mutations now serialize on the LevelPhys monitor (re-entrant;
+   Notify, Tick, RandomTickFire/Fluid).
+ * HIGH - random-tick coordinate masks used dim-1 on possibly-non-power-of-two
+   dimensions, knocking holes in the pick space (most cells never ticked on
+   imported odd-size maps). Masks now span the next power of two with the
+   bounds check rejecting overflow (and Y got its own shift).
+ * MEDIUM - idle SurvivalTime was lost on unload/shutdown (SaveSettings only ran
+   when blocks Changed): the unload hook + shutdown sweep now SaveSettings
+   unconditionally for survival maps.
+ * MEDIUM - flint&steel fire was never scheduled (Console UpdateBlock raises no
+   OnBlockChangedEvent): UseFlintSteel now calls SurvivalPhysics.Notify.
+ * MEDIUM - stock viewers went permanently full-bright after a map change (the
+   per-player env-light dedup was never reset): OnJoinedLevel now clears it for
+   ALL clients (SurvivalFallbacks.ResetEnvCache).
+ * Sidecar writes use File.Replace (crash can't lose both copies).
+
+DEFERRED (documented, lower priority): RefloodBlockLight full-volume rescan
+once/second (perf, medium); spider lose-interest still uses the old sky-exposure
+approximation (low); farmland at the top layer reverts (GetBlock(y+1) reads
+Invalid, nit); McLevelImporter discards TimeOfDay (low); /SurvTime from console
+reports success without a level (nit); sidecars orphaned on level rename/copy
+(medium - needs rename hooks); stale "shared clock" comments.
+
+## Deferred-fix pass + .mclevel round-trip upgrade
+
+DEFERRED AUDIT FIXES, all landed:
+ * Reflood perf: LevelGrowth.LightDirty - the once-a-second full-volume block-
+   light reflood now runs only when a block actually changed since the last
+   flood (SetView + player edits via SurvivalPhysics.OnBlockChanged both mark
+   dirty; countdown clamped so it can't underflow). Quiet maps: zero rescans.
+ * Spider light: SpiderBright uses the REAL light model (Brightness > 0.5,
+   sky + block light - a spider in torchlight loses interest exactly where it
+   refuses to hunt), while IsBright keeps skylight-x-exposure for undead
+   daylight burn (torches must never ignite zombies) and despawn accel.
+ * Farmland top layer: the solid-above check is now bounds-guarded (an
+   unguarded GetBlock(y+1) read Block.Invalid = "solid" and always reverted).
+ * /SurvTime from console: proper "per-map, use in-game" message.
+ * Stale "shared/global clock" comments refreshed (SurvivalNet, networking-plan).
+ * Sidecar lifecycle: OnLevelRenamed/Copied/Deleted move/copy/delete
+   extra/survival/<map>.sur so name-keyed state follows the level.
+
+.MCLEVEL ROUND-TRIP (closes the Phase-1 export/import gaps):
+ * Exporter: the level's live mobs are written into Entities as genuine mob
+   compounds (id Zombie/Skeleton/Pig/Creeper/Spider/Sheep, Pos = feet +
+   heightOffset, Rotation, Health, Fire, sheep Sheared) after the LocalPlayer
+   stub. SurvivalMobs.SnapshotMobs/HeightOffOf are the accessors.
+ * Importer: Environment.TimeOfDay -> Level.Config.SurvivalTime (per-map clock);
+   Entities + TileEntities are converted into extra/survival/<name>.sur ("mob"
+   lines feet-space, "cont" lines with genuine item ids mapped back through
+   FromIndev) - consumed exactly-once by the hardened persistence restore when
+   the imported level first loads. No new registry paths: the import rides the
+   same pipeline as normal persistence.
+ * Verified live: /Export rtx gt1 -> /Import rtx -> /Load rtx: 15 mobs through
+   NBT and back (positions float32-exact, fur preserved), TimeOfDay carried,
+   sidecar consumed on load, zero errors.
+
+## Command tidy-up pass (console gating + offline inventories)
+
+ * /SurvTime: console now falls back to the MAIN level (the house pattern all
+   other survival commands use) with an explicit "(console: using the main
+   level X)" note, instead of rejecting; a non-survival level gets a "clock
+   never advances" warning; the stale "shared clock" help text now says each
+   map keeps its own.
+ * /Inventory: the declared-but-unimplemented admin capability (extra perm 3,
+   "view offline players") is real now that inventories persist - an exact
+   offline name with a saved extra/survival/players/<name>.inv dumps read-only
+   (checked before FindMatches so its not-found error doesn't fire).
+   SurvivalInventory.HasSavedInv/DebugDumpOffline + LoadInvFile refactor.
+ * Audited the rest: /Give, /Export, /Mobs, /Spawner, /SurvSpawn, /Survival,
+   /Spectate all already null-guard console (mainLevel fallback or
+   SuperUseable=false) and validate their targets - no changes needed.
+   Console-tested live: SurvTime read/set on main, offline dump, mobs/spawner
+   reports, zero errors.

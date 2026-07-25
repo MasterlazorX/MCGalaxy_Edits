@@ -54,22 +54,28 @@ namespace MCGalaxy
         /// <summary> Matches given name against the names of all online players that the given player can see </summary>
         /// <returns> A Player instance if exactly one match was found </returns>
         public static Player FindMatches(Player pl, string name, bool _useless = false) {
-            int matches; return FindMatches(pl, name, out matches);
+            int matches; return FindMatches(pl, name, out matches, _useless = false);
         }
-        
+
+        /// <summary>
+        /// Binary compatibility for plugins that used FindMatches with out int matches
+        /// </summary>
+        public static Player FindMatches(Player pl, string name, out int matches, bool _useless = false) {
+            return FindMatches(pl, name, out matches, _useless, true);
+        }
         /// <summary> Matches given name against the names of all online players that the given player can see </summary>
         /// <param name="matches"> Outputs the number of matching players </param>
         /// <returns> A Player instance if exactly one match was found </returns>
-        public static Player FindMatches(Player pl, string name, out int matches, bool _useless = false) {
+        public static Player FindMatches(Player pl, string name, out int matches, bool _useless, bool feedback) {
             matches = 0;
-            if (!Formatter.ValidPlayerName(pl, name)) return null;
+            if (!Formatter.ValidPlayerName(pl, name, feedback)) return null;
             
             // Try to exactly match name first (because names have + at end)
             Player exact = FindExact(name);
             if (exact != null && pl.CanSee(exact)) { matches = 1; return exact; }
             
             return Matcher.Find(pl, name, out matches, Online.Items,
-                                p => pl.CanSee(p), p => p.name, p => p.color + p.name, "online players");
+                                p => pl.CanSee(p), p => p.name, p => p.color + p.name, "online players", 5, feedback);
         }
 
         /// <summary>

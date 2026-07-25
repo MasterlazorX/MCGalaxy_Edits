@@ -1,0 +1,82 @@
+name: survival-support build
+
+# The stock build.yml only runs on master / ConsoleDriver, so pushes to the
+# survival-support branch never triggered CI. This fills that gap.
+#
+# It produces the lean classic .NET Framework output - the same layout as
+# Visual Studio and the official MCGalaxy releases: MCGalaxy_.dll, MCGalaxy.exe,
+# MCGalaxyCLI.exe plus the small bundled MySql.Data.dll / System.Data.SQLite.dll
+# and no NuGet dependency tree. Built with msbuild + Mono, mirroring the stock
+# build.yml's mono job (ubuntu-22.04 ships msbuild), just without the private
+# upload/notify actions so it runs self-contained on a fork.
+
+on:
+  push:
+    branches:
+      - survival-support
+      - 'survival-**'
+      # combined-session development branches: without this, pushes there never
+      # produce artifacts and "download the latest build" silently serves the
+      # stale survival-support tip (exactly the confusion hit in live testing -
+      # the ClassiCube fork's survival CI already includes claude/**)
+      - 'claude/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: survival-support-${{ github.ref }}
+  cancel-in-progress: true
+
+# needed to move the rolling release tag + upload its assets
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (.NET Framework via Mono/msbuild)
+        run: |
+          msbuild -version
+          msbuild MCGalaxy.sln /p:Configuration=Release
+
+      - name: Stage native SQLite alongside the build
+        run: cp -f sqlite3_x32.dll sqlite3_x64.dll bin/Release/ 2>/dev/null || true
+
+      - name: Upload build output
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MCGalaxy-survival-support-net4.0
+          path: bin/Release
+          if-no-files-found: error
+
+      # Rolling release: every push to the combined-session branch re-points the
+      # survival-latest tag and replaces the server zip on the release, giving a
+      # permanent, login-free download URL (run artifacts expire and require
+      # signing in):
+      #   https://github.com/${{ github.repository }}/releases/tag/survival-latest
+      - name: Zip build output for the release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/claude/mock-survival-server-33jx1q'
+        run: cd bin/Release && zip -r ../../MCGalaxy-survival-latest.zip .
+
+      - name: Move rolling release tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/claude/mock-survival-server-33jx1q'
+        run: |
+          git tag -f survival-latest
+          git push -f origin survival-latest
+
+      - name: Publish to rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/claude/mock-survival-server-33jx1q'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: survival-latest
+          name: SurvivalTest server - latest branch build
+          prerelease: true
+          body: |
+            Rolling build of the survival server branch - updated automatically on
+            every push. Unzip and run MCGalaxyCLI.exe (or MCGalaxy.exe for the GUI)
+            with Mono or .NET Framework, same as an official MCGalaxy release.
+          files: MCGalaxy-survival-latest.zip

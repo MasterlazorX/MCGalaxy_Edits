@@ -1,0 +1,51 @@
+#!/bin/sh
+# Auto-build guard for the survival-support branch.
+#
+# Compiles the core MCGalaxy library before a commit is finalised so that a
+# broken build never lands in history.
+#   * Build fails  -> commit is aborted.
+#   * No toolchain -> the check is skipped with a warning (so contributors
+#                     without a .NET SDK are not blocked).
+#   * Bypass once with:  git commit --no-verify
+#
+# Installed via `make hooks` (sets core.hooksPath = .githooks).
+
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 0
+cd "$REPO_ROOT" || exit 0
+
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export DOTNET_NOLOGO=1
+
+# Locate a .NET SDK: PATH first, then the common per-user install location.
+DOTNET=""
+if command -v dotnet >/dev/null 2>&1; then
+    DOTNET=dotnet
+elif [ -x "$HOME/.dotnet/dotnet" ]; then
+    DOTNET="$HOME/.dotnet/dotnet"
+fi
+
+if [ -n "$DOTNET" ]; then
+    echo "[pre-commit] Building MCGalaxy core (dotnet)..."
+    if "$DOTNET" build MCGalaxy/MCGalaxy_dotnet.csproj -c Release -v minimal; then
+        echo "[pre-commit] Build succeeded."
+        exit 0
+    fi
+    echo "[pre-commit] Build FAILED - commit aborted." >&2
+    echo "[pre-commit] Fix the errors, or bypass this check with: git commit --no-verify" >&2
+    exit 1
+fi
+
+# Fall back to msbuild (mono) if the .NET SDK is not available.
+if command -v msbuild >/dev/null 2>&1; then
+    echo "[pre-commit] Building MCGalaxy core (msbuild)..."
+    if msbuild MCGalaxy/MCGalaxy_.csproj /p:Configuration=Release /verbosity:minimal /nologo; then
+        echo "[pre-commit] Build succeeded."
+        exit 0
+    fi
+    echo "[pre-commit] Build FAILED - commit aborted." >&2
+    echo "[pre-commit] Fix the errors, or bypass this check with: git commit --no-verify" >&2
+    exit 1
+fi
+
+echo "[pre-commit] No .NET toolchain (dotnet/msbuild) found - skipping build check." >&2
+exit 0

@@ -78,12 +78,19 @@ namespace MCGalaxy
             return Find<T>(p, name, out matches, items, filter, nameGetter, nameGetter, group, limit);
         }
         
-        
+        /// <summary>
+        /// Binary compatibility with plugins before feedback was introduced
+        /// </summary>
+        public static T Find<T>(Player p, string name, out int matches, IEnumerable<T> items,
+                                Predicate<T> filter, StringFormatter<T> nameGetter, 
+                                StringFormatter<T> itemFormatter, string group, int limit = 5) {
+            return Find<T>(p, name, out matches, items, filter, nameGetter, itemFormatter, group, limit, true);
+        }
         /// <summary> Finds partial matches of 'name' against the names of the items in the 'items' enumerable. </summary>
         /// <returns> If exactly one match, the matching item. </returns>
         public static T Find<T>(Player p, string name, out int matches, IEnumerable<T> items,
                                 Predicate<T> filter, StringFormatter<T> nameGetter, 
-                                StringFormatter<T> itemFormatter, string group, int limit = 5)  {
+                                StringFormatter<T> itemFormatter, string group, int limit, bool feedback)  {
             T match = default(T); matches = 0;
             StringBuilder output = new StringBuilder();
             const StringComparison comp = StringComparison.OrdinalIgnoreCase;
@@ -105,14 +112,14 @@ namespace MCGalaxy
             
             if (matches == 1) return match;
             if (matches == 0) {
-                p.Message("No {0} match \"{1}\".", group, name); return default(T);
+                if (feedback) p.Message("No {0} match \"{1}\".", group, name); return default(T);
             }
             
             string count = matches > limit ? limit + "+ " : matches + " ";
             string names = output.ToString(0, output.Length - 2);
             
-            p.Message("{0}{1} match \"{2}\":", count, group, name);
-            p.Message(names);
+            if (feedback) p.Message("{0}{1} match \"{2}\":", count, group, name);
+            if (feedback) p.Message(names);
             return default(T);
         }
     }

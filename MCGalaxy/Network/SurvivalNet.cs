@@ -1,0 +1,1024 @@
+/*
+    Copyright 2015-2024 MCGalaxy
+
+    Dual-licensed under the Educational Community License, Version 2.0 and
+    the GNU General Public License, Version 3 (the "Licenses"); you may
+    not use this file except in compliance with the Licenses. You may
+    obtain a copy of the Licenses at
+
+    https://opensource.org/license/ecl-2-0/
+    https://www.gnu.org/licenses/gpl-3.0.html
+
+    Unless required by applicable law or agreed to in writing,
+    software distributed under the Licenses are distributed on an "AS IS"
+    BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    or implied. See the Licenses for the specific language governing
+    permissions and limitations under the Licenses.
+ */
+using System;
+using MCGalaxy.Tasks;
+using BlockID = System.UInt16;
+
+namespace MCGalaxy.Network
+{
+    /// <summary> Survival simulation mode negotiated for a particular level. </summary>
+    /// <remarks> Sent verbatim as the 'mode' byte of SURV_HELLO. Off means the SurvivalTest
+    /// sub-protocol is inactive on this level even for a capable client. </remarks>
+    public enum SurvivalMode : byte
+    {
+        Off     = 0, // not a survival map
+        Classic = 1, // Classic 0.30 survival test
+        Indev   = 2, // Indev survival
+    }
+
+    /// <summary> Indev world theme, sent as the 'theme' byte of SURV_WORLDINFO. </summary>
+    public enum SurvivalTheme : byte
+    {
+        Normal = 0, Hell = 1, Paradise = 2, Woods = 3, Floating = 4,
+    }
+
+    /// <summary> What a client that has NOT negotiated SurvivalTest may do on a
+    /// survival-mode map (networking-plan §16's ClassicClientPolicy). </summary>
+    /// <remarks> The hard invariant behind the default: a non-survival client
+    /// bypasses tools, consumption, drops and physics, so letting it place/break
+    /// would corrupt the authoritative survival world. </remarks>
+    public enum SurvivalVisitorPolicy : byte
+    {
+        Visitor = 0, // may join and look, but block changes are rejected (default)
+        Allow   = 1, // may build normally (the map owner's choice to accept desync)
+        Deny    = 2, // may not even join the map
+    }
+
+    /// <summary> Server side of the "SurvivalTest" sub-protocol spoken by survival-test ClassiCube clients. </summary>
+    /// <remarks>
+    /// The complete wire specification (every message id, byte layout, validation rule, and a
+    /// build-order for implementing a compatible server from scratch) is SURVIVAL_PROTOCOL.md
+    /// at the repo root - keep it in sync with any wire change here.
+    ///
+    /// This is the <b>foundation</b> only, mirroring the client-side foundation documented in
+    /// ClassiCube's doc/survival-handshake.md. It:
+    ///   1. relies on the SurvivalTest CPE extension for the per-connection capability (see CPESupport.cs),
+    ///   2. sends the per-map SURV_HELLO / SURV_WORLDINFO handshake when a capable client enters a survival level, and
+    ///   3. receives, bounds-checks, validates and logs inbound client intents.
+    /// The actual state appliers (mobs, inventory, drops, health, day/night, ...) and the client mode-flip
+    /// are deferred. Every message id is already reserved below so that later work is fill-in against a fixed
+    /// wire contract (ClassiCube's src/SurvivalNet.h), not new protocol design.
+    ///
+    /// Two-layer design (why capability and activation are separate):
+    ///   * Capability is negotiated once at login via the CPE extension and lives for the whole connection.
+    ///   * Activation is per-map: a player hops between a plain Classic level and a survival level without
+    ///     reconnecting, so "is <i>this</i> map survival?" must ride a per-map message (SURV_HELLO), not the
+    ///     one-shot CPE handshake.
+    ///
+    /// Wire format: each message is [id:1][fields...] carried inside a single fixed 64-byte CPE PluginMessage
+    /// payload on channel <see cref="Channel"/> (0xB0). Multi-byte fields are big-endian; unused tail bytes are
+    /// zero and ignored. 0xB0 sits high on purpose to avoid clashing with a channel a plugin might casually
+    /// pick - do not reuse it for anything else.
+    /// </remarks>
+    public static class SurvivalNet
+    {
+        /// <summary> CPE PluginMessages channel that all survival traffic rides on. </summary>
+        public const byte Channel = 0xB0;
+
+        /// <summary> Sub-protocol revision. The authoritative version is the negotiated SurvivalTest CPE
+        /// extension version; this byte is reserved for finer-grained same-ext-version sub-revisions. </summary>
+        public const byte ProtoVersion = 1;
+
+        // ----- server -> client message ids (0x01 - 0x51) -----
+        public const byte HELLO        = 0x01;
+        public const byte WORLDINFO    = 0x02;
+        public const byte HEALTH       = 0x03;
+        public const byte TIME         = 0x04;
+        public const byte MOB_SPAWN    = 0x10;
+        public const byte MOB_MOVE     = 0x11;
+        public const byte MOB_STATE    = 0x12;
+        public const byte MOB_DESPAWN  = 0x13;
+        public const byte INV_FULL     = 0x20;
+        public const byte INV_SLOT     = 0x21;
+        public const byte CONT_OPEN    = 0x22;
+        public const byte CONT_SLOT    = 0x23;
+        public const byte FURN_PROG    = 0x24;
+        public const byte CURSOR       = 0x25;
+        public const byte DROP_SPAWN   = 0x30;
+        public const byte DROP_PICKUP  = 0x31;
+        public const byte DROP_REMOVE  = 0x32;
+        public const byte ARROW_SPAWN  = 0x33;
+        public const byte ARROW_STICK  = 0x34;
+        public const byte ARROW_REMOVE = 0x35;
+        public const byte ARROW_AMMO   = 0x36;
+        public const byte TNT_SPAWN    = 0x37;
+        public const byte TNT_REMOVE   = 0x38;
+        public const byte BLOCKMETA    = 0x40;
+        public const byte PLAYER_EQUIP = 0x50;
+        public const byte PLAYER_HURT  = 0x51;
+
+        // ----- client -> server message ids (0x80 - 0x87) -----
+        public const byte ATTACK       = 0x80;
+        public const byte USE_ITEM     = 0x81;
+        public const byte SLOT_CLICK   = 0x82;
+        public const byte RESULT_CLICK = 0x83;
+        public const byte CONT_CLOSE   = 0x84;
+        public const byte HELD_SLOT    = 0x85;
+        public const byte DROP_ITEM    = 0x86;
+        public const byte RESPAWN      = 0x87;
+        public const byte FIRE_ARROW   = 0x88;
+
+        /// <summary> SURV_HELLO flag bits (byte 2). </summary>
+        [Flags]
+        public enum HelloFlags : byte
+        {
+            None       = 0x00,
+            Enhanced   = 0x01, // bit0
+            Creative   = 0x02, // bit1
+            Pvp        = 0x04, // bit2
+            DeathDrops = 0x08, // bit3
+        }
+
+        /// <summary> SURV_WORLDINFO flag bits (byte 5). </summary>
+        [Flags]
+        public enum WorldFlags : byte
+        {
+            None     = 0x00,
+            Floating = 0x01, // bit0
+        }
+
+
+        /// <summary> Whether survival traffic should flow for this player on this level. </summary>
+        /// <remarks> Both the per-connection capability (client negotiated SurvivalTest) and the per-map
+        /// activation (level's SurvivalMode is not Off) must hold. This is the golden routing rule:
+        /// never send a packet a session did not negotiate. </remarks>
+        public static bool Active(Player p, Level lvl) {
+            return p != null && p.Session != null && p.Session.hasSurvival
+                && lvl != null && lvl.Config.SurvivalMode != SurvivalMode.Off;
+        }
+
+        /// <summary> The negotiated SurvivalTest ext version (0 if none). Session.Supports
+        /// is an exact-version match, so probe high-to-low to get a "&gt;=" gate that keeps
+        /// working as the ext version climbs (v2 WORLDINFO layout, v3 player-inv panel). </summary>
+        public static int SurvVer(Player p) {
+            if (p == null || p.Session == null) return 0;
+            for (int v = 3; v >= 1; v--)
+                if (p.Session.Supports(CpeExt.SurvivalTest, v)) return v;
+            return 0;
+        }
+
+
+        // ==================== server -> client ====================
+
+        /// <summary> Sends the per-map SURV_HELLO + SURV_WORLDINFO handshake to a player entering a survival level. </summary>
+        /// <remarks> No-op for stock/Classic clients and for non-survival maps, so Classic play is entirely unaffected. </remarks>
+        public static void SendHandshake(Player p, Level lvl) {
+            if (!Active(p, lvl)) return;
+            LevelConfig cfg = lvl.Config;
+
+            SendHello(p, cfg);
+            SendWorldInfo(p, lvl, cfg);
+            SendTime(p);   // seed the client with the current world time right away
+            SendHealth(p); // and the current health/score
+            SurvivalMobs.SendLevelMobs(p, lvl); // phase 3: the level's live mob population
+            SurvivalDrops.SendLevelDrops(p, lvl); // phase 5: the level's dropped items (at rest)
+            SurvivalArrows.SendLevelArrows(p, lvl); // phase 5: in-flight + stuck arrows
+            SurvivalTnt.SendLevel(p, lvl);        // primed TNT mid-fuse
+            SurvivalArrows.SendInitialAmmo(p, lvl); // c0.30 quiver count for the HUD
+            // other players' equipment (SURV_PLAYER_EQUIP) is sent per entity as it
+            // becomes visible (SurvivalInventory.OnEntitySpawned), not here - the
+            // entity ids aren't resolvable yet at handshake time.
+            // phase 4: the server-owned inventory + cursor. NOT on creative maps -
+            // there the client keeps the genuine local palette inventory (the
+            // server tracks no inventory in creative: free build, no consume),
+            // and streaming would wipe the palette the HELLO just filled.
+            if (!cfg.SurvivalCreative) SurvivalInventory.SendAll(p);
+            Logger.Log(LogType.Debug, "survival: sent handshake to {0} for {1} (mode {2})",
+                       p.name, lvl.name, cfg.SurvivalMode);
+        }
+
+        /// <summary> Re-sends the handshake to every capable player on a level. Used after a live config
+        /// change (e.g. the /Survival command) so it takes effect without a rejoin. If the map is no longer
+        /// survival, sends a mode-off HELLO so the client leaves survival mode. </summary>
+        public static void RefreshLevel(Level lvl) {
+            if (lvl == null) return;
+            // phase 1: the Indev block set follows the survival mode (level-scoped
+            // BlockDefinitions, pushed live to CPE clients by Sync itself)
+            SurvivalBlocks.Sync(lvl);
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player p in players)
+            {
+                if (p.level != lvl || p.Session == null) continue;
+                // a live mode/visitor change flips the read-only state (§16) - re-push
+                // block permissions so a Classic client's build access updates at once
+                p.SendCurrentBlockPermissions();
+                if (!p.Session.hasSurvival) {
+                    // the map stopped being survival: give spectators their
+                    // normal environment + entity view back
+                    if (lvl.Config.SurvivalMode == SurvivalMode.Off) {
+                        SurvivalFallbacks.RestoreEnv(p);
+                        SurvivalFallbacks.ClearMirror(p);
+                    }
+                    continue;
+                }
+                if (lvl.Config.SurvivalMode != SurvivalMode.Off) SendHandshake(p, lvl);
+                else SendHello(p, lvl.Config); // mode 0 -> client leaves survival mode
+                // Hack permissions are resolved from the survival config while a survival map is
+                // active (Hacks.MakeHackControl), so re-send them alongside the new HELLO flags.
+                p.SendMapMotd();
+            }
+        }
+
+        static void SendHello(Player p, LevelConfig cfg) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = HELLO;
+            msg[1] = (byte)cfg.SurvivalMode;
+            msg[2] = (byte)HelloFlagsFor(cfg);
+            msg[3] = ProtoVersion;
+            SendMessage(p, msg);
+        }
+
+        // SURV_WORLDINFO carries the non-Classic world parameters. In this v1 foundation the heights are a
+        // single byte each, exactly as documented in doc/survival-handshake.md 5; the fuller int16 heights
+        // and the remaining .mclevel env set are deferred ( 25). Environment colours continue to be driven for
+        // survival clients through the stock EnvColors CPE path (SendCurrentEnv), so they are not duplicated here.
+        static void SendWorldInfo(Player p, Level lvl, LevelConfig cfg) {
+            int water = EnvValue(cfg, EnvProp.EdgeLevel,   lvl.Height); // "ocean" surface elevation
+            int sides = EnvValue(cfg, EnvProp.SidesOffset, lvl.Height); // bedrock offset from that (default -2)
+            int ground = water + sides;
+
+            // MCGalaxy stores the "sides" (bedrock) block as EdgeBlock and the horizon (water) block as HorizonBlock.
+            BlockID sidesBlock = cfg.EdgeBlock    == Block.Invalid ? Block.Bedrock : cfg.EdgeBlock;
+            BlockID fluidBlock = cfg.HorizonBlock == Block.Invalid ? Block.Water   : cfg.HorizonBlock;
+
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = WORLDINFO;
+            if (SurvVer(p) >= 2) {
+                // v2 layout: ground/water are SIGNED int16 BE - floating maps
+                // genuinely use groundLevel -128 / waterLevel -127 (or -16 hell),
+                // which v1's u8 fields clamped to 0 (visible as a spurious dirt
+                // horizon plane under floating islands - user-diagnosed!)
+                msg[1] = (byte)(ground >> 8); msg[2] = (byte)ground;
+                msg[3] = (byte)(water >> 8);  msg[4] = (byte)water;
+                msg[5] = RawBlock(p, fluidBlock);  // fluid the surface uses
+                msg[6] = (byte)cfg.SurvivalTheme;
+                msg[7] = (byte)WorldFlagsFor(cfg);
+                msg[8] = RawBlock(p, sidesBlock);  // map sides ("bedrock")
+                msg[9] = RawBlock(p, fluidBlock);  // horizon/edge block
+            } else {
+                // v1 layout (legacy clients): u8 levels, clamped
+                msg[1] = ClampByte(ground);
+                msg[2] = ClampByte(water);
+                msg[3] = RawBlock(p, fluidBlock);  // fluid the surface uses
+                msg[4] = (byte)cfg.SurvivalTheme;
+                msg[5] = (byte)WorldFlagsFor(cfg);
+                msg[6] = RawBlock(p, sidesBlock);  // map sides ("bedrock")
+                msg[7] = RawBlock(p, fluidBlock);  // horizon/edge block
+            }
+            SendMessage(p, msg);
+        }
+
+        internal static void SendMessage(Player p, byte[] payload) {
+            p.Send(Packet.PluginMessage(Channel, payload));
+        }
+
+        // ==================== container GUIs (rest of phase 4) ====================
+
+        /// <summary> SURV_CONT_OPEN: [kind][slotCount]. Kinds: 0 = force-close the
+        /// open container screen, 1 chest (27), 2 furnace (3), 3 large chest (54),
+        /// 4 workbench (no container slots - the client opens its 3x3 grid). </summary>
+        public static void SendContOpen(Player p, byte kind, byte slots) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = CONT_OPEN;
+            msg[1] = kind;
+            msg[2] = slots;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> CONT_OPEN for the player-inventory panel (kind 5, SurvivalTest
+        /// v3+): also carries the target's entity id AS THIS VIEWER SEES IT, so the
+        /// client can render the target's paperdoll (0xFF = target not visible to
+        /// the viewer - no model), and a solo flag - 1 = a single panel showing just
+        /// the target (/Spectate), 0 = the two-panel drag view (/Inventory). </summary>
+        public static void SendPlayerInvOpen(Player p, byte slots, byte targetEntityId, bool solo) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = CONT_OPEN;
+            msg[1] = SurvivalInventory.CONT_PLAYERINV;
+            msg[2] = slots;
+            msg[3] = targetEntityId;
+            msg[4] = (byte)(solo ? 1 : 0);
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_CONT_SLOT: [slot(0..53 container-relative)][id:u16][count][dmg:i16]. </summary>
+        public static void SendContSlot(Player p, int slot, ushort id, byte count, short dmg) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = CONT_SLOT;
+            msg[1] = (byte)slot;
+            msg[2] = (byte)(id >> 8); msg[3] = (byte)id;
+            msg[4] = count;
+            msg[5] = (byte)(dmg >> 8); msg[6] = (byte)dmg;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_FURN_PROG: [burn(0..12)][cook(0..24)] - the open furnace's
+        /// pre-scaled flame height + arrow width. Always 0 until item smelting lands. </summary>
+        public static void SendFurnProg(Player p, byte burn, byte cook) {
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = FURN_PROG;
+            msg[1] = burn;
+            msg[2] = cook;
+            SendMessage(p, msg);
+        }
+
+
+        // ==================== dropped items (SURV_DROP_*) ====================
+
+        static short DropPos(double v) { return (short)Math.Round(v * SurvivalDrops.POS_SCALE); }
+        static short DropVel(double v) {
+            double s = v * SurvivalDrops.VEL_SCALE;
+            if (s >  32767) s =  32767; // clamp into i16 (a runaway toss never overflows)
+            if (s < -32768) s = -32768;
+            return (short)s;
+        }
+
+        /// <summary> SURV_DROP_SPAWN: [dropId:u16][itemId:u16][count][pos:3xi16 coord*32]
+        /// [vel:3xi16 coord/sec*512][rot0]. The client spawns the visual drop and runs
+        /// its own arc from pos+vel; the server keeps the authoritative resting spot. </summary>
+        public static void SendDropSpawn(Player p, int dropId, ushort item, byte count,
+                                         double x, double y, double z,
+                                         double vx, double vy, double vz, byte rot0) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = DropPos(x),  py = DropPos(y),  pz = DropPos(z);
+            short sx = DropVel(vx), sy = DropVel(vy), sz = DropVel(vz);
+            msg[0]  = DROP_SPAWN;
+            msg[1]  = (byte)(dropId >> 8); msg[2]  = (byte)dropId;
+            msg[3]  = (byte)(item >> 8);   msg[4]  = (byte)item;
+            msg[5]  = count;
+            msg[6]  = (byte)(px >> 8); msg[7]  = (byte)px;
+            msg[8]  = (byte)(py >> 8); msg[9]  = (byte)py;
+            msg[10] = (byte)(pz >> 8); msg[11] = (byte)pz;
+            msg[12] = (byte)(sx >> 8); msg[13] = (byte)sx;
+            msg[14] = (byte)(sy >> 8); msg[15] = (byte)sy;
+            msg[16] = (byte)(sz >> 8); msg[17] = (byte)sz;
+            msg[18] = rot0;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_DROP_PICKUP: [dropId:u16][pickerEntityId]. Removes the drop
+        /// on the client with the fly-into-you animation toward the given body
+        /// (255 = this viewer, 0xFF = not visible so no animation). </summary>
+        public static void SendDropPickup(Player p, int dropId, byte pickerEntityId) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = DROP_PICKUP;
+            msg[1] = (byte)(dropId >> 8); msg[2] = (byte)dropId;
+            msg[3] = pickerEntityId;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_DROP_REMOVE: [dropId:u16][reason(0 despawn/1 destroyed)].
+        /// Removes the drop on the client with no pickup animation. </summary>
+        public static void SendDropRemove(Player p, int dropId, byte reason) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = DROP_REMOVE;
+            msg[1] = (byte)(dropId >> 8); msg[2] = (byte)dropId;
+            msg[3] = reason;
+            SendMessage(p, msg);
+        }
+
+
+        // ==================== arrows (SURV_ARROW_*) ====================
+
+        static short ArrowPos(double v) { return (short)Math.Round(v * SurvivalArrows.POS_SCALE); }
+        static short ArrowVel(double v) {
+            double s = v * SurvivalArrows.VEL_SCALE;
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            return (short)s;
+        }
+
+        /// <summary> SURV_ARROW_SPAWN: [arrowId:u16][type][gravity(u8=×100)]
+        /// [pos:3xi16 coord*32][vel:3xi16 blocks/tick*1024]. The client seeds an
+        /// st_arrows entry and simulates the SAME c0.30 flight until STICK/REMOVE. </summary>
+        public static void SendArrowSpawn(Player p, int arrowId, byte type, double gravity,
+                                          double x, double y, double z, double vx, double vy, double vz) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = ArrowPos(x),  py = ArrowPos(y),  pz = ArrowPos(z);
+            short sx = ArrowVel(vx), sy = ArrowVel(vy), sz = ArrowVel(vz);
+            msg[0]  = ARROW_SPAWN;
+            msg[1]  = (byte)(arrowId >> 8); msg[2] = (byte)arrowId;
+            msg[3]  = type;
+            msg[4]  = (byte)Math.Max(0, Math.Min(255, (int)Math.Round(gravity * 100.0)));
+            msg[5]  = (byte)(px >> 8); msg[6]  = (byte)px;
+            msg[7]  = (byte)(py >> 8); msg[8]  = (byte)py;
+            msg[9]  = (byte)(pz >> 8); msg[10] = (byte)pz;
+            msg[11] = (byte)(sx >> 8); msg[12] = (byte)sx;
+            msg[13] = (byte)(sy >> 8); msg[14] = (byte)sy;
+            msg[15] = (byte)(sz >> 8); msg[16] = (byte)sz;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_ARROW_STICK: [arrowId:u16][pos:3xi16]. Snaps the arrow to the
+        /// authoritative stuck position and freezes it. </summary>
+        public static void SendArrowStick(Player p, int arrowId, double x, double y, double z) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = ArrowPos(x), py = ArrowPos(y), pz = ArrowPos(z);
+            msg[0] = ARROW_STICK;
+            msg[1] = (byte)(arrowId >> 8); msg[2] = (byte)arrowId;
+            msg[3] = (byte)(px >> 8); msg[4] = (byte)px;
+            msg[5] = (byte)(py >> 8); msg[6] = (byte)py;
+            msg[7] = (byte)(pz >> 8); msg[8] = (byte)pz;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_ARROW_REMOVE: [arrowId:u16][reason(0 despawn/1 hit/2 pickup)]. </summary>
+        public static void SendArrowRemove(Player p, int arrowId, byte reason) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = ARROW_REMOVE;
+            msg[1] = (byte)(arrowId >> 8); msg[2] = (byte)arrowId;
+            msg[3] = reason;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_ARROW_AMMO: [count:u16] - the player's own quiver count (HUD). </summary>
+        public static void SendArrowAmmo(Player p, int count) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = ARROW_AMMO;
+            msg[1] = (byte)(count >> 8); msg[2] = (byte)count;
+            SendMessage(p, msg);
+        }
+
+
+        // ==================== primed TNT (SURV_TNT_*) ====================
+
+        static short TntPos(double v) { return (short)Math.Round(v * 32.0); }          // coord*32
+        static short TntVel(double v) {                                                // blocks/tick*1024
+            double s = v * 1024.0;
+            if (s >  32767) s =  32767;
+            if (s < -32768) s = -32768;
+            return (short)s;
+        }
+
+        /// <summary> SURV_TNT_SPAWN: [tntId:u16][pos:3xi16 coord*32][vel:3xi16 blocks/tick*1024]
+        /// [fuse:u16]. The client seeds an st_tnt entry and simulates the SAME PrimedTnt
+        /// hop/smoke/flash from pos+vel until SURV_TNT_REMOVE detonates it. </summary>
+        public static void SendTntSpawn(Player p, int tntId, double x, double y, double z,
+                                        double vx, double vy, double vz, int fuse) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            short px = TntPos(x),  py = TntPos(y),  pz = TntPos(z);
+            short sx = TntVel(vx), sy = TntVel(vy), sz = TntVel(vz);
+            msg[0]  = TNT_SPAWN;
+            msg[1]  = (byte)(tntId >> 8); msg[2]  = (byte)tntId;
+            msg[3]  = (byte)(px >> 8); msg[4]  = (byte)px;
+            msg[5]  = (byte)(py >> 8); msg[6]  = (byte)py;
+            msg[7]  = (byte)(pz >> 8); msg[8]  = (byte)pz;
+            msg[9]  = (byte)(sx >> 8); msg[10] = (byte)sx;
+            msg[11] = (byte)(sy >> 8); msg[12] = (byte)sy;
+            msg[13] = (byte)(sz >> 8); msg[14] = (byte)sz;
+            msg[15] = (byte)(fuse >> 8); msg[16] = (byte)fuse;
+            SendMessage(p, msg);
+        }
+
+        /// <summary> SURV_TNT_REMOVE: [tntId:u16][reason(0 detonate/1 defuse)]. On
+        /// detonate the client shows the block-break burst; the blast's actual block
+        /// destruction arrives as authoritative SetBlocks. </summary>
+        public static void SendTntRemove(Player p, int tntId, byte reason) {
+            if (!Active(p, p.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = TNT_REMOVE;
+            msg[1] = (byte)(tntId >> 8); msg[2] = (byte)tntId;
+            msg[3] = reason;
+            SendMessage(p, msg);
+        }
+
+
+        // ==================== other players' equipment (SURV_PLAYER_EQUIP) ====================
+
+        /// <summary> SURV_PLAYER_EQUIP: [entityId][heldId:u16][armor[4]:u16 each, boots..helmet].
+        /// A remote player's worn armor + held item, all as item ids - the client owns every
+        /// model/texture and renders them onto the entity. </summary>
+        public static void SendPlayerEquip(Player viewer, byte entityId, ushort heldId, ushort[] armor) {
+            if (!Active(viewer, viewer.level)) return;
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = PLAYER_EQUIP;
+            msg[1] = entityId;
+            msg[2] = (byte)(heldId >> 8); msg[3] = (byte)heldId;
+            for (int i = 0; i < 4; i++)
+            {
+                ushort a = i < armor.Length ? armor[i] : (ushort)0;
+                msg[4 + i * 2] = (byte)(a >> 8); msg[5 + i * 2] = (byte)a;
+            }
+            SendMessage(viewer, msg);
+        }
+
+
+        // ==================== day / night clock (SURV_TIME) ====================
+        //
+        // The server owns the day/night cycle (the client must not run it locally in MP - see
+        // networking-plan.md 15.2 / 17.4). The clock is PER-MAP: each loaded survival level
+        // advances its own Level.Config.SurvivalTime (persisted with the level, matching Indev
+        // worlds each keeping their own TimeOfDay), pushed to that level's survival players.
+        //
+        // SURV_TIME wire layout (v1): [id=0x04][worldTime: u16 BE][skyLight: u8]
+        //   worldTime - 0 .. DAY_TICKS-1 (0 sunrise, 6000 noon, 12000 sunset, 18000 midnight)
+        //   skyLight  - 0..15 standard sky light, eased across dawn/dusk
+
+        const int DAY_TICKS       = 24000;                    // Minecraft/Indev convention: a full day
+        const int TICKS_PER_TICK  = 20;                       // world ticks advanced per scheduler pass
+        static readonly TimeSpan TIME_INTERVAL = TimeSpan.FromSeconds(1); // -> a 20 minute day
+
+        // Per-map day/night clock: each survival level owns its time in
+        // Level.Config.SurvivalTime, which auto-persists with the level's
+        // .properties (so time of day survives unload/reload for free).
+        static SchedulerTask timeTask;
+
+        /// <summary> This level's world time (0..23999). </summary>
+        internal static int TimeOf(Level lvl) {
+            return lvl == null ? 0 : ((lvl.Config.SurvivalTime % DAY_TICKS) + DAY_TICKS) % DAY_TICKS;
+        }
+
+        /// <summary> Starts the survival day/night clock. Called once from CorePlugin. </summary>
+        public static void Start() {
+            SurvivalBlocks.SyncLoadedLevels(); // levels loaded before our hooks registered
+            SurvivalPersistence.QueueLoadedLevels(); // ...their sidecars too (the MAIN level)
+            SurvivalMobs.Start();
+            if (timeTask != null) return;
+            timeTask = Server.MainScheduler.QueueRepeat(TimeTick, null, TIME_INTERVAL);
+        }
+
+        /// <summary> Stops the survival day/night clock. </summary>
+        public static void Stop() {
+            // shutdown saves levels only AFTER plugins unload (Server.cs unloads
+            // plugins, then SaveAllLevels), so our OnLevelSave hook is gone by the
+            // time levels save - persist every survival sidecar + settings NOW,
+            // while the registries are still alive.
+            SurvivalPersistence.SaveAllLoaded();
+            SurvivalMobs.Stop();
+            if (timeTask == null) return;
+            Server.MainScheduler.Cancel(timeTask);
+            timeTask = null;
+        }
+
+        static void TimeTick(SchedulerTask task) {
+            // advance each loaded survival level's own clock
+            foreach (Level lvl in LevelInfo.Loaded.Items)
+            {
+                if (lvl.Config.SurvivalMode == SurvivalMode.Off) continue;
+                lvl.Config.SurvivalTime = (TimeOf(lvl) + TICKS_PER_TICK) % DAY_TICKS;
+            }
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player p in players)
+            {
+                if (Active(p, p.level)) {
+                    SendTime(p);
+                    TickDeathDwell(p);
+                } else if (p.level != null && p.Session != null &&
+                           p.level.Config.SurvivalMode != SurvivalMode.Off) {
+                    // §21 fallback: non-survival clients see the day/night cycle
+                    // as scaled environment colours instead of the sub-protocol
+                    SurvivalFallbacks.TickEnv(p, p.level);
+                }
+            }
+        }
+
+        static void SendTime(Player p) {
+            int time = TimeOf(p.level);
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = TIME;
+            msg[1] = (byte)(time >> 8); // worldTime, big-endian u16
+            msg[2] = (byte)time;
+            msg[3] = SkyLight(time);
+            SendMessage(p, msg);
+        }
+
+        /// <summary> Sky light on a level right now - the mob simulation's day/night
+        /// input (sunburn, darkness spawn rule, spider light-flee). </summary>
+        internal static byte CurrentSkyLight(Level lvl) { return SkyLight(TimeOf(lvl)); }
+
+        /// <summary> A level's world time (0..23999; 0 sunrise, 6000 noon, 12000 sunset). </summary>
+        public static int WorldTimeOf(Level lvl) { return TimeOf(lvl); }
+
+        /// <summary> CurrentSkyLight for callers outside the assembly-internal sim. </summary>
+        public static byte CurrentSkyLightPublic(Level lvl) { return CurrentSkyLight(lvl); }
+
+        /// <summary> Sets a level's world clock (debug / testing: forcing night to check
+        /// monster spawns, sunburn, the client's celestial sky). Pushed to that level's
+        /// survival players immediately rather than waiting for the next 1 s clock tick. </summary>
+        public static void SetWorldTime(Level lvl, int time) {
+            if (lvl == null) return;
+            lvl.Config.SurvivalTime = ((time % DAY_TICKS) + DAY_TICKS) % DAY_TICKS;
+            foreach (Player p in PlayerInfo.Online.Items)
+            {
+                if (p.level == lvl && Active(p, p.level)) SendTime(p);
+            }
+        }
+
+        /// <summary> Standard 0..15 sky light for the given world time, with short dawn/dusk ramps. </summary>
+        static byte SkyLight(int time) {
+            const int day = 15, night = 4;
+            if (time < 11000) return day;                                        // daytime
+            if (time < 12000) return (byte)(day   - (day - night) * (time - 11000) / 1000); // dusk
+            if (time < 23000) return night;                                      // night
+            return (byte)(night + (day - night) * (time - 23000) / 1000);        // dawn
+        }
+
+
+        // ==================== health / respawn (SURV_HEALTH / SURV_RESPAWN) ====================
+        //
+        // The server owns health and score; the client renders them and sends a respawn *intent*, which the
+        // server validates and answers authoritatively. Health/score live in Player.Extras so no core Player
+        // field is needed and they follow the player across a /goto within one session.
+        //
+        // SURV_HEALTH wire layout (v1): [id=0x03][health: u8][score: i32 BE]
+        //   health 0..MAX_HEALTH (Indev/Classic convention: 20 == 10 hearts)
+
+        public const int MAX_HEALTH = 20;
+        const string HEALTH_KEY = "survival.health";
+        const string SCORE_KEY  = "survival.score";
+        const string DWELL_KEY  = "survival.deathDwell"; // seconds left before the safety auto-respawn
+
+        /// <summary> How long a dead player may sit on the death screen before the server revives
+        /// them anyway (client gone unresponsive, intent lost, ...). Counted down by TimeTick. </summary>
+        const int RESPAWN_TIMEOUT_SECS = 30;
+
+        /// <summary> Current survival health for a player (defaults to full). </summary>
+        public static int GetHealth(Player p) { return p.Extras.GetInt(HEALTH_KEY, MAX_HEALTH); }
+
+        /// <summary> Whether this player is dead (health 0), held on the death screen awaiting
+        /// their SURV_RESPAWN intent or the safety timeout. </summary>
+        public static bool IsDead(Player p) { return GetHealth(p) == 0; }
+
+        /// <summary> Whether HandleDeath must NOT auto-respawn this player: survival-test clients
+        /// show a Game Over screen at 0 HP and ask to come back via SURV_RESPAWN when ready. </summary>
+        public static bool HoldsDeathScreen(Player p) {
+            return Active(p, p.level) && IsDead(p);
+        }
+
+        /// <summary> Sets a player's survival health (clamped) and pushes SURV_HEALTH if they're on a survival map. </summary>
+        public static void SetHealth(Player p, int health) {
+            if (health < 0)          health = 0;
+            if (health > MAX_HEALTH) health = MAX_HEALTH;
+            p.Extras[HEALTH_KEY] = health;
+            if (Active(p, p.level)) SendHealth(p);
+        }
+
+        static void SendHealth(Player p) {
+            int health = GetHealth(p);
+            int score  = p.Extras.GetInt(SCORE_KEY, 0);
+            byte[] msg = new byte[Packet.PluginMessageDataLength];
+            msg[0] = HEALTH;
+            msg[1] = (byte)health;
+            msg[2] = (byte)(score >> 24); // score, big-endian i32
+            msg[3] = (byte)(score >> 16);
+            msg[4] = (byte)(score >>  8);
+            msg[5] = (byte)score;
+            SendMessage(p, msg);
+        }
+
+        // Client asked to respawn (SURV_RESPAWN). Only meaningful while dead on a survival map:
+        // the genuine flow holds health at 0 (client shows the death camera + Game Over screen)
+        // until this intent - or the safety timeout - revives them.
+        static void HandleRespawn(Player p) {
+            if (!Active(p, p.level)) return;
+            if (!IsDead(p)) {
+                // Stray/duplicate intent - correct the client authoritatively instead of applying it
+                // (a respawn-while-alive would otherwise be a free teleport to spawn).
+                SendHealth(p);
+                Logger.Log(LogType.Debug, "survival: ignored respawn intent from {0} (not dead)", p.name);
+                return;
+            }
+            Revive(p, "respawn intent");
+        }
+
+        /// <summary> Ends the death-screen dwell: repositions the player to spawn, then restores full
+        /// health - the client removes its Game Over screen when the health rise arrives. </summary>
+        static void Revive(Player p, string why) {
+            p.Extras.Remove(DWELL_KEY);
+            PlayerActions.Respawn(p);
+            SetHealth(p, MAX_HEALTH);
+            Logger.Log(LogType.Debug, "survival: {0} revived ({1})", p.name, why);
+        }
+
+        // Safety net: a dead player whose SURV_RESPAWN never arrives is revived after the timeout,
+        // so nobody is stranded on the death screen forever. Runs from TimeTick (1s cadence).
+        static void TickDeathDwell(Player p) {
+            if (!IsDead(p)) return;
+            int left = p.Extras.GetInt(DWELL_KEY, RESPAWN_TIMEOUT_SECS) - 1;
+            p.Extras[DWELL_KEY] = left;
+            if (left <= 0) Revive(p, "safety timeout");
+        }
+
+        // ---- graduated combat damage (phase 3: mobs hit for partial HP) ----
+        //
+        // Mob.hurt()'s dual-threshold invulnerability, applied to the PLAYER: while
+        // the 20-tick window is fresher than its half-point only damage exceeding
+        // the hit that opened it lands (and only the excess); past halfway a fresh
+        // hit lands fully and re-arms the window. Counted down by TickPlayerCombat
+        // (called at 20 TPS from the mob scheduler for survival players).
+
+        const string INVINC_KEY  = "survival.invincTicks";
+        const string LASTHP_KEY  = "survival.lastHitHealth";
+
+        internal static void TickPlayerCombat(Player p) {
+            int invinc = p.Extras.GetInt(INVINC_KEY, 0);
+            if (invinc > 0) p.Extras[INVINC_KEY] = invinc - 1;
+        }
+
+        /// <summary> Deals graduated damage to a survival player (mob melee, explosions).
+        /// Lethal damage flows into HandleDeath, so the death-screen dwell applies.
+        /// Returns whether the hit actually LANDED (reduced health / killed) - false
+        /// when absorbed by the invulnerability window or armor, so callers can gate
+        /// knockback on it (genuine hurt() knocks back only on a landing hit). </summary>
+        public static bool DamagePlayer(Player p, int damage, string deathMsg) {
+            if (!Active(p, p.level) || IsDead(p) || damage <= 0) return false;
+
+            int invinc = p.Extras.GetInt(INVINC_KEY, 0);
+            int health = GetHealth(p);
+            int last   = p.Extras.GetInt(LASTHP_KEY, health);
+
+            if (p.level.Config.SurvivalMode == SurvivalMode.Indev) {
+                // EntityPlayer.attackEntityFrom (Indev): unlike c0.30 there is NO
+                // delta damage inside the fresh invulnerability half-window - the
+                // hit simply misses (and armor is untouched). Otherwise armor
+                // absorbs in 25ths (wearing every worn piece by the raw damage)
+                // before the hit lands and re-arms the window.
+                if (invinc > 10) return false;
+                damage = SurvivalInventory.AbsorbArmor(p, damage);
+                if (damage <= 0) return false; // fully absorbed (armor still wore)
+                p.Extras[LASTHP_KEY] = health;
+                p.Extras[INVINC_KEY] = 20;
+                health -= damage;
+            } else if (invinc > 10) {
+                if (last - damage >= health) return false; // absorbed by the fresh window
+                health = last - damage;
+            } else {
+                p.Extras[LASTHP_KEY] = health;
+                p.Extras[INVINC_KEY] = 20;
+                health -= damage;
+            }
+
+            // the hit landed: everyone else watching sees the victim's body rock
+            // (the victim's own tilt/sound rides the SURV_HEALTH drop below)
+            BroadcastHurt(p);
+
+            if (health <= 0) {
+                // route through HandleDeath so the message, death count and the
+                // death-screen dwell all behave exactly like any other death
+                SetHealth(p, 1);
+                p.HandleDeath(Block.Stone, deathMsg, false, true);
+            } else {
+                SetHealth(p, health); // the drop plays the client's hurt tilt/sound
+            }
+            return true;
+        }
+
+        /// <summary> SURV_PLAYER_HURT: [entityId] - a remote player took a LANDED hit;
+        /// the client rocks that entity with the same hurt roll the mob puppets use
+        /// (and voices the hit at their body). Broadcast to every OTHER survival
+        /// watcher on the victim's level - the victim's own client derives its hurt
+        /// presentation (camera tilt + sound) from the SURV_HEALTH drop, so no self
+        /// id is ever sent. Old clients ignore the unknown id, so no ext bump. </summary>
+        static void BroadcastHurt(Player victim) {
+            Level lvl = victim.level;
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player viewer in players)
+            {
+                byte eid;
+                if (viewer == victim || viewer.level != lvl) continue;
+                if (!Active(viewer, lvl)) continue;
+                if (!viewer.EntityList.TryGetVisibleID(victim, out eid)) continue;
+                byte[] msg = new byte[Packet.PluginMessageDataLength];
+                msg[0] = PLAYER_HURT;
+                msg[1] = eid;
+                SendMessage(viewer, msg);
+            }
+        }
+
+        // Genuine Mob.knockBack strength is 0.4 blocks/tick on each axis. The CPE
+        // VelocityControl wire unit is JUMP HEIGHT in blocks (the client converts
+        // through CalcJumpVelocity; its anchor: 1.233 -> the default 0.42 jump), so
+        // ~1.1 lands at ~0.4 blocks/tick after conversion.
+        const float KNOCK_UNIT = 1.1f;
+
+        /// <summary> Knocks a survival player back (a landed melee/arrow hit),
+        /// away along the given horizontal direction plus the genuine upward pop.
+        /// Rides the standard CPE VelocityControl extension - a client without it
+        /// (never our fork, which always negotiates it) just takes the hit
+        /// without the shove. </summary>
+        public static void KnockbackPlayer(Player p, double dirX, double dirZ) {
+            if (p.Session == null || !p.Session.Supports(CpeExt.VelocityControl, 1)) return;
+            double len = Math.Sqrt(dirX * dirX + dirZ * dirZ);
+            float kx = 0, kz = 0;
+            if (len > 0.0001) {
+                kx = (float)(dirX / len * KNOCK_UNIT);
+                kz = (float)(dirZ / len * KNOCK_UNIT);
+            }
+            // X/Z ADD onto the victim's current motion (genuine xd/zd +=); Y SET -
+            // genuine adds then caps yd at 0.4, and set reproduces that cap so
+            // rapid repeat hits can't stack into a launch.
+            p.Send(Packet.VelocityControl(kx, KNOCK_UNIT, kz, 0, 1, 0));
+        }
+
+        /// <summary> Score credit for a player-credited mob kill (c0.30 mode only). </summary>
+        internal static void AddScore(Player p, int points) {
+            p.Extras[SCORE_KEY] = p.Extras.GetInt(SCORE_KEY, 0) + points;
+            if (Active(p, p.level)) SendHealth(p);
+        }
+
+        /// <summary>
+        /// Bridges MCGalaxy's death detection (fall, drown, lava, killer blocks, weapons, /kill, ...) into
+        /// the survival health flow. Registered on OnPlayerDiedEvent, which fires inside HandleDeath just
+        /// before MCGalaxy would reposition the player - health is held at 0 and HandleDeath skips that
+        /// auto-respawn (HoldsDeathScreen), so the client dwells on its Game Over screen until its
+        /// SURV_RESPAWN intent (or the safety timeout) revives it.
+        /// </summary>
+        /// <remarks> Graduated Indev-style damage (partial HP from fall distance, drowning/fire ticks, ...)
+        /// is a future refinement: MCGalaxy only detects lethal hazards, not partial damage. </remarks>
+        public static void OnPlayerDied(Player p, BlockID cause, ref TimeSpan cooldown) {
+            if (!Active(p, p.level)) return;
+            SetHealth(p, 0); // SURV_HEALTH(0): death camera + Game Over screen, held until revive
+            p.Extras[DWELL_KEY] = RESPAWN_TIMEOUT_SECS;
+            // phase 5: scatter the inventory as drop entities (map opt-out via
+            // SurvivalDeathDrops; creative maps keep the local palette, no scatter)
+            if (p.level.Config.SurvivalDeathDrops && !p.level.Config.SurvivalCreative)
+                SurvivalInventory.DeathScatter(p);
+            Logger.Log(LogType.Debug, "survival: {0} died (cause block {1}), holding death screen", p.name, cause);
+        }
+
+        /// <summary> Suppresses further deaths while a player is already dead on the death screen -
+        /// the hazard that killed them keeps ticking at the death spot (lava, drowning, ...).
+        /// Registered on OnPlayerDyingEvent. </summary>
+        public static void OnPlayerDying(Player p, BlockID cause, ref bool cancel) {
+            if (HoldsDeathScreen(p)) cancel = true;
+        }
+
+        /// <summary> A map change tears down the client's per-map survival state (death screen included),
+        /// so a player who leaves a level while dead is restored to full health rather than arriving
+        /// on the new map at 0 HP. Registered on OnJoinedLevelEvent. </summary>
+        public static void OnJoinedLevel(Player p, Level prevLevel, Level level, ref bool announce) {
+            // ALL clients: the join resent this level's own env colours, so the
+            // env-light dedup from the previous map is stale - forget it so the
+            // day/night fallback re-applies on the next tick (stock viewers too).
+            SurvivalFallbacks.ResetEnvCache(p);
+            // ALL clients: this player may be the TARGET of open /Inventory or
+            // /Spectate views (targets need not be survival clients themselves) -
+            // close/notify views whose same-map gate the move just broke.
+            SurvivalInventory.OnTargetLevelChanged(p);
+            if (p.Session == null || !p.Session.hasSurvival) return;
+            // any container the player had open belonged to the previous level
+            SurvivalInventory.OnLeftLevel(p);
+            if (!IsDead(p)) return;
+            p.Extras.Remove(DWELL_KEY);
+            SetHealth(p, MAX_HEALTH);
+        }
+
+
+        // ==================== test / debug ====================
+
+        /// <summary> Test aid: on connect, tell the player (and the server console) whether their
+        /// client was detected as a survival-test client via the CPE handshake, or as a normal client. </summary>
+        /// <remarks> Called from ConnectHandler.HandleConnect. Purely diagnostic - safe to gate behind a
+        /// config flag or remove once wire testing is done; it is the only place that announces detection. </remarks>
+        public static void AnnounceClient(Player p) {
+            if (p.Session != null && p.Session.hasSurvival) {
+                p.Message("&aConnected via the survival client &S(handshake verified)");
+                Logger.Log(LogType.UserActivity, "{0} connected via the survival client (SurvivalTest handshake verified)", p.name);
+            } else {
+                p.Message("&eConnected via a normal client &S(no survival handshake)");
+                Logger.Log(LogType.UserActivity, "{0} connected via a normal client (no SurvivalTest handshake)", p.name);
+            }
+        }
+
+
+        // ==================== client -> server ====================
+
+        /// <summary> Handles an inbound CPE PluginMessage, dispatching survival channel traffic. </summary>
+        /// <remarks> Registered on OnPluginMessageReceivedEvent; ignores every other channel. </remarks>
+        public static void HandlePluginMessage(Player p, byte channel, byte[] data) {
+            if (channel != Channel) return;                // not survival traffic
+            if (data == null || data.Length < 1) return;   // bounds-check: never read past the payload
+            byte id = data[0];
+
+            // A negotiated capability is a capability, not a permission or a trust anchor - so every inbound
+            // message is validated regardless of whether the sender advertised SurvivalTest. A client that
+            // never negotiated it has no business sending here; drop it. (When appliers land they must still
+            // re-validate reach/cooldown/slot/container access and correct the client authoritatively.)
+            if (p.Session == null || !p.Session.hasSurvival) {
+                Logger.Log(LogType.Debug, "survival: dropped 0x{0:X2} from {1} (SurvivalTest not negotiated)", id, p.name);
+                return;
+            }
+
+            switch (id) {
+                case RESPAWN:
+                    HandleRespawn(p);
+                    break;
+                case ATTACK:
+                    // [id][targetKind(0 mob/1 player)][targetId:u16 BE] - reach and
+                    // state are validated inside (a capability is not a permission)
+                    if (data.Length >= 4) {
+                        SurvivalMobs.HandleAttack(p, data[1], (data[2] << 8) | data[3]);
+                    }
+                    break;
+                case HELD_SLOT:
+                    // [id][hotbarIndex] - tracked for place-consume preference (phase 4)
+                    if (data.Length >= 2) SurvivalInventory.HandleHeldSlot(p, data[1]);
+                    break;
+                case SLOT_CLICK:
+                    // [id][slotIdx:u16 BE][button(0 L/1 R)] - the GuiContainer click model
+                    // runs on the server's slots + cursor and echoes the result
+                    if (data.Length >= 4) {
+                        SurvivalInventory.HandleSlotClick(p, (data[1] << 8) | data[2], data[3]);
+                    }
+                    break;
+                case RESULT_CLICK:
+                    SurvivalInventory.HandleResultClick(p);
+                    break;
+                case CONT_CLOSE:
+                    SurvivalInventory.HandleContClose(p);
+                    break;
+                case USE_ITEM:
+                    // [id][heldSlot][x:i16][y:i16][z:i16 BE][face] - right-click use.
+                    // v1 scope: opens container GUIs (chest/large chest/furnace/
+                    // workbench); eating/tools land with the item definitions.
+                    if (data.Length >= 9) {
+                        SurvivalInventory.HandleUseItem(p, data[1],
+                            (short)((data[2] << 8) | data[3]),
+                            (short)((data[4] << 8) | data[5]),
+                            (short)((data[6] << 8) | data[7]), data[8]);
+                    }
+                    break;
+                case DROP_ITEM:
+                    // [id][slot][wholeStack] - Q-toss: take the item off the
+                    // server-owned inventory and fling it out as a drop entity.
+                    if (data.Length >= 3) SurvivalDrops.Toss(p, data[1], data[2] != 0);
+                    break;
+                case FIRE_ARROW:
+                    // [id][yaw:u16 ×100 (0..36000)][pitch:i16 ×100][kind(0 tab/1 bow)]
+                    // - the server spawns + simulates the arrow (ammo checked inside)
+                    if (data.Length >= 6) {
+                        double yaw   = (((data[1] << 8) | data[2]) & 0xFFFF) / 100.0;
+                        double pitch = (short)((data[3] << 8) | data[4]) / 100.0;
+                        SurvivalArrows.FireFromPlayer(p, yaw, pitch, data[5]);
+                    }
+                    break;
+                default:
+                    Logger.Log(LogType.Debug, "survival: unexpected msg 0x{0:X2} from {1}", id, p.name);
+                    break;
+            }
+        }
+
+
+        // ==================== helpers ====================
+
+        /// <summary> Whether this player should see the map as read-only at the
+        /// CPE BlockPermissions layer: a non-survival (Classic) client on a
+        /// survival "visitor" map. Sending place=delete=false to those clients
+        /// stops the flicker-then-revert of an edit the block bridge would cancel
+        /// anyway. Mirrors OnBlockChanging's visitor policy exactly - Indev
+        /// survival clients, creative maps, Allow maps and referees build normally. </summary>
+        public static bool BlocksReadOnly(Player p) {
+            Level lvl = p.level;
+            if (lvl == null || lvl.Config.SurvivalMode == SurvivalMode.Off) return false;
+            if (lvl.Config.SurvivalCreative) return false;                 // creative: free build for all
+            if (p.Session != null && p.Session.hasSurvival) return false;  // survival clients build via the bridge
+            if (p.Game.Referee) return false;                             // staff keep build access
+            return lvl.Config.SurvivalVisitors != SurvivalVisitorPolicy.Allow;
+        }
+
+        static HelloFlags HelloFlagsFor(LevelConfig cfg) {
+            HelloFlags f = HelloFlags.None;
+            if (cfg.SurvivalEnhanced)   f |= HelloFlags.Enhanced;
+            if (cfg.SurvivalCreative)   f |= HelloFlags.Creative;
+            if (cfg.SurvivalPvP)        f |= HelloFlags.Pvp;
+            if (cfg.SurvivalDeathDrops) f |= HelloFlags.DeathDrops;
+            return f;
+        }
+
+        static WorldFlags WorldFlagsFor(LevelConfig cfg) {
+            WorldFlags f = WorldFlags.None;
+            if (cfg.SurvivalTheme == SurvivalTheme.Floating) f |= WorldFlags.Floating;
+            return f;
+        }
+
+        /// <summary> Resolves an env property to a concrete value, substituting the map default when unset. </summary>
+        static int EnvValue(LevelConfig cfg, EnvProp prop, int height) {
+            int v = cfg.GetEnvProp(prop);
+            return v == EnvConfig.ENV_USE_DEFAULT ? EnvConfig.DefaultEnvProp(prop, height) : v;
+        }
+
+        /// <summary> Converts a server block id to the raw id the client understands, clamped to a byte. </summary>
+        static byte RawBlock(Player p, BlockID block) {
+            BlockID raw = p.Session.ConvertBlock(block);
+            return raw > Block.CLASSIC_MAX_BLOCK ? (byte)Block.Bedrock : (byte)raw;
+        }
+
+        static byte ClampByte(int v) {
+            if (v < 0)   return 0;
+            if (v > 255) return 255;
+            return (byte)v;
+        }
+    }
+}

@@ -125,7 +125,7 @@ namespace MCGalaxy
                          new CmdModel(),     new CmdModelScale(), new CmdPing(),       new CmdReachDistance(), 
                          new CmdSkin(),      new CmdTexture(),    new CmdGlobalBlock(),new CmdLevelBlock());
 
-            RegisterCore(new CmdBuy(),       new CmdEconomy(),    new CmdGive(),       new CmdBalance(), 
+            RegisterCore(new CmdBuy(),       new CmdEconomy(),    new CmdPayout(),     new CmdBalance(),
                          new CmdPay(),       new CmdStore(),      new CmdTake());
 
             RegisterCore(new CmdExplode(),   new CmdFlipHead(),   new CmdFlipHeads(),  new CmdGun(), 
@@ -167,8 +167,13 @@ namespace MCGalaxy
                          new CmdMain(),      new CmdMap(),        new CmdMuseum(),     new CmdNewLvl(), 
                          new CmdOverseer(),  new CmdPause(),      new CmdPhysics(),    new CmdRenameLvl(),
                          new CmdResizeLvl(), new CmdRestore(),    new CmdReload(),     new CmdSave(), 
-                         new CmdSetspawn(),  new CmdSpawn(),      new CmdUnflood(),    new CmdUnload(), 
+                         new CmdSetspawn(),  new CmdSpawn(),      new CmdSurvival(),   new CmdUnflood(),    new CmdUnload(), 
                          new CmdPermissionBuild(),new CmdPermissionVisit());
+
+            // SurvivalTest tools split out of /Survival (config stays on /Survival)
+            RegisterCore(new CmdSurvSpawn(), new CmdMobs(),       new CmdSpawner(),    new CmdSurvTime(),
+                         new CmdInventory(), new CmdSurvivalGive(),new CmdExport(),
+                         new CmdSpectate());
 
             RegisterCore(new CmdAward(),     new CmdAwardMod(),   new CmdAwards());
         }

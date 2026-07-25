@@ -95,7 +95,7 @@ namespace MCGalaxy.Levels.IO
         public abstract void Write(Stream dst, Level lvl);
         
         public static List<IMapExporter> Formats = new List<IMapExporter>() {
-            new LvlExporter()
+            new LvlExporter(), new McLevelExporter()
         };
     }
 }
