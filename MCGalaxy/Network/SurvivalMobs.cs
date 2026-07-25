@@ -1464,8 +1464,6 @@ namespace MCGalaxy.Network
                 SpawnMob(lvl, lm, type, cx + 0.5, cy, cz + 0.5, (float)(rng.NextDouble() * 360.0));
                 lm.Stats.Spawned++;
                 lm.Stats.LastSpawn = Types[type].Name + " at (" + cx + ", " + cy + ", " + cz + ")";
-                Logger.Log(LogType.Debug, "survival: spawner placed a {0} at ({1}, {2}, {3}) on {4}",
-                           Types[type].Name, cx, cy, cz, lvl.name);
             }
         }
 
