@@ -1921,3 +1921,36 @@ approximation (low); farmland at the top layer reverts (GetBlock(y+1) reads
 Invalid, nit); McLevelImporter discards TimeOfDay (low); /SurvTime from console
 reports success without a level (nit); sidecars orphaned on level rename/copy
 (medium - needs rename hooks); stale "shared clock" comments.
+
+## Deferred-fix pass + .mclevel round-trip upgrade
+
+DEFERRED AUDIT FIXES, all landed:
+ * Reflood perf: LevelGrowth.LightDirty - the once-a-second full-volume block-
+   light reflood now runs only when a block actually changed since the last
+   flood (SetView + player edits via SurvivalPhysics.OnBlockChanged both mark
+   dirty; countdown clamped so it can't underflow). Quiet maps: zero rescans.
+ * Spider light: SpiderBright uses the REAL light model (Brightness > 0.5,
+   sky + block light - a spider in torchlight loses interest exactly where it
+   refuses to hunt), while IsBright keeps skylight-x-exposure for undead
+   daylight burn (torches must never ignite zombies) and despawn accel.
+ * Farmland top layer: the solid-above check is now bounds-guarded (an
+   unguarded GetBlock(y+1) read Block.Invalid = "solid" and always reverted).
+ * /SurvTime from console: proper "per-map, use in-game" message.
+ * Stale "shared/global clock" comments refreshed (SurvivalNet, networking-plan).
+ * Sidecar lifecycle: OnLevelRenamed/Copied/Deleted move/copy/delete
+   extra/survival/<map>.sur so name-keyed state follows the level.
+
+.MCLEVEL ROUND-TRIP (closes the Phase-1 export/import gaps):
+ * Exporter: the level's live mobs are written into Entities as genuine mob
+   compounds (id Zombie/Skeleton/Pig/Creeper/Spider/Sheep, Pos = feet +
+   heightOffset, Rotation, Health, Fire, sheep Sheared) after the LocalPlayer
+   stub. SurvivalMobs.SnapshotMobs/HeightOffOf are the accessors.
+ * Importer: Environment.TimeOfDay -> Level.Config.SurvivalTime (per-map clock);
+   Entities + TileEntities are converted into extra/survival/<name>.sur ("mob"
+   lines feet-space, "cont" lines with genuine item ids mapped back through
+   FromIndev) - consumed exactly-once by the hardened persistence restore when
+   the imported level first loads. No new registry paths: the import rides the
+   same pipeline as normal persistence.
+ * Verified live: /Export rtx gt1 -> /Import rtx -> /Load rtx: 15 mobs through
+   NBT and back (positions float32-exact, fur preserved), TimeOfDay carried,
+   sidecar consumed on load, zero errors.

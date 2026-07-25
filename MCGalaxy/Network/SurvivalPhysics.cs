@@ -168,6 +168,8 @@ namespace MCGalaxy.Network
             // old block isn't carried by the event; only newV + neighbour
             // reactions drive scheduling, so Air is a safe stand-in.
             Notify(lvl, x, y, z, Block.Air, now);
+            // a player edit may change the light (torch placed/mined, roof opened)
+            SurvivalGrowth.MarkLightDirty(lvl);
         }
 
         static void NotifyNeighbour(LevelPhys lp, Level lvl, int x, int y, int z) {

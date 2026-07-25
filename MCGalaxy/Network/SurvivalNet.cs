@@ -513,9 +513,9 @@ namespace MCGalaxy.Network
         // ==================== day / night clock (SURV_TIME) ====================
         //
         // The server owns the day/night cycle (the client must not run it locally in MP - see
-        // networking-plan.md 15.2 / 17.4). A single clock is advanced on the scheduler and pushed
-        // to every survival player. For v1 the clock is shared across survival maps; a per-map clock
-        // is a future refinement (Indev worlds each keep their own TimeOfDay).
+        // networking-plan.md 15.2 / 17.4). The clock is PER-MAP: each loaded survival level
+        // advances its own Level.Config.SurvivalTime (persisted with the level, matching Indev
+        // worlds each keeping their own TimeOfDay), pushed to that level's survival players.
         //
         // SURV_TIME wire layout (v1): [id=0x04][worldTime: u16 BE][skyLight: u8]
         //   worldTime - 0 .. DAY_TICKS-1 (0 sunrise, 6000 noon, 12000 sunset, 18000 midnight)

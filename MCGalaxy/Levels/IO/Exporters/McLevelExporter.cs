@@ -195,10 +195,18 @@ namespace MCGalaxy.Levels.IO {
             return fallback;
         }
 
+        // genuine Indev entity ids, indexed by the server mob type
+        static readonly string[] mobIds = { "Zombie", "Skeleton", "Pig", "Creeper", "Spider", "Sheep" };
+
         // genuine Indev always has a LocalPlayer entity - a file without one
-        // makes it spawn a fresh player, so write a minimal one at the spawn
+        // makes it spawn a fresh player, so write a minimal one at the spawn.
+        // The level's LIVE mobs follow it, each as its genuine mob compound
+        // (Pos anchored at feet + heightOffset, like real Indev saves).
         static void WritePlayer(Stream s, Level lvl) {
-            WriteList(s, "Entities", NBT_DICT, 1);
+            List<SurvivalMobs.MobSnapshot> mobs = SurvivalMobs.SnapshotMobs(lvl);
+            mobs.RemoveAll(m => m.Type < 0 || m.Type >= mobIds.Length);
+
+            WriteList(s, "Entities", NBT_DICT, 1 + mobs.Count);
             WriteString(s, "id", "LocalPlayer");
             WriteFloatList(s, "Pos", lvl.spawnx + 0.5f, lvl.spawny + 1.62f, lvl.spawnz + 0.5f);
             WriteFloatList(s, "Motion", 0.0f, 0.0f, 0.0f);
@@ -213,6 +221,23 @@ namespace MCGalaxy.Levels.IO {
             WriteI32(s, "Score", 0);
             WriteList(s, "Inventory", NBT_DICT, 0);
             s.WriteByte(NBT_END); // close player compound
+
+            foreach (SurvivalMobs.MobSnapshot m in mobs)
+            {
+                WriteString(s, "id", mobIds[m.Type]);
+                WriteFloatList(s, "Pos", (float)m.X, (float)(m.Y + SurvivalMobs.HeightOffOf(m.Type)), (float)m.Z);
+                WriteFloatList(s, "Motion", 0.0f, 0.0f, 0.0f);
+                WriteFloatList(s, "Rotation", m.Yaw, m.Pitch);
+                WriteF32(s, "FallDistance", 0.0f);
+                WriteI16(s, "Fire", (short)Math.Min(m.Fire, short.MaxValue));
+                WriteI16(s, "Air",  300);
+                WriteI16(s, "Health", (short)m.Health);
+                WriteI16(s, "HurtTime", 0);
+                WriteI16(s, "DeathTime", 0);
+                WriteI16(s, "AttackTime", 0);
+                if (m.Type == 5) WriteU8(s, "Sheared", m.HasFur ? 0 : 1); // genuine EntitySheep
+                s.WriteByte(NBT_END); // close mob compound
+            }
         }
 
         static bool IsChestView(byte v) {

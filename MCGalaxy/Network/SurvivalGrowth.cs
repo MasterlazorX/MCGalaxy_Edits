@@ -57,6 +57,7 @@ namespace MCGalaxy.Network
             public byte[] BlockLight;
             public int    LightVolume;
             public int    FloodCountdown; // ticks until the next lazy re-flood (0 => flood now)
+            public bool   LightDirty = true; // a block changed since the last flood (start dirty)
         }
 
         static readonly Dictionary<Level, LevelGrowth> registry = new Dictionary<Level, LevelGrowth>();
@@ -111,6 +112,17 @@ namespace MCGalaxy.Network
             if (old == view) return;
             lvl.UpdateBlock(Player.Console, (ushort)x, (ushort)y, (ushort)z, Block.FromRaw((BlockID)view));
             SurvivalPhysics.Notify(lvl, x, y, z, old, view);
+            MarkLightDirty(lvl);
+        }
+
+        /// <summary> A block on the level changed, so the block-light flood cache may
+        /// be stale. The tick refloods dirty levels at most once a second; a quiet
+        /// level refloods never. Cheap + unlocked by design (a torn write only costs
+        /// one missed/extra reflood). Player edits route here via
+        /// SurvivalPhysics.OnBlockChanged. </summary>
+        internal static void MarkLightDirty(Level lvl) {
+            LevelGrowth g = GetLevel(lvl, false);
+            if (g != null) g.LightDirty = true;
         }
 
         static bool IsCrops(ushort v)    { return v >= SurvivalBlocks.CROPS_0 && v <= SurvivalBlocks.CROPS_7; }
@@ -293,7 +305,12 @@ namespace MCGalaxy.Network
             LevelGrowth g = GetLevel(lvl, true);
 
             // refresh the block-light cache lazily (first tick, then once a second)
-            if (--g.FloodCountdown <= 0 || g.BlockLight == null) {
+            // reflood only when a block actually changed since the last flood
+            // (the countdown still rate-limits a busy level to ~1/s; a quiet
+            // level skips the full-volume rescan entirely)
+            if (g.FloodCountdown > 0) g.FloodCountdown--;
+            if (g.FloodCountdown <= 0 && (g.LightDirty || g.BlockLight == null)) {
+                g.LightDirty = false;
                 RefloodBlockLight(lvl, g);
                 g.FloodCountdown = FLOOD_INTERVAL;
             }
@@ -438,7 +455,11 @@ namespace MCGalaxy.Network
             if (g.Rng.Next(5) != 0) return;
 
             ushort above = y + 1 < lvl.Height ? ViewAt(lvl, x, y + 1, z) : (ushort)Block.Air;
-            if (CollideType.IsSolid(lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)(y + 1), (ushort)z)))) {
+            // above the top layer is open sky, never "solid" (an unguarded GetBlock
+            // there reads Block.Invalid, which counts as solid and reverted it)
+            bool solidAbove = y + 1 < lvl.Height &&
+                CollideType.IsSolid(lvl.CollideType(lvl.GetBlock((ushort)x, (ushort)(y + 1), (ushort)z)));
+            if (solidAbove) {
                 SetView(lvl, x, y, z, Block.Dirt);
                 return;
             }

@@ -93,11 +93,13 @@ Server generates Indev/c0.30-s worlds and owns block metadata.
   the `SurvivalBlocks` bijection into view ids (imported maps come out
   survival-ready, theme recognised); the new `McLevelExporter`
   (`/Survival export <name> <level>` → `extra/import/`, `/Import`-able)
-  writes the client's `MCLevel_Save` schema with a `LocalPlayer` stub and
-  chest/furnace tile entities (live contents). Live round trip verified
-  cell-identical. Remaining (quality pass / later): restoring imported
-  tile-entity contents (needs container persistence), player/mob entities,
-  per-map `TimeOfDay`.
+  writes the client's `MCLevel_Save` schema with a `LocalPlayer` stub,
+  chest/furnace tile entities (live contents) and the level's LIVE MOBS as
+  genuine entity compounds. The importer restores `TimeOfDay` into the per-map
+  clock and turns `Entities`/`TileEntities` into a survival sidecar the
+  persistence layer consumes exactly-once on first load - so mobs, chest and
+  furnace contents round-trip. Live-verified (15 mobs + time through
+  export -> import -> load).
 
 ## ✅ Phase 2 — Health & damage
 

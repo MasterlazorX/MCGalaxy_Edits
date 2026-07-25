@@ -147,5 +147,40 @@ namespace MCGalaxy.Network
             if (lvl == null || lvl.Config.SurvivalMode == SurvivalMode.Off) return;
             lock (pending) { if (!pending.Contains(lvl)) pending.Add(lvl); }
         }
+
+        // Sidecars are keyed by level NAME, so they must follow the level through
+        // renames/copies/deletes - else the state is orphaned (lost for the renamed
+        // map, resurrected into a future map that reuses the old name).
+
+        static string PathOf(string map) { return "extra/survival/" + map + ".sur"; }
+
+        public static void OnLevelRenamed(string srcMap, string dstMap) {
+            try {
+                string s = PathOf(srcMap), d = PathOf(dstMap);
+                if (!File.Exists(s)) return;
+                if (File.Exists(d)) File.Delete(d);
+                File.Move(s, d);
+            } catch (Exception ex) {
+                Logger.LogError("Error moving survival sidecar for " + srcMap, ex);
+            }
+        }
+
+        public static void OnLevelCopied(string srcMap, string dstMap) {
+            try {
+                string s = PathOf(srcMap);
+                if (File.Exists(s)) File.Copy(s, PathOf(dstMap), true);
+            } catch (Exception ex) {
+                Logger.LogError("Error copying survival sidecar for " + srcMap, ex);
+            }
+        }
+
+        public static void OnLevelDeleted(string map) {
+            try {
+                string s = PathOf(map);
+                if (File.Exists(s)) File.Delete(s);
+            } catch (Exception ex) {
+                Logger.LogError("Error deleting survival sidecar for " + map, ex);
+            }
+        }
     }
 }

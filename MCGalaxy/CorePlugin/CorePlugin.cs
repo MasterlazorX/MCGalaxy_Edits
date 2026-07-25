@@ -54,6 +54,9 @@ namespace MCGalaxy.Core {
             OnLevelLoadedEvent.Register(Network.SurvivalPersistence.OnLevelLoaded, Priority.Low);
             OnLevelSaveEvent.Register(Network.SurvivalPersistence.OnLevelSave, Priority.Low);
             OnLevelUnloadEvent.Register(Network.SurvivalPersistence.OnLevelUnload, Priority.Low);
+            OnLevelRenamedEvent.Register(Network.SurvivalPersistence.OnLevelRenamed, Priority.Low);
+            OnLevelCopiedEvent.Register(Network.SurvivalPersistence.OnLevelCopied, Priority.Low);
+            OnLevelDeletedEvent.Register(Network.SurvivalPersistence.OnLevelDeleted, Priority.Low);
             Network.SurvivalNet.Start();
         }
         
@@ -82,6 +85,9 @@ namespace MCGalaxy.Core {
             OnLevelLoadedEvent.Unregister(Network.SurvivalPersistence.OnLevelLoaded);
             OnLevelSaveEvent.Unregister(Network.SurvivalPersistence.OnLevelSave);
             OnLevelUnloadEvent.Unregister(Network.SurvivalPersistence.OnLevelUnload);
+            OnLevelRenamedEvent.Unregister(Network.SurvivalPersistence.OnLevelRenamed);
+            OnLevelCopiedEvent.Unregister(Network.SurvivalPersistence.OnLevelCopied);
+            OnLevelDeletedEvent.Unregister(Network.SurvivalPersistence.OnLevelDeleted);
             Network.SurvivalNet.Stop();
         }
     }

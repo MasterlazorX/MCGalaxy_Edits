@@ -384,6 +384,15 @@ namespace MCGalaxy.Network
             return SurvivalNet.CurrentSkyLight(lvl) > 7 && SkyExposed(lvl, m);
         }
 
+        // EntitySpider.attackEntity's getBrightness(1.0F) > 0.5F: the REAL light
+        // model (sky + block light), matching the acquisition gate - so a spider in
+        // torchlight loses interest exactly where it refuses to hunt. Distinct from
+        // IsBright above, whose skylight-x-exposure form is the correct semantic for
+        // undead daylight burning (torches must never set zombies on fire).
+        static bool SpiderBright(Level lvl, SurvMob m) {
+            return Brightness(lvl, (int)Math.Floor(m.X), (int)Math.Floor(m.Y), (int)Math.Floor(m.Z)) > 0.5;
+        }
+
 
         // ==================== physics (Mob.travel port) ====================
 
@@ -945,7 +954,7 @@ namespace MCGalaxy.Network
             if (m.Type == TYPE_SPIDER) {
                 // EntitySpider.attackEntity: light makes it lose interest; a 2-6
                 // block pounce roll; otherwise the shared melee below.
-                if (IsBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; m.TargetMob = null; m.PathCount = 0; return false; }
+                if (SpiderBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; m.TargetMob = null; m.PathCount = 0; return false; }
                 if (dist > 2.0 && dist < 6.0 && rng.Next(10) == 0) {
                     if (m.OnGround) {
                         double dx = target.Pos.X / 32.0 - m.X, dz = target.Pos.Z / 32.0 - m.Z;
@@ -999,7 +1008,7 @@ namespace MCGalaxy.Network
 
             if (m.Type == TYPE_SPIDER) {
                 // light makes it lose interest; 2-6 block pounce toward the victim
-                if (IsBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; m.TargetMob = null; m.PathCount = 0; return false; }
+                if (SpiderBright(lvl, m) && rng.Next(100) == 0) { m.Target = null; m.TargetMob = null; m.PathCount = 0; return false; }
                 if (dist > 2.0 && dist < 6.0 && rng.Next(10) == 0) {
                     if (m.OnGround) {
                         double dx = victim.X - m.X, dz = victim.Z - m.Z;
@@ -1508,6 +1517,38 @@ namespace MCGalaxy.Network
         /// prune sweep dropped it - a Save then must not write an empty snapshot). </summary>
         internal static bool HasRegistry(Level lvl) {
             return GetLevel(lvl, false) != null;
+        }
+
+        /// <summary> A plain-data snapshot of one live mob, for the .mclevel
+        /// exporter (feet-space position; HeightOff turns it into the genuine
+        /// entity Pos anchor). </summary>
+        public class MobSnapshot
+        {
+            public int Type; public double X, Y, Z;
+            public float Yaw, Pitch; public int Health, Fire; public bool HasFur;
+        }
+
+        /// <summary> Snapshots the level's live mobs (under the mob lock). </summary>
+        public static List<MobSnapshot> SnapshotMobs(Level lvl) {
+            List<MobSnapshot> list = new List<MobSnapshot>();
+            LevelMobs lm = GetLevel(lvl, false);
+            if (lm == null) return list;
+            lock (lm.Mobs) {
+                foreach (SurvMob m in lm.Mobs)
+                {
+                    if (m.Dead) continue;
+                    list.Add(new MobSnapshot { Type = m.Type, X = m.X, Y = m.Y, Z = m.Z,
+                                               Yaw = m.Yaw, Pitch = m.Pitch, Health = m.Health,
+                                               Fire = m.Fire, HasFur = m.HasFur });
+                }
+            }
+            return list;
+        }
+
+        /// <summary> Entity.heightOffset for a mob type (genuine entity Pos.y =
+        /// feet + heightOffset - the exporter/importer anchor conversion). </summary>
+        public static float HeightOffOf(int type) {
+            return type >= 0 && type < Types.Length ? Types[type].HeightOff : 1.62f;
         }
 
         internal static void SaveMobs(Level lvl, System.IO.TextWriter w) {

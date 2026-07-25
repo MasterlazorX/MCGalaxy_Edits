@@ -29,6 +29,11 @@ namespace MCGalaxy.Commands.World
         public override LevelPermission defaultRank { get { return LevelPermission.Operator; } }
 
         public override void Use(Player p, string message, CommandData data) {
+            if (p.level == null) {
+                // the clock is per-map now: console has no level to read or set
+                p.Message("&WThe survival clock is per-map - use this command in-game on the target level.");
+                return;
+            }
             if (message.Length == 0) {
                 int t = SurvivalNet.WorldTimeOf(p.level);
                 p.Message("World time: &b{0}&S ({1}&S), sky light &b{2}&S/15",

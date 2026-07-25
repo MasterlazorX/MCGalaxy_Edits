@@ -1264,10 +1264,10 @@ the theme from the genuine sky colours; a new `McLevelExporter` writes the
 furnace `TileEntities` with live contents — one per container *block*, genuine
 Indev NPE‑crashes otherwise), driven by `/Survival export <name> <level>` into
 `extra/import/` where `/Import` reads it back. Live round trip verified
-cell‑identical (128×64×128). Deliberate v1 gaps, documented server‑side:
-player inventory/mob entities and imported tile‑entity contents are session
-state the server doesn't persist yet, and `TimeOfDay` is exported but not
-imported (the server clock is global).
+cell‑identical (128×64×128). The v1 gaps have since closed: the server clock
+is per‑map (`SurvivalTime`), mobs/containers persist via the survival sidecar,
+and the importer/exporter round‑trip mobs, tile‑entity contents and
+`TimeOfDay`.
 
 ## 19. Texture handling & serving
 
