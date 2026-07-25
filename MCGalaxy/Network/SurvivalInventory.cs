@@ -18,6 +18,7 @@
 using System;
 using System.Collections.Generic;
 using MCGalaxy.Blocks;
+using MCGalaxy.Commands.World;
 using BlockID = System.UInt16;
 
 namespace MCGalaxy.Network
@@ -290,10 +291,13 @@ namespace MCGalaxy.Network
         }
         // Kind CONT_CHEST/FURNACE/LARGE/WORKBENCH use Upper/Lower (tile entities);
         // CONT_PLAYERINV uses Target (the viewed player) + CanEdit (Admin can move
-        // items, Operator is view-only). Lvl is the VIEWER's level at open time -
-        // the per-click guard drops the ref if the viewer leaves it.
+        // items, Operator is view-only) + CrossMap (whether the viewer was allowed
+        // to open the view across maps - views without it auto-close if the target
+        // leaves the viewer's level, keeping the same-map gate honest for the
+        // view's whole lifetime, not just at open time). Lvl is the VIEWER's level
+        // at open time - the per-click guard drops the ref if the viewer leaves it.
         class OpenRef { public byte Kind; public Container Upper, Lower; public Level Lvl;
-                        public Player Target; public bool CanEdit; }
+                        public Player Target; public bool CanEdit; public bool CrossMap; }
 
         const string OPEN_KEY = "survival.container";
         static readonly object contLock = new object();
@@ -897,6 +901,10 @@ namespace MCGalaxy.Network
         /// Called from SurvivalNet.OnJoinedLevel. </summary>
         public static void OnLeftLevel(Player p) {
             p.Extras.Remove(OPEN_KEY);
+            // a spectating viewer who changes level loses the follow (server follow
+            // tick) and the view (above) - drop the session marker so /Spectate
+            // stop doesn't later claim a phantom session
+            p.Extras.Remove(CmdSpectate.SPEC_KEY);
         }
 
         /// <summary> Opens a chest-style view of another player's inventory
@@ -910,7 +918,8 @@ namespace MCGalaxy.Network
         /// simultaneous edit-and-self-click on the very same slot can lose one
         /// update (self-heals on the next resync). This is the same accepted race
         /// as /SurvivalGive, and vanishingly rare for a live admin tool. </remarks>
-        public static bool OpenPlayerInventory(Player viewer, Player target, bool canEdit, bool solo = false) {
+        public static bool OpenPlayerInventory(Player viewer, Player target, bool canEdit,
+                                               bool solo = false, bool crossMap = false) {
             if (viewer == null || target == null) return false;
             if (viewer.Session == null || !viewer.Session.hasSurvival) return false;
             if (!SurvivalNet.Active(viewer, viewer.level)) return false;
@@ -920,6 +929,7 @@ namespace MCGalaxy.Network
             open.Lvl = viewer.level;
             open.Target = target;
             open.CanEdit = canEdit;
+            open.CrossMap = crossMap;
             viewer.Extras[OPEN_KEY] = open;
             // v3 clients render the dedicated player-inventory panel (kind 5, all
             // 40 cells incl. armor); a v2 client only knows chest, so fall back to
@@ -948,6 +958,16 @@ namespace MCGalaxy.Network
             SurvivalNet.SendContOpen(p, CONT_NONE, 0);
         }
 
+        // If the viewer was /Spectate-ing this target, end the spectate session's
+        // bookkeeping too (its follow half was already torn down by the server's
+        // follow tick / the disconnect), so /Spectate stop doesn't claim a phantom.
+        static void EndSpectateOf(Player viewer, Player target) {
+            object o;
+            if (!viewer.Extras.TryGet(CmdSpectate.SPEC_KEY, out o)) return;
+            if (!((string)o).CaselessEq(target.name)) return;
+            viewer.Extras.Remove(CmdSpectate.SPEC_KEY);
+        }
+
         /// <summary> A player disconnected: force-close every open /Inventory view
         /// of them (the view holds a now-departed Player). Registered on
         /// OnPlayerDisconnectEvent. </summary>
@@ -961,6 +981,39 @@ namespace MCGalaxy.Network
                 if (o == null || o.Kind != CONT_PLAYERINV || o.Target != target) continue;
                 pl.Extras.Remove(OPEN_KEY);
                 SurvivalNet.SendContOpen(pl, CONT_NONE, 0); // force-close the screen
+                EndSpectateOf(pl, target);
+                pl.Message("{0}&S disconnected - inventory view closed.", target.ColoredName);
+            }
+        }
+
+        /// <summary> The target of open /Inventory//Spectate views changed level.
+        /// The same-map gate is enforced at open time (operators may only open
+        /// views of players on their own map), so keep it honest for the view's
+        /// lifetime: views WITHOUT the cross-map capability close when the target
+        /// leaves the viewer's level. Cross-map-capable (admin) views stay open -
+        /// they were allowed to open across maps in the first place - but their
+        /// follow half (if /Spectate) died with the level change, so tell them.
+        /// Called from SurvivalNet.OnJoinedLevel with the moved player. </summary>
+        public static void OnTargetLevelChanged(Player target) {
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player pl in players)
+            {
+                if (pl == target || pl.level == target.level) continue;
+                OpenRef o = GetOpen(pl);
+                if (o == null || o.Kind != CONT_PLAYERINV || o.Target != target) continue;
+                if (o.CrossMap) {
+                    // the follow half (if any) was cleared by the server's follow
+                    // tick the moment the levels diverged - only the view remains
+                    EndSpectateOf(pl, target);
+                    pl.Message("{0}&S moved to {1}&S - view stays open (follow ended).",
+                               target.ColoredName,
+                               target.level == null ? "another map" : target.level.ColoredName);
+                    continue;
+                }
+                pl.Extras.Remove(OPEN_KEY);
+                SurvivalNet.SendContOpen(pl, CONT_NONE, 0); // force-close the screen
+                EndSpectateOf(pl, target);
+                pl.Message("{0}&S left the map - inventory view closed.", target.ColoredName);
             }
         }
 

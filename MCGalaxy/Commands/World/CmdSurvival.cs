@@ -170,9 +170,6 @@ namespace MCGalaxy.Commands.World
             p.Message("  hazards: death detection &b{0}&S, fall height &b{1}&S, live mobs &b{2}",
                       cfg.SurvivalDeath, cfg.FallHeight, SurvivalMobs.CountMobs(lvl));
             p.Message("  non-survival clients: &b{0}&S (change with &T/Survival visitors&S)", cfg.SurvivalVisitors);
-            // stale-build tripwire: if this line is missing in-game, the server
-            // binary predates the phase the missing feature shipped in
-            p.Message("  server build: &bphases 0-4 + indev blocks &S(dwell, hacks-override, mobs, inventory)");
         }
 
         public override void Help(Player p) {

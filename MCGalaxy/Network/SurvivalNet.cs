@@ -807,6 +807,10 @@ namespace MCGalaxy.Network
             // env-light dedup from the previous map is stale - forget it so the
             // day/night fallback re-applies on the next tick (stock viewers too).
             SurvivalFallbacks.ResetEnvCache(p);
+            // ALL clients: this player may be the TARGET of open /Inventory or
+            // /Spectate views (targets need not be survival clients themselves) -
+            // close/notify views whose same-map gate the move just broke.
+            SurvivalInventory.OnTargetLevelChanged(p);
             if (p.Session == null || !p.Session.hasSurvival) return;
             // any container the player had open belonged to the previous level
             SurvivalInventory.OnLeftLevel(p);

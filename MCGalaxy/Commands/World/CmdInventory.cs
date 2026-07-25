@@ -70,13 +70,17 @@ namespace MCGalaxy.Commands.World
             }
 
             // Admins (extra perm 1) get an editable window; Operators view-only.
-            bool canEdit = HasExtraPerm(p, data.Rank, 1);
+            bool canEdit   = HasExtraPerm(p, data.Rank, 1);
+            // Cross-map-capable views survive the target changing level; same-map
+            // views auto-close then (the open-time gate, kept honest for life).
+            bool crossMap  = HasExtraPerm(p, data.Rank, 2);
 
             // A survival-test client on a survival map gets the GUI; anyone else
             // (a stock client, another mode, or the console) gets the text dump.
             // A cross-map target isn't spawned to the viewer, so the panel shows the
             // target's items with no live paperdoll (handled server-side).
-            if (p != Player.Console && SurvivalInventory.OpenPlayerInventory(p, target, canEdit)) {
+            if (p != Player.Console &&
+                SurvivalInventory.OpenPlayerInventory(p, target, canEdit, solo: false, crossMap: crossMap)) {
                 p.Message("Opened {0}&S's inventory ({1}).", target.ColoredName,
                           canEdit ? "&aeditable&S" : "&7view-only&S");
                 return;

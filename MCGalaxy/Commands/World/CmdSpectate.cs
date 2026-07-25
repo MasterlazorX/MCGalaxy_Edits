@@ -36,7 +36,10 @@ namespace MCGalaxy.Commands.World
             get { return new[] { new CommandPerm(LevelPermission.Admin, "can spectate players on other maps") }; }
         }
 
-        const string SPEC_KEY = "survival.spectating";
+        /// <summary> Extras key marking an active /Spectate session (value = the
+        /// target's name). SurvivalInventory clears it when it force-closes the
+        /// mirrored view (target left/disconnected, viewer changed level). </summary>
+        public const string SPEC_KEY = "survival.spectating";
 
         public override void Use(Player p, string message, CommandData data) {
             if (message.Length == 0 || message.CaselessEq("stop")) { Stop(p, data); return; }
@@ -69,8 +72,10 @@ namespace MCGalaxy.Commands.World
 
             // Live inventory mirror (read-only). Returns false for a non-survival
             // client, or if /Follow just TP'd us onto a non-survival map - then it's
-            // follow-only.
-            bool gui = SurvivalInventory.OpenPlayerInventory(p, target, false, solo: true);
+            // follow-only. Cross-map capability (perm 1) keeps the mirror open if
+            // the target later hops maps; same-map spectates auto-close then.
+            bool gui = SurvivalInventory.OpenPlayerInventory(p, target, false, solo: true,
+                                                             crossMap: HasExtraPerm(p, data.Rank, 1));
             p.Extras[SPEC_KEY] = target.name;
             p.Message("Now spectating {0}&S{1}. &T/Spectate stop &Sto end.",
                       target.ColoredName, gui ? " &S(inventory mirrored)" : " &S(follow only)");
