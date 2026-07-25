@@ -84,7 +84,7 @@ namespace MCGalaxy.Network
         /// extension version; this byte is reserved for finer-grained same-ext-version sub-revisions. </summary>
         public const byte ProtoVersion = 1;
 
-        // ----- server -> client message ids (0x01 - 0x50) -----
+        // ----- server -> client message ids (0x01 - 0x51) -----
         public const byte HELLO        = 0x01;
         public const byte WORLDINFO    = 0x02;
         public const byte HEALTH       = 0x03;
@@ -110,6 +110,7 @@ namespace MCGalaxy.Network
         public const byte TNT_REMOVE   = 0x38;
         public const byte BLOCKMETA    = 0x40;
         public const byte PLAYER_EQUIP = 0x50;
+        public const byte PLAYER_HURT  = 0x51;
 
         // ----- client -> server message ids (0x80 - 0x87) -----
         public const byte ATTACK       = 0x80;
@@ -759,6 +760,10 @@ namespace MCGalaxy.Network
                 health -= damage;
             }
 
+            // the hit landed: everyone else watching sees the victim's body rock
+            // (the victim's own tilt/sound rides the SURV_HEALTH drop below)
+            BroadcastHurt(p);
+
             if (health <= 0) {
                 // route through HandleDeath so the message, death count and the
                 // death-screen dwell all behave exactly like any other death
@@ -768,6 +773,28 @@ namespace MCGalaxy.Network
                 SetHealth(p, health); // the drop plays the client's hurt tilt/sound
             }
             return true;
+        }
+
+        /// <summary> SURV_PLAYER_HURT: [entityId] - a remote player took a LANDED hit;
+        /// the client rocks that entity with the same hurt roll the mob puppets use
+        /// (and voices the hit at their body). Broadcast to every OTHER survival
+        /// watcher on the victim's level - the victim's own client derives its hurt
+        /// presentation (camera tilt + sound) from the SURV_HEALTH drop, so no self
+        /// id is ever sent. Old clients ignore the unknown id, so no ext bump. </summary>
+        static void BroadcastHurt(Player victim) {
+            Level lvl = victim.level;
+            Player[] players = PlayerInfo.Online.Items;
+            foreach (Player viewer in players)
+            {
+                byte eid;
+                if (viewer == victim || viewer.level != lvl) continue;
+                if (!Active(viewer, lvl)) continue;
+                if (!viewer.EntityList.TryGetVisibleID(victim, out eid)) continue;
+                byte[] msg = new byte[Packet.PluginMessageDataLength];
+                msg[0] = PLAYER_HURT;
+                msg[1] = eid;
+                SendMessage(viewer, msg);
+            }
         }
 
         // Genuine Mob.knockBack strength is 0.4 blocks/tick on each axis. The CPE

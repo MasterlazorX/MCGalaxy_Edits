@@ -386,6 +386,18 @@ A remote player's held item + worn armor, all as item ids — the client owns
 every model/texture and renders them onto the entity. Sent when the equip
 changes and when an entity spawns into view; deduplicated server-side.
 
+### 0x51 `SURV_PLAYER_HURT`
+`[1] entityId (as the receiving viewer sees the victim)`
+
+A player took a **landed** hit (one absorbed by the invulnerability window or
+armor is not broadcast). The client rocks that entity with the standard hurt
+body-roll — `sin((t/10)⁴·π) × 14°` about the model Z axis over 10 ticks, the
+same wobble mob puppets use — and voices the hit at their body. Broadcast to
+every *other* survival watcher on the victim's level; the victim's own client
+is never sent it (its hurt presentation — camera tilt + sound — derives from
+the `SURV_HEALTH` drop). Additive message: clients that predate it ignore the
+unknown id, so no extension version bump.
+
 ## 5. Client → server intents
 
 **Every intent is a request.** The server validates it against its own state
